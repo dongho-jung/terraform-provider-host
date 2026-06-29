@@ -1,4 +1,4 @@
-resource "host_dnf_package" "git" {
+resource "host_package_dnf" "git" {
   name    = "git"
   version = "latest"
 }

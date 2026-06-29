@@ -63,7 +63,7 @@ func NewDNFPackageResource() resource.Resource {
 }
 
 func (r *DNFPackageResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
-	resp.TypeName = req.ProviderTypeName + "_dnf_package"
+	resp.TypeName = req.ProviderTypeName + "_package_dnf"
 }
 
 func (r *DNFPackageResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {

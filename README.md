@@ -34,7 +34,7 @@ Generated files live under `docs/`. Handwritten Terraform examples live under `e
 
 ## DNF Package Management
 
-Use `host_dnf_package` to manage one DNF package per Terraform resource. Creating a resource installs the package if needed and marks its DNF install reason as `User`, so DNF does not treat it as an automatically installed dependency.
+Use `host_package_dnf` to manage one DNF package per Terraform resource. Creating a resource installs the package if needed and marks its DNF install reason as `User`, so DNF does not treat it as an automatically installed dependency.
 
 Do not use DNF reason `User` as a perfect inventory of packages a human intentionally installed. Fedora installers and image defaults can also mark packages with reason `User`.
 
@@ -45,7 +45,7 @@ Exact version pinning is not implemented yet; `version = "latest"` is currently 
 Removing a resource runs `dnf remove` for that package.
 
 ```hcl
-resource "host_dnf_package" "git" {
+resource "host_package_dnf" "git" {
   name    = "git"
   version = "latest"
 }
