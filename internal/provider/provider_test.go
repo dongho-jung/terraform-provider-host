@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"os/exec"
 	"testing"
 
 	frameworkprovider "github.com/hashicorp/terraform-plugin-framework/provider"
@@ -28,13 +27,5 @@ func TestProviderMetadata(t *testing.T) {
 
 	if resp.Version != "test" {
 		t.Fatalf("expected provider version test, got %q", resp.Version)
-	}
-}
-
-func testAccPreCheck(t *testing.T) {
-	t.Helper()
-
-	if _, err := exec.LookPath("dnf"); err != nil {
-		t.Skip("dnf is not available")
 	}
 }

@@ -208,16 +208,24 @@ func (r *DNFPackageResource) Configure(ctx context.Context, req resource.Configu
 		return
 	}
 
-	manager, ok := req.ProviderData.(PackageManager)
-	if !ok {
+	switch data := req.ProviderData.(type) {
+	case HostProviderData:
+		if data.PackageManager == nil {
+			resp.Diagnostics.AddError(
+				"DNF executable not found",
+				"`host_package_dnf` requires `dnf` to be available in PATH.",
+			)
+			return
+		}
+		r.manager = data.PackageManager
+	case PackageManager:
+		r.manager = data
+	default:
 		resp.Diagnostics.AddError(
 			"Unexpected provider data",
-			fmt.Sprintf("Expected PackageManager, got %T.", req.ProviderData),
+			fmt.Sprintf("Expected HostProviderData or PackageManager, got %T.", req.ProviderData),
 		)
-		return
 	}
-
-	r.manager = manager
 }
 
 func (r *DNFPackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {

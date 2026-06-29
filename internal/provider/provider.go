@@ -38,24 +38,32 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		return
 	}
 
+	var data HostProviderData
+
 	dnfPath, err := exec.LookPath("dnf")
-	if err != nil {
-		resp.Diagnostics.AddError("DNF executable not found", err.Error())
-		return
+	if err == nil {
+		sudoPath, err := exec.LookPath("sudo")
+		if err != nil {
+			sudoPath = ""
+		}
+
+		data.PackageManager = NewCLIPackageManager(dnfPath, sudoPath)
 	}
 
-	sudoPath, err := exec.LookPath("sudo")
-	if err != nil {
-		sudoPath = ""
+	brewPath, err := exec.LookPath("brew")
+	if err == nil {
+		data.BrewManager = NewCLIBrewPackageManager(brewPath)
 	}
 
-	manager := NewCLIPackageManager(dnfPath, sudoPath)
-	resp.ResourceData = manager
+	resp.ResourceData = data
 }
 
 func (p *HostProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewDNFPackageResource,
+		NewBrewPackageResource,
+		NewHostFileResource,
+		NewHostFileBlockResource,
 	}
 }
 
