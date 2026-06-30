@@ -40,15 +40,20 @@ type BrewPackageStatus struct {
 }
 
 type CLIBrewPackageManager struct {
-	brewPath        string
-	sudoPath        string
-	sudoLeaseMu     sync.Mutex
-	sudoLeaseActive bool
+	brewPath string
+	sudoPath string
 }
 
 type commandTTY struct {
 	file *os.File
 }
+
+type brewSudoLeaseState struct {
+	mu     sync.Mutex
+	active bool
+}
+
+var brewSudoLease brewSudoLeaseState
 
 type brewInfoOutput struct {
 	Formulae []brewFormulaInfo `json:"formulae"`
@@ -128,6 +133,10 @@ func (m *CLIBrewPackageManager) PackageStatus(ctx context.Context, name string, 
 
 func (m *CLIBrewPackageManager) InstallPackage(ctx context.Context, name string, packageType string) error {
 	args := []string{"install", "--yes", brewPackageTypeFlag(packageType), name}
+	if err := m.prepareMutatingPackageCommand(ctx, packageType, args); err != nil {
+		return err
+	}
+
 	return m.withMutationLock(ctx, func() error {
 		return m.runMutatingPackageCommand(ctx, packageType, args)
 	})
@@ -139,6 +148,10 @@ func (m *CLIBrewPackageManager) UpgradePackage(ctx context.Context, name string,
 		args = append(args, "--greedy")
 	}
 	args = append(args, name)
+
+	if err := m.prepareMutatingPackageCommand(ctx, packageType, args); err != nil {
+		return err
+	}
 
 	return m.withMutationLock(ctx, func() error {
 		return m.runMutatingPackageCommand(ctx, packageType, args)
@@ -160,6 +173,10 @@ func (m *CLIBrewPackageManager) RemovePackage(ctx context.Context, name string, 
 	}
 	args = append(args, name)
 
+	if err := m.prepareMutatingPackageCommand(ctx, packageType, args); err != nil {
+		return err
+	}
+
 	return m.withMutationLock(ctx, func() error {
 		if err := m.runMutatingPackageCommand(ctx, packageType, args); err != nil {
 			return err
@@ -174,11 +191,16 @@ func (m *CLIBrewPackageManager) RemovePackage(ctx context.Context, name string, 
 	})
 }
 
+func (m *CLIBrewPackageManager) prepareMutatingPackageCommand(ctx context.Context, packageType string, args []string) error {
+	if packageType != brewPackageTypeCask {
+		return nil
+	}
+
+	return m.ensureCaskSudoLease(ctx, args...)
+}
+
 func (m *CLIBrewPackageManager) runMutatingPackageCommand(ctx context.Context, packageType string, args []string) error {
 	if packageType == brewPackageTypeCask {
-		if err := m.ensureCaskSudoLease(ctx, args...); err != nil {
-			return err
-		}
 		return m.runInteractive(ctx, nil, args...)
 	}
 
@@ -268,8 +290,8 @@ func (m *CLIBrewPackageManager) ensureCaskSudoLease(ctx context.Context, args ..
 		return fmt.Errorf("Homebrew cask command may require sudo, but sudo was not found in PATH")
 	}
 
-	m.sudoLeaseMu.Lock()
-	defer m.sudoLeaseMu.Unlock()
+	brewSudoLease.mu.Lock()
+	defer brewSudoLease.mu.Unlock()
 
 	if err := m.validateSudo(ctx); err == nil {
 		m.startSudoKeepAliveLocked()
@@ -285,11 +307,11 @@ func (m *CLIBrewPackageManager) ensureCaskSudoLease(ctx context.Context, args ..
 }
 
 func (m *CLIBrewPackageManager) startSudoKeepAliveLocked() {
-	if m.sudoLeaseActive {
+	if brewSudoLease.active {
 		return
 	}
 
-	m.sudoLeaseActive = true
+	brewSudoLease.active = true
 	go m.keepSudoAlive(context.Background())
 }
 
@@ -321,11 +343,21 @@ func (m *CLIBrewPackageManager) authenticateSudoForCask(ctx context.Context, arg
 	fmt.Fprintln(tty.file, "============================================================")
 	fmt.Fprintln(tty.file, "Terraform provider host needs your macOS password")
 	fmt.Fprintf(tty.file, "Homebrew cask command: %s %s\n", m.brewPath, strings.Join(args, " "))
-	fmt.Fprintln(tty.file, "Enter your password at the prompt below.")
+	fmt.Fprintln(tty.file, "Terraform is paused until this password is entered.")
+	fmt.Fprintln(tty.file, "If Terraform status lines bury the prompt, type your password here and press Enter.")
 	fmt.Fprintln(tty.file, "You can also run `sudo -v` before `terraform apply`.")
 	fmt.Fprintln(tty.file, "============================================================")
 
-	cmd := exec.CommandContext(ctx, m.sudoPath, "-p", "Terraform provider host sudo password: ", "-v")
+	done := make(chan struct{})
+	var reminder sync.WaitGroup
+	reminder.Add(1)
+	go m.remindSudoPrompt(ctx, tty.file, done, &reminder)
+	defer func() {
+		close(done)
+		reminder.Wait()
+	}()
+
+	cmd := exec.CommandContext(ctx, m.sudoPath, "-p", "\nTerraform provider host sudo password (input hidden): ", "-v")
 	cmd.Stdin = tty.file
 	cmd.Stdout = tty.file
 	cmd.Stderr = tty.file
@@ -335,6 +367,26 @@ func (m *CLIBrewPackageManager) authenticateSudoForCask(ctx context.Context, arg
 	}
 
 	return nil
+}
+
+func (m *CLIBrewPackageManager) remindSudoPrompt(ctx context.Context, tty *os.File, done <-chan struct{}, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	ticker := time.NewTicker(7 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-ticker.C:
+			fmt.Fprintln(tty)
+			fmt.Fprintln(tty, "Terraform provider host is still waiting for your sudo password.")
+			fmt.Fprintln(tty, "Type it in this terminal and press Enter, or press Ctrl-C to cancel.")
+		}
+	}
 }
 
 func openCommandTTY() (*commandTTY, error) {

@@ -61,7 +61,7 @@ The default version policy is `latest`. During planning the provider reads Homeb
 
 Removing a formula resource runs `brew uninstall --formula` and then `brew autoremove` by default. Removing a cask resource runs `brew uninstall --cask`; set `zap = true` to pass `--zap` on destroy.
 
-Cask installs, upgrades, and removals may require macOS administrator authentication because Homebrew can call `sudo` internally. Plans that will mutate a cask emit a warning. During apply, the provider serializes Homebrew mutations, opens the current terminal for cask commands, prompts once with `Terraform provider host sudo password:` when sudo is not already authenticated, and keeps that sudo lease alive for later cask operations in the same Terraform run. If you want Terraform's UI to show only one Homebrew resource at a time, run `terraform apply -parallelism=1`.
+Cask installs, upgrades, and removals may require macOS administrator authentication because Homebrew can call `sudo` internally. Plans that will mutate a cask emit a warning. During apply, the provider prompts once through the current terminal when sudo is not already authenticated, keeps that sudo lease alive for later cask operations in the same Terraform run, and prints reminders while it waits so the password prompt does not stay buried under Terraform status lines. If you miss the prompt, type your password in the same terminal and press Enter, or run `sudo -v` before `terraform apply`.
 
 ```hcl
 resource "host_package_brew" "bat" {
