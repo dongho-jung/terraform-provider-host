@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"syscall"
 )
@@ -19,13 +18,16 @@ const (
 	hostFileBlockEndPrefix          = "# END Terraform host_file block "
 	hostFileManagedBlockBeginPrefix = "# BEGIN Terraform host_file_block "
 	hostFileManagedBlockEndPrefix   = "# END Terraform host_file_block "
+	hostFileManagedBlockBefore      = "# Terraform host_file_block before "
+	hostFileManagedBlockAfter       = "# Terraform host_file_block after "
 	hostFileManagedBlockPriority    = "# Terraform host_file_block priority "
 )
 
 type hostFileManagedBlock struct {
-	id       string
-	priority int64
-	body     string
+	id     string
+	before []string
+	after  []string
+	body   string
 }
 
 type cleanHostFileState struct {
@@ -34,14 +36,17 @@ type cleanHostFileState struct {
 }
 
 type cleanHostFileBlockState struct {
-	Priority int64                                     `json:"priority,omitempty"`
-	Content  string                                    `json:"content,omitempty"`
-	Managed  map[string]cleanHostFileManagedBlockState `json:"managed,omitempty"`
+	Order   int                                       `json:"order,omitempty"`
+	Before  []string                                  `json:"before,omitempty"`
+	After   []string                                  `json:"after,omitempty"`
+	Content string                                    `json:"content,omitempty"`
+	Managed map[string]cleanHostFileManagedBlockState `json:"managed,omitempty"`
 }
 
 type cleanHostFileManagedBlockState struct {
-	Priority int64  `json:"priority,omitempty"`
-	Content  string `json:"content"`
+	Before  []string `json:"before,omitempty"`
+	After   []string `json:"after,omitempty"`
+	Content string   `json:"content"`
 }
 
 type lockedHostFile struct {
@@ -130,7 +135,11 @@ func deleteHostFileBlocks(path string, names []string) error {
 	return writeHostFile(path, next)
 }
 
-func upsertHostFileManagedBlock(path string, fileBlockName string, blockID string, priority int64, content string) error {
+func upsertHostFileManagedBlock(path string, fileBlockName string, blockID string, content string) error {
+	return upsertHostFileManagedBlockWithOrder(path, fileBlockName, blockID, nil, nil, content)
+}
+
+func upsertHostFileManagedBlockWithOrder(path string, fileBlockName string, blockID string, before []string, after []string, content string) error {
 	if err := validateHostFileBlockName(fileBlockName); err != nil {
 		return err
 	}
@@ -148,7 +157,7 @@ func upsertHostFileManagedBlock(path string, fileBlockName string, blockID strin
 		return err
 	}
 
-	next, err := upsertManagedBlock(withFileBlock, fileBlockName, blockID, priority, content)
+	next, err := upsertManagedBlockWithOrder(withFileBlock, fileBlockName, blockID, before, after, content)
 	if err != nil {
 		return err
 	}
@@ -181,15 +190,24 @@ func removeHostFileManagedBlock(path string, fileBlockName string, blockID strin
 }
 
 func readManagedBlockBody(path string, fileBlockName string, blockID string) (string, int64, bool, error) {
-	fileContent, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return "", 0, false, nil
-	}
-	if err != nil {
-		return "", 0, false, fmt.Errorf("read %q: %w", path, err)
+	block, ok, err := readManagedBlock(path, fileBlockName, blockID)
+	if err != nil || !ok {
+		return "", 0, ok, err
 	}
 
-	return extractManagedBlockBody(string(fileContent), fileBlockName, blockID)
+	return block.body, 0, true, nil
+}
+
+func readManagedBlock(path string, fileBlockName string, blockID string) (hostFileManagedBlock, bool, error) {
+	fileContent, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return hostFileManagedBlock{}, false, nil
+	}
+	if err != nil {
+		return hostFileManagedBlock{}, false, fmt.Errorf("read %q: %w", path, err)
+	}
+
+	return extractManagedBlock(string(fileContent), fileBlockName, blockID)
 }
 
 func readHostFileBlockSpecs(path string, specs []hostFileBlockSpec) ([]hostFileBlockSpec, bool, error) {
@@ -330,11 +348,38 @@ func syncCleanHostFileBlocks(path string, specs []hostFileBlockSpec) error {
 		return err
 	}
 
-	state, err := readCleanHostFileState(path)
+	state, err := plannedCleanHostFileState(path, specs)
 	if err != nil {
 		return err
 	}
-	state.Path = path
+
+	return writeCleanHostFileStateAndContent(path, state)
+}
+
+func plannedCleanHostFileContent(path string, specs []hostFileBlockSpec) (string, error) {
+	state, err := plannedCleanHostFileState(path, specs)
+	if err != nil {
+		return "", err
+	}
+
+	return renderCleanHostFileState(state)
+}
+
+func plannedCleanHostFileState(path string, specs []hostFileBlockSpec) (cleanHostFileState, error) {
+	if err := validateHostFileBlockSpecs(specs); err != nil {
+		return cleanHostFileState{}, err
+	}
+
+	resolvedPath, err := expandHostPath(path)
+	if err != nil {
+		return cleanHostFileState{}, err
+	}
+
+	state, err := readCleanHostFileState(resolvedPath)
+	if err != nil {
+		return cleanHostFileState{}, err
+	}
+	state.Path = resolvedPath
 	if state.Blocks == nil {
 		state.Blocks = map[string]cleanHostFileBlockState{}
 	}
@@ -350,7 +395,9 @@ func syncCleanHostFileBlocks(path string, specs []hostFileBlockSpec) error {
 	}
 	for _, spec := range specs {
 		block := state.Blocks[spec.Name]
-		block.Priority = spec.Priority
+		block.Order = spec.Order
+		block.Before = append([]string(nil), spec.Before...)
+		block.After = append([]string(nil), spec.After...)
 		if spec.Content != nil {
 			block.Content = canonicalHostFileInlineContent(*spec.Content)
 		} else {
@@ -359,7 +406,24 @@ func syncCleanHostFileBlocks(path string, specs []hostFileBlockSpec) error {
 		state.Blocks[spec.Name] = block
 	}
 
-	return writeCleanHostFileStateAndContent(path, state)
+	return state, nil
+}
+
+func readRenderedHostFileContent(path string) (string, error) {
+	resolvedPath, err := expandHostPath(path)
+	if err != nil {
+		return "", err
+	}
+
+	content, exists, err := readHostFileContent(resolvedPath)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return "", nil
+	}
+
+	return content, nil
 }
 
 func deleteCleanHostFile(path string) error {
@@ -380,7 +444,11 @@ func deleteCleanHostFile(path string) error {
 	return nil
 }
 
-func upsertCleanHostFileManagedBlock(path string, fileBlockName string, blockID string, priority int64, content string) error {
+func upsertCleanHostFileManagedBlock(path string, fileBlockName string, blockID string, content string) error {
+	return upsertCleanHostFileManagedBlockWithOrder(path, fileBlockName, blockID, nil, nil, content)
+}
+
+func upsertCleanHostFileManagedBlockWithOrder(path string, fileBlockName string, blockID string, before []string, after []string, content string) error {
 	if err := validateHostFileBlockName(fileBlockName); err != nil {
 		return err
 	}
@@ -402,8 +470,9 @@ func upsertCleanHostFileManagedBlock(path string, fileBlockName string, blockID 
 		block.Managed = map[string]cleanHostFileManagedBlockState{}
 	}
 	block.Managed[blockID] = cleanHostFileManagedBlockState{
-		Priority: priority,
-		Content:  canonicalManagedBlockBody(content),
+		Before:  append([]string(nil), before...),
+		After:   append([]string(nil), after...),
+		Content: canonicalManagedBlockBody(content),
 	}
 	state.Blocks[fileBlockName] = block
 
@@ -437,21 +506,35 @@ func removeCleanHostFileManagedBlock(path string, fileBlockName string, blockID 
 }
 
 func readCleanManagedBlockBody(path string, fileBlockName string, blockID string) (string, int64, bool, error) {
+	block, ok, err := readCleanManagedBlock(path, fileBlockName, blockID)
+	if err != nil || !ok {
+		return "", 0, ok, err
+	}
+
+	return block.body, 0, true, nil
+}
+
+func readCleanManagedBlock(path string, fileBlockName string, blockID string) (hostFileManagedBlock, bool, error) {
 	state, exists, err := readCleanHostFileStateIfExists(path)
 	if err != nil || !exists {
-		return "", 0, false, err
+		return hostFileManagedBlock{}, false, err
 	}
 
 	block, ok := state.Blocks[fileBlockName]
 	if !ok {
-		return "", 0, false, nil
+		return hostFileManagedBlock{}, false, nil
 	}
 	managed, ok := block.Managed[blockID]
 	if !ok {
-		return "", 0, false, nil
+		return hostFileManagedBlock{}, false, nil
 	}
 
-	return managed.Content, managed.Priority, true, nil
+	return hostFileManagedBlock{
+		id:     blockID,
+		before: append([]string(nil), managed.Before...),
+		after:  append([]string(nil), managed.After...),
+		body:   managed.Content,
+	}, true, nil
 }
 
 func readCleanHostFileBlockSpecs(path string, specs []hostFileBlockSpec) ([]hostFileBlockSpec, bool, error) {
@@ -466,7 +549,9 @@ func readCleanHostFileBlockSpecs(path string, specs []hostFileBlockSpec) ([]host
 		if !ok {
 			return nil, false, nil
 		}
-		next[i].Priority = block.Priority
+		next[i].Order = block.Order
+		next[i].Before = append([]string(nil), block.Before...)
+		next[i].After = append([]string(nil), block.After...)
 		if spec.Content != nil {
 			content := trimRenderedManagedBlockBody(block.Content)
 			if *spec.Content == "" && block.Content != "" {
@@ -517,7 +602,11 @@ func readCleanHostFileStateIfExists(path string) (cleanHostFileState, bool, erro
 }
 
 func writeCleanHostFileStateAndContent(path string, state cleanHostFileState) error {
-	if err := writeHostFile(path, renderCleanHostFileState(state)); err != nil {
+	content, err := renderCleanHostFileState(state)
+	if err != nil {
+		return err
+	}
+	if err := writeHostFile(path, content); err != nil {
 		return err
 	}
 
@@ -542,7 +631,7 @@ func writeCleanHostFileStateAndContent(path string, state cleanHostFileState) er
 	return nil
 }
 
-func renderCleanHostFileState(state cleanHostFileState) string {
+func renderCleanHostFileState(state cleanHostFileState) (string, error) {
 	blocks := make([]struct {
 		name  string
 		block cleanHostFileBlockState
@@ -553,30 +642,30 @@ func renderCleanHostFileState(state cleanHostFileState) string {
 			block cleanHostFileBlockState
 		}{name: name, block: block})
 	}
-	sort.SliceStable(blocks, func(i int, j int) bool {
-		if blocks[i].block.Priority != blocks[j].block.Priority {
-			return blocks[i].block.Priority < blocks[j].block.Priority
-		}
-
-		return blocks[i].name < blocks[j].name
-	})
+	sortedBlocks, err := sortCleanHostFileBlockStateItems(blocks)
+	if err != nil {
+		return "", err
+	}
 
 	sections := []string{}
-	for _, item := range blocks {
-		content := renderCleanHostFileBlockState(item.block)
+	for _, item := range sortedBlocks {
+		content, err := renderCleanHostFileBlockState(item.block)
+		if err != nil {
+			return "", err
+		}
 		if strings.TrimSpace(content) == "" {
 			continue
 		}
 		sections = append(sections, content)
 	}
 	if len(sections) == 0 {
-		return ""
+		return "", nil
 	}
 
-	return strings.Join(sections, "\n")
+	return strings.Join(sections, "\n"), nil
 }
 
-func renderCleanHostFileBlockState(block cleanHostFileBlockState) string {
+func renderCleanHostFileBlockState(block cleanHostFileBlockState) (string, error) {
 	var builder strings.Builder
 	if block.Content != "" {
 		builder.WriteString(canonicalHostFileInlineContent(block.Content))
@@ -585,18 +674,117 @@ func renderCleanHostFileBlockState(block cleanHostFileBlockState) string {
 	managed := make([]hostFileManagedBlock, 0, len(block.Managed))
 	for id, item := range block.Managed {
 		managed = append(managed, hostFileManagedBlock{
-			id:       id,
-			priority: item.Priority,
-			body:     item.Content,
+			id:     id,
+			before: append([]string(nil), item.Before...),
+			after:  append([]string(nil), item.After...),
+			body:   item.Content,
 		})
 	}
-	sortHostFileManagedBlocks(managed)
+	if err := sortHostFileManagedBlocks(managed); err != nil {
+		return "", err
+	}
 
 	for _, item := range managed {
 		builder.WriteString(canonicalManagedBlockBody(item.body))
 	}
 
-	return builder.String()
+	return builder.String(), nil
+}
+
+func sortCleanHostFileBlockStateItems(blocks []struct {
+	name  string
+	block cleanHostFileBlockState
+}) ([]struct {
+	name  string
+	block cleanHostFileBlockState
+}, error) {
+	byName := make(map[string]cleanHostFileBlockState, len(blocks))
+	for _, item := range blocks {
+		byName[item.name] = item.block
+	}
+
+	outgoing := make(map[string][]string, len(blocks))
+	indegree := make(map[string]int, len(blocks))
+	for _, item := range blocks {
+		indegree[item.name] = 0
+	}
+
+	addEdge := func(from string, to string) error {
+		if from == to {
+			return fmt.Errorf("host file block %q cannot order itself", from)
+		}
+		if _, ok := byName[from]; !ok {
+			return fmt.Errorf("host file block %q references unknown block %q", to, from)
+		}
+		if _, ok := byName[to]; !ok {
+			return fmt.Errorf("host file block %q references unknown block %q", from, to)
+		}
+		for _, existing := range outgoing[from] {
+			if existing == to {
+				return nil
+			}
+		}
+		outgoing[from] = append(outgoing[from], to)
+		indegree[to]++
+
+		return nil
+	}
+
+	for _, item := range blocks {
+		for _, after := range item.block.After {
+			if err := addEdge(after, item.name); err != nil {
+				return nil, err
+			}
+		}
+		for _, before := range item.block.Before {
+			if err := addEdge(item.name, before); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	remaining := make(map[string]struct{}, len(blocks))
+	for _, item := range blocks {
+		remaining[item.name] = struct{}{}
+	}
+
+	sortedBlocks := make([]struct {
+		name  string
+		block cleanHostFileBlockState
+	}, 0, len(blocks))
+	for len(remaining) > 0 {
+		candidates := make([]struct {
+			name  string
+			block cleanHostFileBlockState
+		}, 0, len(remaining))
+		for name := range remaining {
+			if indegree[name] == 0 {
+				candidates = append(candidates, struct {
+					name  string
+					block cleanHostFileBlockState
+				}{name: name, block: byName[name]})
+			}
+		}
+		if len(candidates) == 0 {
+			return nil, fmt.Errorf("host file block ordering contains a cycle")
+		}
+		sort.Slice(candidates, func(i int, j int) bool {
+			if candidates[i].block.Order != candidates[j].block.Order {
+				return candidates[i].block.Order < candidates[j].block.Order
+			}
+
+			return candidates[i].name < candidates[j].name
+		})
+
+		next := candidates[0]
+		sortedBlocks = append(sortedBlocks, next)
+		delete(remaining, next.name)
+		for _, to := range outgoing[next.name] {
+			indegree[to]--
+		}
+	}
+
+	return sortedBlocks, nil
 }
 
 func cleanHostFileStatePath(path string) (string, error) {
@@ -770,6 +958,7 @@ func hostFileInlineContentLines(content string) []string {
 }
 
 func canonicalHostFileInlineContent(content string) string {
+	content = strings.TrimSpace(content)
 	if content == "" || strings.HasSuffix(content, "\n") {
 		return content
 	}
@@ -777,7 +966,11 @@ func canonicalHostFileInlineContent(content string) string {
 	return content + "\n"
 }
 
-func upsertManagedBlock(content string, fileBlockName string, blockID string, priority int64, blockContent string) (string, error) {
+func upsertManagedBlock(content string, fileBlockName string, blockID string, blockContent string) (string, error) {
+	return upsertManagedBlockWithOrder(content, fileBlockName, blockID, nil, nil, blockContent)
+}
+
+func upsertManagedBlockWithOrder(content string, fileBlockName string, blockID string, before []string, after []string, blockContent string) (string, error) {
 	lines := splitHostFileLines(content)
 	fileStart, fileEnd, ok, err := findFileBlockRange(lines, fileBlockName)
 	if err != nil {
@@ -792,7 +985,7 @@ func upsertManagedBlock(content string, fileBlockName string, blockID string, pr
 		return "", err
 	}
 
-	rendered := splitHostFileLines(renderManagedBlock(blockID, priority, blockContent))
+	rendered := splitHostFileLines(renderManagedBlockWithOrder(blockID, before, after, blockContent))
 	if ok {
 		managedStart += fileStart + 1
 		managedEnd += fileStart + 1
@@ -840,23 +1033,32 @@ func removeManagedBlock(content string, fileBlockName string, blockID string) (s
 }
 
 func extractManagedBlockBody(content string, fileBlockName string, blockID string) (string, int64, bool, error) {
+	block, ok, err := extractManagedBlock(content, fileBlockName, blockID)
+	if err != nil || !ok {
+		return "", 0, ok, err
+	}
+
+	return block.body, 0, true, nil
+}
+
+func extractManagedBlock(content string, fileBlockName string, blockID string) (hostFileManagedBlock, bool, error) {
 	lines := splitHostFileLines(content)
 	fileStart, fileEnd, ok, err := findFileBlockRange(lines, fileBlockName)
 	if err != nil || !ok {
-		return "", 0, ok, err
+		return hostFileManagedBlock{}, ok, err
 	}
 
 	managedStart, managedEnd, ok, err := findManagedBlockRange(lines[fileStart+1:fileEnd], blockID)
 	if err != nil || !ok {
-		return "", 0, ok, err
+		return hostFileManagedBlock{}, ok, err
 	}
 
 	block, err := parseManagedBlockLines(lines[fileStart+1+managedStart : fileStart+1+managedEnd+1])
 	if err != nil {
-		return "", 0, false, err
+		return hostFileManagedBlock{}, false, err
 	}
 
-	return block.body, block.priority, true, nil
+	return block, true, nil
 }
 
 func extractHostFileBlockInlineContent(lines []string) (string, error) {
@@ -918,20 +1120,13 @@ func sortManagedBlocks(lines []string) ([]string, error) {
 		i = end + 1
 	}
 
-	sort.SliceStable(blocks, func(i int, j int) bool {
-		if blocks[i].priority != blocks[j].priority {
-			return blocks[i].priority < blocks[j].priority
-		}
-		if blocks[i].body != blocks[j].body {
-			return blocks[i].body < blocks[j].body
-		}
-
-		return blocks[i].id < blocks[j].id
-	})
+	if err := sortHostFileManagedBlocks(blocks); err != nil {
+		return nil, err
+	}
 
 	next := append([]string(nil), unmanaged...)
 	for _, block := range blocks {
-		next = append(next, splitHostFileLines(renderManagedBlock(block.id, block.priority, block.body))...)
+		next = append(next, splitHostFileLines(renderManagedBlockWithOrder(block.id, block.before, block.after, block.body))...)
 	}
 
 	return next, nil
@@ -943,11 +1138,13 @@ func sortedManagedBlockLines(lines []string) ([]string, error) {
 		return nil, err
 	}
 
-	sortHostFileManagedBlocks(blocks)
+	if err := sortHostFileManagedBlocks(blocks); err != nil {
+		return nil, err
+	}
 
 	next := []string{}
 	for _, block := range blocks {
-		next = append(next, splitHostFileLines(renderManagedBlock(block.id, block.priority, block.body))...)
+		next = append(next, splitHostFileLines(renderManagedBlockWithOrder(block.id, block.before, block.after, block.body))...)
 	}
 
 	return next, nil
@@ -978,17 +1175,87 @@ func managedBlocksFromLines(lines []string) ([]hostFileManagedBlock, error) {
 	return blocks, nil
 }
 
-func sortHostFileManagedBlocks(blocks []hostFileManagedBlock) {
-	sort.SliceStable(blocks, func(i int, j int) bool {
-		if blocks[i].priority != blocks[j].priority {
-			return blocks[i].priority < blocks[j].priority
-		}
-		if blocks[i].body != blocks[j].body {
-			return blocks[i].body < blocks[j].body
-		}
+func sortHostFileManagedBlocks(blocks []hostFileManagedBlock) error {
+	byID := make(map[string]hostFileManagedBlock, len(blocks))
+	for _, block := range blocks {
+		byID[block.id] = block
+	}
 
-		return blocks[i].id < blocks[j].id
-	})
+	outgoing := make(map[string][]string, len(blocks))
+	indegree := make(map[string]int, len(blocks))
+	for _, block := range blocks {
+		indegree[block.id] = 0
+	}
+
+	addEdge := func(from string, to string) error {
+		if from == to {
+			return fmt.Errorf("managed content block %q cannot order itself", from)
+		}
+		if _, ok := byID[from]; !ok {
+			return fmt.Errorf("managed content block %q references unknown block %q", to, from)
+		}
+		if _, ok := byID[to]; !ok {
+			return fmt.Errorf("managed content block %q references unknown block %q", from, to)
+		}
+		for _, existing := range outgoing[from] {
+			if existing == to {
+				return nil
+			}
+		}
+		outgoing[from] = append(outgoing[from], to)
+		indegree[to]++
+
+		return nil
+	}
+
+	for _, block := range blocks {
+		for _, after := range block.after {
+			if err := addEdge(after, block.id); err != nil {
+				return err
+			}
+		}
+		for _, before := range block.before {
+			if err := addEdge(block.id, before); err != nil {
+				return err
+			}
+		}
+	}
+
+	remaining := make(map[string]struct{}, len(blocks))
+	for _, block := range blocks {
+		remaining[block.id] = struct{}{}
+	}
+
+	sortedBlocks := make([]hostFileManagedBlock, 0, len(blocks))
+	for len(remaining) > 0 {
+		candidates := make([]hostFileManagedBlock, 0, len(remaining))
+		for id := range remaining {
+			if indegree[id] == 0 {
+				candidates = append(candidates, byID[id])
+			}
+		}
+		if len(candidates) == 0 {
+			return fmt.Errorf("managed content block ordering contains a cycle")
+		}
+		sort.SliceStable(candidates, func(i int, j int) bool {
+			if candidates[i].body != candidates[j].body {
+				return candidates[i].body < candidates[j].body
+			}
+
+			return candidates[i].id < candidates[j].id
+		})
+
+		next := candidates[0]
+		sortedBlocks = append(sortedBlocks, next)
+		delete(remaining, next.id)
+		for _, to := range outgoing[next.id] {
+			indegree[to]--
+		}
+	}
+
+	copy(blocks, sortedBlocks)
+
+	return nil
 }
 
 func parseManagedBlockLines(lines []string) (hostFileManagedBlock, error) {
@@ -1005,23 +1272,38 @@ func parseManagedBlockLines(lines []string) (hostFileManagedBlock, error) {
 	}
 
 	bodyStart := 1
-	priority := int64(0)
-	if len(lines) > 2 {
-		var err error
-		var ok bool
-		priority, ok, err = parseManagedBlockPriority(lineBody(lines[1]))
-		if err != nil {
-			return hostFileManagedBlock{}, err
-		}
+	var before []string
+	var after []string
+	for bodyStart < len(lines)-1 {
+		line := lineBody(lines[bodyStart])
+		_, ok := parseManagedBlockPriority(line)
 		if ok {
-			bodyStart = 2
+			bodyStart++
+			continue
 		}
+
+		parsedBefore, ok := parseManagedBlockReferenceMarker(line, hostFileManagedBlockBefore)
+		if ok {
+			before = parsedBefore
+			bodyStart++
+			continue
+		}
+
+		parsedAfter, ok := parseManagedBlockReferenceMarker(line, hostFileManagedBlockAfter)
+		if ok {
+			after = parsedAfter
+			bodyStart++
+			continue
+		}
+
+		break
 	}
 
 	return hostFileManagedBlock{
-		id:       blockID,
-		priority: priority,
-		body:     strings.Join(lines[bodyStart:len(lines)-1], ""),
+		id:     blockID,
+		before: before,
+		after:  after,
+		body:   strings.Join(lines[bodyStart:len(lines)-1], ""),
 	}, nil
 }
 
@@ -1092,12 +1374,20 @@ func lineBody(line string) string {
 	return line
 }
 
-func renderManagedBlock(blockID string, priority int64, content string) string {
+func renderManagedBlock(blockID string, content string) string {
+	return renderManagedBlockWithOrder(blockID, nil, nil, content)
+}
+
+func renderManagedBlockWithOrder(blockID string, before []string, after []string, content string) string {
 	var builder strings.Builder
 	builder.WriteString(managedBlockBeginMarker(blockID))
 	builder.WriteString("\n")
-	if priority != 0 {
-		builder.WriteString(managedBlockPriorityMarker(priority))
+	if len(before) > 0 {
+		builder.WriteString(managedBlockBeforeMarker(before))
+		builder.WriteString("\n")
+	}
+	if len(after) > 0 {
+		builder.WriteString(managedBlockAfterMarker(after))
 		builder.WriteString("\n")
 	}
 	builder.WriteString(content)
@@ -1111,6 +1401,7 @@ func renderManagedBlock(blockID string, priority int64, content string) string {
 }
 
 func canonicalManagedBlockBody(content string) string {
+	content = strings.TrimSpace(content)
 	if strings.HasSuffix(content, "\n") {
 		return content
 	}
@@ -1119,6 +1410,7 @@ func canonicalManagedBlockBody(content string) string {
 }
 
 func canonicalHostFileContent(content string) string {
+	content = strings.TrimSpace(content)
 	if content == "" || strings.HasSuffix(content, "\n") {
 		return content
 	}
@@ -1146,8 +1438,12 @@ func managedBlockEndMarker(blockID string) string {
 	return hostFileManagedBlockEndPrefix + blockID
 }
 
-func managedBlockPriorityMarker(priority int64) string {
-	return hostFileManagedBlockPriority + strconv.FormatInt(priority, 10)
+func managedBlockBeforeMarker(before []string) string {
+	return hostFileManagedBlockBefore + strings.Join(before, ",")
+}
+
+func managedBlockAfterMarker(after []string) string {
+	return hostFileManagedBlockAfter + strings.Join(after, ",")
 }
 
 func parseFileBlockBegin(line string) (string, bool) {
@@ -1168,18 +1464,20 @@ func parseManagedBlockBegin(line string) (string, bool) {
 	return blockID, true
 }
 
-func parseManagedBlockPriority(line string) (int64, bool, error) {
-	priority, ok := strings.CutPrefix(line, hostFileManagedBlockPriority)
+func parseManagedBlockPriority(line string) (string, bool) {
+	return strings.CutPrefix(line, hostFileManagedBlockPriority)
+}
+
+func parseManagedBlockReferenceMarker(line string, prefix string) ([]string, bool) {
+	references, ok := strings.CutPrefix(line, prefix)
 	if !ok {
-		return 0, false, nil
+		return nil, false
+	}
+	if references == "" {
+		return nil, true
 	}
 
-	value, err := strconv.ParseInt(priority, 10, 64)
-	if err != nil {
-		return 0, false, fmt.Errorf("managed content block priority %q is invalid: %w", priority, err)
-	}
-
-	return value, true, nil
+	return strings.Split(references, ","), true
 }
 
 func sortedHostFileBlockNames(names []string) []string {

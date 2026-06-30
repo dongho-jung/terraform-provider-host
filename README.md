@@ -83,7 +83,7 @@ Set `tap` for packages that live outside Homebrew's default taps. The provider c
 
 ## Host File Blocks
 
-Use `host_file` to manage a whole file without markers, or use `host_file` and `host_file_block` together to manage Terraform-owned sections inside an existing host file such as `~/.zshrc`.
+Use `host_file` to manage a whole file without markers, or use `host_file` and `host_file_block` together to manage Terraform-owned blocks inside an existing host file such as `~/.zshrc`.
 
 Whole-file mode keeps the rendered file clean:
 
@@ -91,69 +91,70 @@ Whole-file mode keeps the rendered file clean:
 resource "host_file" "zshrc" {
   path = "~/.zshrc"
 
-  content = trimspace(<<-EOT
+  content = <<-EOT
     export EDITOR=nvim
     eval "$(starship init zsh)"
   EOT
-  )
 }
 ```
 
-Section mode can either preserve unmanaged file content with generated markers, or render a marker-free file while still letting separate resources contribute content.
+Block mode renders a marker-free file while still letting separate resources contribute content. The provider stores block tracking metadata under `~/.terraform-provider-host/host_files`, so the rendered host file stays readable and Terraform can still reconcile component-owned snippets.
 
-The default `render = "markers"` mode preserves unmanaged file content and writes only content between its generated markers. Use `render = "clean"` when Terraform should render the whole file without markers while still accepting component-owned `host_file_block` resources. Clean mode stores block tracking metadata under `~/.terraform-provider-host/host_files`, so the rendered host file stays readable.
-
-Terraform can only use `block["alias"]` addressing when `block` is a map, so declare file sections with map syntax:
+Declare file blocks with nested `block` blocks. Separate `host_file_block` resources target them through the computed `blocks` references:
 
 ```hcl
 resource "host_file" "zshrc" {
-  path   = "~/.zshrc"
-  render = "clean"
+  path = "~/.zshrc"
 
-  block = {
-    options = {
-      priority = 10
-      content = trimspace(<<-EOT
-        setopt autocd
-        bindkey -v
-      EOT
-      )
-    }
-    alias = {
-      priority = 20
-    }
-    functions = {
-      priority = 30
-    }
+  block {
+    name = "options"
+    content = <<-EOT
+      setopt autocd
+      bindkey -v
+    EOT
+  }
+
+  block {
+    name = "alias"
+  }
+
+  block {
+    name = "functions"
   }
 }
 
 resource "host_file_block" "foo_alias" {
-  file_block = host_file.zshrc.block["alias"]
-  content    = "alias foo=foobar"
+  block   = host_file.zshrc.blocks.alias
+  content = "alias foo=foobar"
 }
 
 resource "host_file_block" "bar_alias" {
-  file_block = host_file.zshrc.block["alias"]
-  content    = "alias bar=barbaz"
+  block   = host_file.zshrc.blocks.alias
+  content = "alias bar=barbaz"
 }
 
 resource "host_file_block" "foo_function" {
-  file_block = host_file.zshrc.block["functions"]
-  content    = "foo() { echo foo }"
+  block = host_file.zshrc.blocks.functions
+  content = <<-EOT
+    foo() { echo foo }
+  EOT
 }
 
 resource "host_file_block" "bar_function" {
-  file_block = host_file.zshrc.block["functions"]
-  content    = "bar() { echo bar }"
+  block = host_file.zshrc.blocks.functions
+  content = <<-EOT
+    bar() { echo bar }
+  EOT
 }
 ```
 
-Use `block.<name>.content` for content that belongs to the host file itself, such as shell options, key bindings, or helper functions. `host_file_block` resources targeting the same section are rendered after that inline content.
+Use `block.content` for content that belongs to the host file itself, such as shell options, key bindings, or helper functions. `host_file_block` resources targeting the same file block are rendered after that inline content.
 
-Multiple `host_file_block` resources in the same file section are ordered by `priority`, then `content`. The default priority is `0`; set a lower or higher priority only when lexical content order is not enough.
+Multiple `host_file_block` resources in the same file block are ordered by `after` and `before` constraints first, then `content`. Prefer splitting a host file into more explicit file blocks when order is structurally important.
 
-Sections are ordered by `block.<name>.priority`, then section name. The default section priority is `0`.
+File blocks are ordered by declaration order. Use `block.after` or `block.before` when one declared block must move relative to another.
+
+Terraform does not support single-quoted strings. Use heredocs when shell content contains quotes, command substitutions, or functions; the provider trims surrounding whitespace before rendering.
 
 ## Local Development
 

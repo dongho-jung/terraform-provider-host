@@ -57,17 +57,17 @@ func TestUpsertManagedBlockPreservesSiblings(t *testing.T) {
 		t.Fatalf("unexpected error: %s", err)
 	}
 
-	content, err = upsertManagedBlock(content, "alias", "id-foo", 0, "alias foo=foobar")
+	content, err = upsertManagedBlock(content, "alias", "id-foo", "alias foo=foobar")
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
 
-	content, err = upsertManagedBlock(content, "alias", "id-bar", 0, "alias bar=barbaz")
+	content, err = upsertManagedBlock(content, "alias", "id-bar", "alias bar=barbaz")
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
 
-	content, err = upsertManagedBlock(content, "alias", "id-foo", 0, "alias foo='foo bar'")
+	content, err = upsertManagedBlock(content, "alias", "id-foo", "alias foo='foo bar'")
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
@@ -91,12 +91,12 @@ func TestRemoveManagedBlockRemovesOnlyTargetBlock(t *testing.T) {
 		t.Fatalf("unexpected error: %s", err)
 	}
 
-	content, err = upsertManagedBlock(content, "alias", "id-foo", 0, "alias foo=foobar")
+	content, err = upsertManagedBlock(content, "alias", "id-foo", "alias foo=foobar")
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
 
-	content, err = upsertManagedBlock(content, "alias", "id-bar", 0, "alias bar=barbaz")
+	content, err = upsertManagedBlock(content, "alias", "id-bar", "alias bar=barbaz")
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
@@ -122,12 +122,12 @@ func TestExtractManagedBlockBodyPreservesConfiguredTrailingNewline(t *testing.T)
 		t.Fatalf("unexpected error: %s", err)
 	}
 
-	content, err = upsertManagedBlock(content, "functions", "id-foo", 0, "foo() { echo foo }\n")
+	content, err = upsertManagedBlock(content, "functions", "id-foo", "foo() { echo foo }\n")
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
 
-	body, priority, ok, err := extractManagedBlockBody(content, "functions", "id-foo")
+	body, _, ok, err := extractManagedBlockBody(content, "functions", "id-foo")
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
@@ -137,12 +137,9 @@ func TestExtractManagedBlockBodyPreservesConfiguredTrailingNewline(t *testing.T)
 	if body != "foo() { echo foo }\n" {
 		t.Fatalf("got body %q", body)
 	}
-	if priority != 0 {
-		t.Fatalf("got priority %d", priority)
-	}
 }
 
-func TestUpsertManagedBlockSortsByPriorityThenContent(t *testing.T) {
+func TestUpsertManagedBlockSortsByContent(t *testing.T) {
 	t.Parallel()
 
 	content, err := reconcileHostFileBlocks("", testHostFileBlockSpecs("alias"))
@@ -150,37 +147,53 @@ func TestUpsertManagedBlockSortsByPriorityThenContent(t *testing.T) {
 		t.Fatalf("unexpected error: %s", err)
 	}
 
-	content, err = upsertManagedBlock(content, "alias", "id-z", 0, "alias z=z")
+	content, err = upsertManagedBlock(content, "alias", "id-z", "alias z=z")
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
 
-	content, err = upsertManagedBlock(content, "alias", "id-a", 0, "alias a=a")
+	content, err = upsertManagedBlock(content, "alias", "id-a", "alias a=a")
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
 
-	content, err = upsertManagedBlock(content, "alias", "id-late", 10, "alias before_by_content=a")
-	if err != nil {
-		t.Fatalf("unexpected error: %s", err)
-	}
-
-	content, err = upsertManagedBlock(content, "alias", "id-early", -10, "alias y=y")
-	if err != nil {
-		t.Fatalf("unexpected error: %s", err)
-	}
-
-	early := strings.Index(content, "alias y=y")
 	a := strings.Index(content, "alias a=a")
 	z := strings.Index(content, "alias z=z")
-	late := strings.Index(content, "alias before_by_content=a")
 
-	if !(early < a && a < z && z < late) {
-		t.Fatalf("expected priority then content order:\n%s", content)
+	if !(a < z) {
+		t.Fatalf("expected content order:\n%s", content)
 	}
 }
 
-func TestParseManagedBlockLinesSupportsLegacyBlocksWithoutPriority(t *testing.T) {
+func TestUpsertManagedBlockSortsByAfterReferences(t *testing.T) {
+	t.Parallel()
+
+	content, err := reconcileHostFileBlocks("", testHostFileBlockSpecs("alias"))
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	content, err = upsertManagedBlockWithOrder(content, "alias", "id-z", nil, nil, "alias z=z")
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	content, err = upsertManagedBlockWithOrder(content, "alias", "id-a", nil, []string{"id-z"}, "alias a=a")
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	z := strings.Index(content, "alias z=z")
+	a := strings.Index(content, "alias a=a")
+	if !(z < a) {
+		t.Fatalf("expected after reference to override lexical content order:\n%s", content)
+	}
+	if !strings.Contains(content, managedBlockAfterMarker([]string{"id-z"})) {
+		t.Fatalf("expected after marker to be persisted:\n%s", content)
+	}
+}
+
+func TestParseManagedBlockLinesSupportsLegacyBlocks(t *testing.T) {
 	t.Parallel()
 
 	block, err := parseManagedBlockLines(splitHostFileLines("# BEGIN Terraform host_file_block id-legacy\nalias legacy=legacy\n# END Terraform host_file_block id-legacy\n"))
@@ -188,8 +201,17 @@ func TestParseManagedBlockLinesSupportsLegacyBlocksWithoutPriority(t *testing.T)
 		t.Fatalf("unexpected error: %s", err)
 	}
 
-	if block.priority != 0 {
-		t.Fatalf("expected priority 0, got %d", block.priority)
+	if block.body != "alias legacy=legacy\n" {
+		t.Fatalf("got body %q", block.body)
+	}
+}
+
+func TestParseManagedBlockLinesSkipsLegacyPriorityMarker(t *testing.T) {
+	t.Parallel()
+
+	block, err := parseManagedBlockLines(splitHostFileLines("# BEGIN Terraform host_file_block id-legacy\n# Terraform host_file_block priority 10\nalias legacy=legacy\n# END Terraform host_file_block id-legacy\n"))
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
 	}
 	if block.body != "alias legacy=legacy\n" {
 		t.Fatalf("got body %q", block.body)
@@ -205,7 +227,7 @@ func TestReconcileHostFileBlocksSetsInlineContentAndPreservesManagedBlocks(t *te
 		t.Fatalf("unexpected error: %s", err)
 	}
 
-	content, err = upsertManagedBlock(content, "options", "id-starship", 0, `eval "$(starship init zsh)"`)
+	content, err = upsertManagedBlock(content, "options", "id-starship", `eval "$(starship init zsh)"`)
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
@@ -238,7 +260,7 @@ func TestExtractHostFileBlockInlineContentIgnoresManagedBlocks(t *testing.T) {
 
 	lines := splitHostFileLines(strings.Join([]string{
 		"setopt autocd\n",
-		renderManagedBlock("id-starship", 0, `eval "$(starship init zsh)"`),
+		renderManagedBlock("id-starship", `eval "$(starship init zsh)"`),
 		"setopt share_history\n",
 	}, ""))
 
@@ -261,7 +283,7 @@ func TestReadHostFileBlockSpecsRefreshesInlineContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
-	content, err = upsertManagedBlock(content, "options", "id-starship", 0, `eval "$(starship init zsh)"`)
+	content, err = upsertManagedBlock(content, "options", "id-starship", `eval "$(starship init zsh)"`)
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
@@ -309,20 +331,20 @@ func TestCleanHostFileBlocksRenderWithoutMarkers(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".zshrc")
 	options := "setopt share_history\n"
 	specs := []hostFileBlockSpec{
-		{Name: "init", Priority: 30},
-		{Name: "options", Priority: 10, Content: &options},
-		{Name: "alias", Priority: 20},
+		{Name: "options", Order: 0, Content: &options},
+		{Name: "alias", Order: 1},
+		{Name: "init", Order: 2},
 	}
 	if err := syncCleanHostFileBlocks(path, specs); err != nil {
 		t.Fatalf("sync clean blocks: %s", err)
 	}
-	if err := upsertCleanHostFileManagedBlock(path, "alias", "id-z", 0, "alias z=z"); err != nil {
+	if err := upsertCleanHostFileManagedBlock(path, "alias", "id-z", "alias z=z"); err != nil {
 		t.Fatalf("upsert alias z: %s", err)
 	}
-	if err := upsertCleanHostFileManagedBlock(path, "alias", "id-a", 0, "alias a=a"); err != nil {
+	if err := upsertCleanHostFileManagedBlock(path, "alias", "id-a", "alias a=a"); err != nil {
 		t.Fatalf("upsert alias a: %s", err)
 	}
-	if err := upsertCleanHostFileManagedBlock(path, "init", "id-starship", 0, `eval "$(starship init zsh)"`); err != nil {
+	if err := upsertCleanHostFileManagedBlock(path, "init", "id-starship", `eval "$(starship init zsh)"`); err != nil {
 		t.Fatalf("upsert init: %s", err)
 	}
 
@@ -344,6 +366,33 @@ func TestCleanHostFileBlocksRenderWithoutMarkers(t *testing.T) {
 	}
 }
 
+func TestCleanHostFileManagedBlocksRespectAfterReferences(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	path := filepath.Join(t.TempDir(), ".zshrc")
+	if err := syncCleanHostFileBlocks(path, testHostFileBlockSpecs("alias")); err != nil {
+		t.Fatalf("sync clean blocks: %s", err)
+	}
+	if err := upsertCleanHostFileManagedBlockWithOrder(path, "alias", "id-z", nil, nil, "alias z=z"); err != nil {
+		t.Fatalf("upsert alias z: %s", err)
+	}
+	if err := upsertCleanHostFileManagedBlockWithOrder(path, "alias", "id-a", nil, []string{"id-z"}, "alias a=a"); err != nil {
+		t.Fatalf("upsert alias a: %s", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read rendered file: %s", err)
+	}
+	got := string(data)
+	if got != "alias z=z\nalias a=a\n" {
+		t.Fatalf("got:\n%s", got)
+	}
+	if strings.Contains(got, "Terraform") {
+		t.Fatalf("expected no Terraform markers, got:\n%s", got)
+	}
+}
+
 func TestCleanHostFileManagedBlockUpdateAndDelete(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
@@ -351,28 +400,25 @@ func TestCleanHostFileManagedBlockUpdateAndDelete(t *testing.T) {
 	if err := syncCleanHostFileBlocks(path, testHostFileBlockSpecs("alias")); err != nil {
 		t.Fatalf("sync clean blocks: %s", err)
 	}
-	if err := upsertCleanHostFileManagedBlock(path, "alias", "id-foo", 0, "alias foo=foo"); err != nil {
+	if err := upsertCleanHostFileManagedBlock(path, "alias", "id-foo", "alias foo=foo"); err != nil {
 		t.Fatalf("upsert foo: %s", err)
 	}
-	if err := upsertCleanHostFileManagedBlock(path, "alias", "id-bar", 0, "alias bar=bar"); err != nil {
+	if err := upsertCleanHostFileManagedBlock(path, "alias", "id-bar", "alias bar=bar"); err != nil {
 		t.Fatalf("upsert bar: %s", err)
 	}
-	if err := upsertCleanHostFileManagedBlock(path, "alias", "id-foo", 0, "alias foo=foobar"); err != nil {
+	if err := upsertCleanHostFileManagedBlock(path, "alias", "id-foo", "alias foo=foobar"); err != nil {
 		t.Fatalf("update foo: %s", err)
 	}
 	if err := removeCleanHostFileManagedBlock(path, "alias", "id-bar"); err != nil {
 		t.Fatalf("remove bar: %s", err)
 	}
 
-	body, priority, ok, err := readCleanManagedBlockBody(path, "alias", "id-foo")
+	body, _, ok, err := readCleanManagedBlockBody(path, "alias", "id-foo")
 	if err != nil {
 		t.Fatalf("read foo: %s", err)
 	}
 	if !ok {
 		t.Fatal("expected foo to exist")
-	}
-	if priority != 0 {
-		t.Fatalf("expected priority 0, got %d", priority)
 	}
 	if body != "alias foo=foobar\n" {
 		t.Fatalf("got body %q", body)
@@ -388,6 +434,29 @@ func TestCleanHostFileManagedBlockUpdateAndDelete(t *testing.T) {
 	}
 	if strings.Contains(got, "alias bar=bar") {
 		t.Fatalf("expected bar to be removed:\n%s", got)
+	}
+}
+
+func TestPlannedCleanHostFileContentIgnoresRenderedFileDrift(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	path := filepath.Join(t.TempDir(), ".zshrc")
+	if err := syncCleanHostFileBlocks(path, testHostFileBlockSpecs("alias")); err != nil {
+		t.Fatalf("sync clean blocks: %s", err)
+	}
+	if err := upsertCleanHostFileManagedBlock(path, "alias", "id-foo", "alias foo=foo"); err != nil {
+		t.Fatalf("upsert foo: %s", err)
+	}
+	if err := os.WriteFile(path, []byte("alias drift=drift\n"), 0o644); err != nil {
+		t.Fatalf("write drift: %s", err)
+	}
+
+	got, err := plannedCleanHostFileContent(path, testHostFileBlockSpecs("alias"))
+	if err != nil {
+		t.Fatalf("planned content: %s", err)
+	}
+	if got != "alias foo=foo\n" {
+		t.Fatalf("got %q", got)
 	}
 }
 

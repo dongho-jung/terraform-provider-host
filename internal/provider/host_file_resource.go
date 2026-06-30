@@ -4,46 +4,70 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-const (
-	hostFileRenderMarkers = "markers"
-	hostFileRenderClean   = "clean"
-)
-
 var (
-	_ resource.Resource               = &HostFileResource{}
-	_ resource.ResourceWithModifyPlan = &HostFileResource{}
+	_ resource.Resource                 = &HostFileResource{}
+	_ resource.ResourceWithModifyPlan   = &HostFileResource{}
+	_ resource.ResourceWithUpgradeState = &HostFileResource{}
 )
 
 type HostFileResource struct {
 }
 
 type HostFileResourceModel struct {
-	ID      types.String `tfsdk:"id"`
-	Path    types.String `tfsdk:"path"`
-	Render  types.String `tfsdk:"render"`
-	Content types.String `tfsdk:"content"`
-	Block   types.Map    `tfsdk:"block"`
+	ID              types.String `tfsdk:"id"`
+	Path            types.String `tfsdk:"path"`
+	Content         types.String `tfsdk:"content"`
+	RenderedContent types.String `tfsdk:"rendered_content"`
+	Block           types.List   `tfsdk:"block"`
+	Blocks          types.Map    `tfsdk:"blocks"`
+}
+
+type hostFileResourceModelV2 struct {
+	ID              types.String `tfsdk:"id"`
+	Path            types.String `tfsdk:"path"`
+	Render          types.String `tfsdk:"render"`
+	Content         types.String `tfsdk:"content"`
+	RenderedContent types.String `tfsdk:"rendered_content"`
+	Block           types.List   `tfsdk:"block"`
+	Blocks          types.Map    `tfsdk:"blocks"`
+}
+
+type hostFileResourceModelV1 struct {
+	ID              types.String `tfsdk:"id"`
+	Path            types.String `tfsdk:"path"`
+	Render          types.String `tfsdk:"render"`
+	Content         types.String `tfsdk:"content"`
+	RenderedContent types.String `tfsdk:"rendered_content"`
+	Block           types.List   `tfsdk:"block"`
+}
+
+type hostFileResourceModelV0 struct {
+	ID              types.String `tfsdk:"id"`
+	Path            types.String `tfsdk:"path"`
+	Render          types.String `tfsdk:"render"`
+	Content         types.String `tfsdk:"content"`
+	RenderedContent types.String `tfsdk:"rendered_content"`
+	Block           types.Map    `tfsdk:"block"`
+	Section         types.List   `tfsdk:"section"`
 }
 
 type HostFileBlockReferenceModel struct {
-	Name   types.String `tfsdk:"name"`
-	Path   types.String `tfsdk:"path"`
-	Render types.String `tfsdk:"render"`
+	Name types.String `tfsdk:"name"`
+	Path types.String `tfsdk:"path"`
 }
 
-type HostFileBlockSectionModel struct {
+type hostFileBlockSectionModelV0 struct {
 	Name     types.String `tfsdk:"name"`
 	Path     types.String `tfsdk:"path"`
 	Render   types.String `tfsdk:"render"`
@@ -51,10 +75,33 @@ type HostFileBlockSectionModel struct {
 	Content  types.String `tfsdk:"content"`
 }
 
+type hostFileSectionModelV0 struct {
+	Name     types.String `tfsdk:"name"`
+	Priority types.Int64  `tfsdk:"priority"`
+	Content  types.String `tfsdk:"content"`
+}
+
+type hostFileBlockModelV1 struct {
+	Name     types.String `tfsdk:"name"`
+	Before   types.List   `tfsdk:"before"`
+	After    types.List   `tfsdk:"after"`
+	Priority types.Int64  `tfsdk:"priority"`
+	Content  types.String `tfsdk:"content"`
+}
+
+type HostFileBlockModel struct {
+	Name    types.String `tfsdk:"name"`
+	Before  types.List   `tfsdk:"before"`
+	After   types.List   `tfsdk:"after"`
+	Content types.String `tfsdk:"content"`
+}
+
 type hostFileBlockSpec struct {
-	Name     string
-	Priority int64
-	Content  *string
+	Name    string
+	Order   int
+	Before  []string
+	After   []string
+	Content *string
 }
 
 func NewHostFileResource() resource.Resource {
@@ -67,7 +114,8 @@ func (r *HostFileResource) Metadata(ctx context.Context, req resource.MetadataRe
 
 func (r *HostFileResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manages whole host files or named Terraform-owned sections inside host files.",
+		Version:             3,
+		MarkdownDescription: "Manages whole host files or named Terraform-owned blocks inside host files.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,
@@ -83,49 +131,359 @@ func (r *HostFileResource) Schema(ctx context.Context, req resource.SchemaReques
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
-			"render": schema.StringAttribute{
-				Optional:            true,
-				Computed:            true,
-				Default:             stringdefault.StaticString(hostFileRenderMarkers),
-				MarkdownDescription: "How block mode is rendered. `markers` writes Terraform marker comments into the file. `clean` renders a marker-free file and stores block tracking metadata under `~/.terraform-provider-host`.",
-			},
 			"content": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "Full file content to manage without Terraform section markers. Mutually exclusive with `block`.",
+				MarkdownDescription: "Full file content to manage without Terraform block markers. Mutually exclusive with `block`.",
 			},
-			"block": schema.MapNestedAttribute{
-				Optional:            true,
+			"rendered_content": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "Named file sections. Use map keys as section names so they can be referenced with `block[\"name\"]`.",
+				MarkdownDescription: "Last content observed in the host file. Used to detect drift.",
+			},
+			"blocks": schema.MapNestedAttribute{
+				Computed:            true,
+				MarkdownDescription: "Computed file block references for `host_file_block` resources.",
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
 							Computed:            true,
-							MarkdownDescription: "File section name.",
+							MarkdownDescription: "File block name.",
 						},
 						"path": schema.StringAttribute{
 							Computed:            true,
-							MarkdownDescription: "Path to the host file that contains this section.",
+							MarkdownDescription: "Path to the host file that contains this block.",
 						},
-						"render": schema.StringAttribute{
-							Computed:            true,
-							MarkdownDescription: "Render mode inherited from the containing host file.",
+					},
+				},
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"block": schema.ListNestedBlock{
+				MarkdownDescription: "Named file block. Declaration order controls render order unless `before` or `after` is set.",
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"name": schema.StringAttribute{
+							Required:            true,
+							MarkdownDescription: "File block name.",
 						},
-						"priority": schema.Int64Attribute{
+						"before": schema.ListAttribute{
+							ElementType:         types.StringType,
 							Optional:            true,
-							Computed:            true,
-							Default:             int64default.StaticInt64(0),
-							MarkdownDescription: "Sort priority for this section. Sections are ordered by `priority`, then section name.",
+							MarkdownDescription: "Names of sibling file blocks that this block must be rendered before.",
+						},
+						"after": schema.ListAttribute{
+							ElementType:         types.StringType,
+							Optional:            true,
+							MarkdownDescription: "Names of sibling file blocks that this block must be rendered after.",
 						},
 						"content": schema.StringAttribute{
 							Optional:            true,
-							MarkdownDescription: "Content managed directly by the host file section. `host_file_block` resources targeting this section are rendered after this content.",
+							MarkdownDescription: "Content managed directly by the host file block. `host_file_block` resources targeting the same block are rendered after this content.",
 						},
 					},
 				},
 			},
 		},
 	}
+}
+
+func (r *HostFileResource) UpgradeState(ctx context.Context) map[int64]resource.StateUpgrader {
+	return map[int64]resource.StateUpgrader{
+		0: {
+			PriorSchema: hostFileResourceV0Schema(),
+			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+				var prior hostFileResourceModelV0
+				resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+
+				block, diags := upgradeHostFileBlockList(ctx, prior)
+				resp.Diagnostics.Append(diags...)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+
+				upgraded := HostFileResourceModel{
+					ID:              prior.ID,
+					Path:            prior.Path,
+					Content:         prior.Content,
+					RenderedContent: prior.RenderedContent,
+					Block:           block,
+				}
+				if !prior.Path.IsNull() && !prior.Path.IsUnknown() {
+					specs, specDiags := hostFileBlockSpecs(ctx, block)
+					resp.Diagnostics.Append(specDiags...)
+					upgraded.Blocks = hostFileBlockReferenceMapValue(prior.Path.ValueString(), specs, &resp.Diagnostics)
+				}
+				if resp.Diagnostics.HasError() {
+					return
+				}
+
+				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
+			},
+		},
+		1: {
+			PriorSchema: hostFileResourceV1Schema(),
+			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+				var prior hostFileResourceModelV1
+				resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+
+				specs, specDiags := hostFileBlockSpecsV1(ctx, prior.Block)
+				resp.Diagnostics.Append(specDiags...)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+
+				block := hostFileBlockListValue(ctx, specs, &resp.Diagnostics)
+				upgraded := HostFileResourceModel{
+					ID:              prior.ID,
+					Path:            prior.Path,
+					Content:         prior.Content,
+					RenderedContent: prior.RenderedContent,
+					Block:           block,
+				}
+				if !prior.Path.IsNull() && !prior.Path.IsUnknown() {
+					upgraded.Blocks = hostFileBlockReferenceMapValue(prior.Path.ValueString(), specs, &resp.Diagnostics)
+				}
+				if resp.Diagnostics.HasError() {
+					return
+				}
+
+				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
+			},
+		},
+		2: {
+			PriorSchema: hostFileResourceV2Schema(),
+			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+				var prior hostFileResourceModelV2
+				resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+
+				specs, specDiags := hostFileBlockSpecs(ctx, prior.Block)
+				resp.Diagnostics.Append(specDiags...)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+
+				upgraded := HostFileResourceModel{
+					ID:              prior.ID,
+					Path:            prior.Path,
+					Content:         prior.Content,
+					RenderedContent: prior.RenderedContent,
+					Block:           prior.Block,
+				}
+				if !prior.Path.IsNull() && !prior.Path.IsUnknown() {
+					upgraded.Blocks = hostFileBlockReferenceMapValue(prior.Path.ValueString(), specs, &resp.Diagnostics)
+				}
+				if resp.Diagnostics.HasError() {
+					return
+				}
+
+				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
+			},
+		},
+	}
+}
+
+func hostFileResourceV0Schema() *schema.Schema {
+	return &schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			"id": schema.StringAttribute{
+				Computed: true,
+			},
+			"path": schema.StringAttribute{
+				Required: true,
+			},
+			"render": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+			},
+			"content": schema.StringAttribute{
+				Optional: true,
+			},
+			"rendered_content": schema.StringAttribute{
+				Computed: true,
+			},
+			"block": schema.MapNestedAttribute{
+				Optional: true,
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"name": schema.StringAttribute{
+							Computed: true,
+						},
+						"path": schema.StringAttribute{
+							Computed: true,
+						},
+						"render": schema.StringAttribute{
+							Computed: true,
+						},
+						"priority": schema.Int64Attribute{
+							Optional: true,
+							Computed: true,
+						},
+						"content": schema.StringAttribute{
+							Optional: true,
+						},
+					},
+				},
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"section": schema.ListNestedBlock{
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"name": schema.StringAttribute{
+							Required: true,
+						},
+						"priority": schema.Int64Attribute{
+							Optional: true,
+						},
+						"content": schema.StringAttribute{
+							Optional: true,
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func hostFileResourceV1Schema() *schema.Schema {
+	return &schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			"id": schema.StringAttribute{
+				Computed: true,
+			},
+			"path": schema.StringAttribute{
+				Required: true,
+			},
+			"render": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+			},
+			"content": schema.StringAttribute{
+				Optional: true,
+			},
+			"rendered_content": schema.StringAttribute{
+				Computed: true,
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"block": schema.ListNestedBlock{
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"name": schema.StringAttribute{
+							Required: true,
+						},
+						"before": schema.ListAttribute{
+							ElementType: types.StringType,
+							Optional:    true,
+						},
+						"after": schema.ListAttribute{
+							ElementType: types.StringType,
+							Optional:    true,
+						},
+						"priority": schema.Int64Attribute{
+							Optional: true,
+						},
+						"content": schema.StringAttribute{
+							Optional: true,
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func hostFileResourceV2Schema() *schema.Schema {
+	return &schema.Schema{
+		Attributes: map[string]schema.Attribute{
+			"id": schema.StringAttribute{
+				Computed: true,
+			},
+			"path": schema.StringAttribute{
+				Required: true,
+			},
+			"render": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+			},
+			"content": schema.StringAttribute{
+				Optional: true,
+			},
+			"rendered_content": schema.StringAttribute{
+				Computed: true,
+			},
+			"blocks": schema.MapNestedAttribute{
+				Computed: true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"name": schema.StringAttribute{
+							Computed: true,
+						},
+						"path": schema.StringAttribute{
+							Computed: true,
+						},
+						"render": schema.StringAttribute{
+							Computed: true,
+						},
+					},
+				},
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"block": schema.ListNestedBlock{
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"name": schema.StringAttribute{
+							Required: true,
+						},
+						"before": schema.ListAttribute{
+							ElementType: types.StringType,
+							Optional:    true,
+						},
+						"after": schema.ListAttribute{
+							ElementType: types.StringType,
+							Optional:    true,
+						},
+						"content": schema.StringAttribute{
+							Optional: true,
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func upgradeHostFileBlockList(ctx context.Context, prior hostFileResourceModelV0) (types.List, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	var specs []hostFileBlockSpec
+
+	if hostFileHasConfiguredSectionsV0(prior.Section) {
+		var sectionDiags diag.Diagnostics
+		specs, sectionDiags = hostFileSectionSpecsV0(ctx, prior.Section)
+		diags.Append(sectionDiags...)
+	} else {
+		var blockDiags diag.Diagnostics
+		specs, blockDiags = hostFileBlockSpecsV0(ctx, prior.Block)
+		diags.Append(blockDiags...)
+	}
+	if diags.HasError() {
+		return types.ListUnknown(hostFileBlockObjectType()), diags
+	}
+	if len(specs) == 0 {
+		return types.ListNull(hostFileBlockObjectType()), diags
+	}
+
+	return hostFileBlockListValue(ctx, specs, &diags), diags
 }
 
 func (r *HostFileResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
@@ -148,19 +506,15 @@ func (r *HostFileResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 		resp.Diagnostics.AddError("Invalid host file path", err.Error())
 		return
 	}
-	if err := validateHostFileRender(hostFileRender(plan)); err != nil {
-		resp.Diagnostics.AddError("Invalid host file render mode", err.Error())
-		return
-	}
 	if hostFileUsesFullContent(config) {
 		if hostFileHasConfiguredBlocks(config.Block) {
-			resp.Diagnostics.AddError("Invalid host file configuration", "`content` and `block` are mutually exclusive.")
+			resp.Diagnostics.AddError("Invalid host file configuration", "`content` is mutually exclusive with `block`.")
 			return
 		}
 
 		plan.ID = types.StringValue(plan.Path.ValueString())
-		plan.Render = types.StringValue(hostFileRender(plan))
-		plan.Block = types.MapNull(hostFileBlockReferenceObjectType())
+		plan.Blocks = types.MapNull(hostFileBlockReferenceObjectType())
+		plan.RenderedContent = types.StringValue(canonicalHostFileContent(plan.Content.ValueString()))
 		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 		return
 	}
@@ -176,11 +530,16 @@ func (r *HostFileResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 	}
 
 	plan.ID = types.StringValue(plan.Path.ValueString())
-	plan.Render = types.StringValue(hostFileRender(plan))
-	plan.Block = hostFileBlockMapValue(plan.Path.ValueString(), hostFileRender(plan), blockSpecs, &resp.Diagnostics)
+	plan.Blocks = hostFileBlockReferenceMapValue(plan.Path.ValueString(), blockSpecs, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	rendered, err := plannedCleanHostFileContent(plan.Path.ValueString(), blockSpecs)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to render host file plan", err.Error())
+		return
+	}
+	plan.RenderedContent = types.StringValue(rendered)
 
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
@@ -201,6 +560,8 @@ func (r *HostFileResource) Create(ctx context.Context, req resource.CreateReques
 		}
 
 		plan.ID = types.StringValue(plan.Path.ValueString())
+		plan.Blocks = types.MapNull(hostFileBlockReferenceObjectType())
+		plan.RenderedContent = types.StringValue(canonicalHostFileContent(plan.Content.ValueString()))
 		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		return
 	}
@@ -211,17 +572,24 @@ func (r *HostFileResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	if err := syncHostFileByRender(ctx, plan.Path.ValueString(), hostFileRender(plan), blockSpecs); err != nil {
+	if err := withLockedHostFile(ctx, plan.Path.ValueString(), func(path string) error {
+		return syncCleanHostFileBlocks(path, blockSpecs)
+	}); err != nil {
 		resp.Diagnostics.AddError("Failed to sync host file", err.Error())
 		return
 	}
 
 	plan.ID = types.StringValue(plan.Path.ValueString())
-	plan.Render = types.StringValue(hostFileRender(plan))
-	plan.Block = hostFileBlockMapValue(plan.Path.ValueString(), hostFileRender(plan), blockSpecs, &resp.Diagnostics)
+	plan.Blocks = hostFileBlockReferenceMapValue(plan.Path.ValueString(), blockSpecs, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	rendered, err := readRenderedHostFileContent(plan.Path.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to read rendered host file", err.Error())
+		return
+	}
+	plan.RenderedContent = types.StringValue(rendered)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -252,6 +620,8 @@ func (r *HostFileResource) Read(ctx context.Context, req resource.ReadRequest, r
 			state.Content = types.StringValue(trimRenderedManagedBlockBody(content))
 		}
 		state.ID = types.StringValue(state.Path.ValueString())
+		state.Blocks = types.MapNull(hostFileBlockReferenceObjectType())
+		state.RenderedContent = types.StringValue(content)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 		return
 	}
@@ -265,11 +635,7 @@ func (r *HostFileResource) Read(ctx context.Context, req resource.ReadRequest, r
 	var exists bool
 	if err := withLockedHostFile(ctx, state.Path.ValueString(), func(path string) error {
 		var err error
-		if hostFileRender(state) == hostFileRenderClean {
-			blockSpecs, exists, err = readCleanHostFileBlockSpecs(path, blockSpecs)
-		} else {
-			blockSpecs, exists, err = readHostFileBlockSpecs(path, blockSpecs)
-		}
+		blockSpecs, exists, err = readCleanHostFileBlockSpecs(path, blockSpecs)
 		return err
 	}); err != nil {
 		resp.Diagnostics.AddError("Failed to read host file", err.Error())
@@ -281,11 +647,16 @@ func (r *HostFileResource) Read(ctx context.Context, req resource.ReadRequest, r
 	}
 
 	state.ID = types.StringValue(state.Path.ValueString())
-	state.Render = types.StringValue(hostFileRender(state))
-	state.Block = hostFileBlockMapValue(state.Path.ValueString(), hostFileRender(state), blockSpecs, &resp.Diagnostics)
+	state.Blocks = hostFileBlockReferenceMapValue(state.Path.ValueString(), blockSpecs, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	rendered, err := readRenderedHostFileContent(state.Path.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to read rendered host file", err.Error())
+		return
+	}
+	state.RenderedContent = types.StringValue(rendered)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -306,6 +677,8 @@ func (r *HostFileResource) Update(ctx context.Context, req resource.UpdateReques
 		}
 
 		plan.ID = types.StringValue(plan.Path.ValueString())
+		plan.Blocks = types.MapNull(hostFileBlockReferenceObjectType())
+		plan.RenderedContent = types.StringValue(canonicalHostFileContent(plan.Content.ValueString()))
 		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		return
 	}
@@ -316,17 +689,24 @@ func (r *HostFileResource) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
-	if err := syncHostFileByRender(ctx, plan.Path.ValueString(), hostFileRender(plan), blockSpecs); err != nil {
+	if err := withLockedHostFile(ctx, plan.Path.ValueString(), func(path string) error {
+		return syncCleanHostFileBlocks(path, blockSpecs)
+	}); err != nil {
 		resp.Diagnostics.AddError("Failed to sync host file", err.Error())
 		return
 	}
 
 	plan.ID = types.StringValue(plan.Path.ValueString())
-	plan.Render = types.StringValue(hostFileRender(plan))
-	plan.Block = hostFileBlockMapValue(plan.Path.ValueString(), hostFileRender(plan), blockSpecs, &resp.Diagnostics)
+	plan.Blocks = hostFileBlockReferenceMapValue(plan.Path.ValueString(), blockSpecs, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	rendered, err := readRenderedHostFileContent(plan.Path.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to read rendered host file", err.Error())
+		return
+	}
+	plan.RenderedContent = types.StringValue(rendered)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -347,18 +727,108 @@ func (r *HostFileResource) Delete(ctx context.Context, req resource.DeleteReques
 		return
 	}
 
-	blockSpecs, blockDiags := hostFileBlockSpecs(ctx, state.Block)
-	resp.Diagnostics.Append(blockDiags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	if err := deleteHostFileByRender(ctx, state.Path.ValueString(), hostFileRender(state), blockSpecs); err != nil {
+	if err := withLockedHostFile(ctx, state.Path.ValueString(), func(path string) error {
+		return deleteCleanHostFile(path)
+	}); err != nil {
 		resp.Diagnostics.AddError("Failed to delete host file blocks", err.Error())
 	}
 }
 
-func hostFileBlockSpecs(ctx context.Context, blocks types.Map) ([]hostFileBlockSpec, diag.Diagnostics) {
+func hostFileBlockSpecs(ctx context.Context, blocks types.List) ([]hostFileBlockSpec, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	if blocks.IsNull() {
+		return nil, diags
+	}
+	if blocks.IsUnknown() {
+		diags.AddError("Invalid host file block list", "block list is unknown")
+		return nil, diags
+	}
+
+	var elements []HostFileBlockModel
+	diags.Append(blocks.ElementsAs(ctx, &elements, false)...)
+	if diags.HasError() {
+		return nil, diags
+	}
+
+	specs := make([]hostFileBlockSpec, 0, len(elements))
+	for i, element := range elements {
+		if element.Name.IsNull() || element.Name.IsUnknown() {
+			diags.AddError("Invalid host file block", "block name must be known")
+			return nil, diags
+		}
+
+		before, beforeDiags := stringListValue(ctx, element.Before, "host file block before")
+		diags.Append(beforeDiags...)
+		after, afterDiags := stringListValue(ctx, element.After, "host file block after")
+		diags.Append(afterDiags...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		spec := hostFileBlockSpec{
+			Name:   element.Name.ValueString(),
+			Order:  i,
+			Before: before,
+			After:  after,
+		}
+		if !element.Content.IsNull() && !element.Content.IsUnknown() {
+			content := strings.TrimSpace(element.Content.ValueString())
+			spec.Content = &content
+		}
+		specs = append(specs, spec)
+	}
+
+	return specs, diags
+}
+
+func hostFileBlockSpecsV1(ctx context.Context, blocks types.List) ([]hostFileBlockSpec, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	if blocks.IsNull() {
+		return nil, diags
+	}
+	if blocks.IsUnknown() {
+		diags.AddError("Invalid host file block list", "block list is unknown")
+		return nil, diags
+	}
+
+	var elements []hostFileBlockModelV1
+	diags.Append(blocks.ElementsAs(ctx, &elements, false)...)
+	if diags.HasError() {
+		return nil, diags
+	}
+
+	specs := make([]hostFileBlockSpec, 0, len(elements))
+	for i, element := range elements {
+		if element.Name.IsNull() || element.Name.IsUnknown() {
+			diags.AddError("Invalid host file block", "block name must be known")
+			return nil, diags
+		}
+
+		before, beforeDiags := stringListValue(ctx, element.Before, "host file block before")
+		diags.Append(beforeDiags...)
+		after, afterDiags := stringListValue(ctx, element.After, "host file block after")
+		diags.Append(afterDiags...)
+		if diags.HasError() {
+			return nil, diags
+		}
+
+		spec := hostFileBlockSpec{
+			Name:   element.Name.ValueString(),
+			Order:  i,
+			Before: before,
+			After:  after,
+		}
+		if !element.Content.IsNull() && !element.Content.IsUnknown() {
+			content := strings.TrimSpace(element.Content.ValueString())
+			spec.Content = &content
+		}
+		specs = append(specs, spec)
+	}
+
+	return specs, diags
+}
+
+func hostFileBlockSpecsV0(ctx context.Context, blocks types.Map) ([]hostFileBlockSpec, diag.Diagnostics) {
 	var diags diag.Diagnostics
 	if blocks.IsNull() {
 		return nil, diags
@@ -368,7 +838,7 @@ func hostFileBlockSpecs(ctx context.Context, blocks types.Map) ([]hostFileBlockS
 		return nil, diags
 	}
 
-	var elements map[string]HostFileBlockSectionModel
+	var elements map[string]hostFileBlockSectionModelV0
 	diags.Append(blocks.ElementsAs(ctx, &elements, false)...)
 	if diags.HasError() {
 		return nil, diags
@@ -376,19 +846,52 @@ func hostFileBlockSpecs(ctx context.Context, blocks types.Map) ([]hostFileBlockS
 
 	specs := make([]hostFileBlockSpec, 0, len(elements))
 	for name, element := range elements {
-		spec := hostFileBlockSpec{Name: name}
-		if !element.Priority.IsNull() && !element.Priority.IsUnknown() {
-			spec.Priority = element.Priority.ValueInt64()
+		spec := hostFileBlockSpec{
+			Name: name,
 		}
 		if !element.Content.IsNull() && !element.Content.IsUnknown() {
-			content := element.Content.ValueString()
+			content := strings.TrimSpace(element.Content.ValueString())
 			spec.Content = &content
 		}
 		specs = append(specs, spec)
 	}
-	sort.Slice(specs, func(i, j int) bool {
-		return specs[i].Name < specs[j].Name
-	})
+
+	return specs, diags
+}
+
+func hostFileSectionSpecsV0(ctx context.Context, sections types.List) ([]hostFileBlockSpec, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	if sections.IsNull() {
+		return nil, diags
+	}
+	if sections.IsUnknown() {
+		diags.AddError("Invalid host file section list", "section list is unknown")
+		return nil, diags
+	}
+
+	var elements []hostFileSectionModelV0
+	diags.Append(sections.ElementsAs(ctx, &elements, false)...)
+	if diags.HasError() {
+		return nil, diags
+	}
+
+	specs := make([]hostFileBlockSpec, 0, len(elements))
+	for i, element := range elements {
+		if element.Name.IsNull() || element.Name.IsUnknown() {
+			diags.AddError("Invalid host file section", "section name must be known")
+			return nil, diags
+		}
+
+		spec := hostFileBlockSpec{
+			Name:  element.Name.ValueString(),
+			Order: i,
+		}
+		if !element.Content.IsNull() && !element.Content.IsUnknown() {
+			content := strings.TrimSpace(element.Content.ValueString())
+			spec.Content = &content
+		}
+		specs = append(specs, spec)
+	}
 
 	return specs, diags
 }
@@ -403,25 +906,159 @@ func hostFileBlockSpecNames(specs []hostFileBlockSpec) []string {
 }
 
 func validateHostFileBlockSpecs(specs []hostFileBlockSpec) error {
-	return validateHostFileBlockNames(hostFileBlockSpecNames(specs))
+	if err := validateHostFileBlockNames(hostFileBlockSpecNames(specs)); err != nil {
+		return err
+	}
+
+	_, err := sortHostFileBlockSpecs(specs)
+	return err
 }
 
-func hostFileBlockMapValue(path string, render string, specs []hostFileBlockSpec, diags *diag.Diagnostics) types.Map {
-	elements := make(map[string]attr.Value, len(specs))
-	for _, spec := range sortedHostFileBlockSpecs(specs) {
-		contentValue := types.StringNull()
-		if spec.Content != nil {
-			contentValue = types.StringValue(*spec.Content)
+func sortHostFileBlockSpecs(specs []hostFileBlockSpec) ([]hostFileBlockSpec, error) {
+	byName := make(map[string]hostFileBlockSpec, len(specs))
+	for _, spec := range specs {
+		byName[spec.Name] = spec
+	}
+
+	outgoing := make(map[string][]string, len(specs))
+	indegree := make(map[string]int, len(specs))
+	for _, spec := range specs {
+		indegree[spec.Name] = 0
+	}
+
+	addEdge := func(from string, to string) error {
+		if from == to {
+			return fmt.Errorf("host file block %q cannot order itself", from)
+		}
+		if _, ok := byName[from]; !ok {
+			return fmt.Errorf("host file block %q references unknown block %q", to, from)
+		}
+		if _, ok := byName[to]; !ok {
+			return fmt.Errorf("host file block %q references unknown block %q", from, to)
+		}
+		for _, existing := range outgoing[from] {
+			if existing == to {
+				return nil
+			}
+		}
+		outgoing[from] = append(outgoing[from], to)
+		indegree[to]++
+
+		return nil
+	}
+
+	for _, spec := range specs {
+		for _, after := range spec.After {
+			if err := addEdge(after, spec.Name); err != nil {
+				return nil, err
+			}
+		}
+		for _, before := range spec.Before {
+			if err := addEdge(spec.Name, before); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	remaining := make(map[string]struct{}, len(specs))
+	for _, spec := range specs {
+		remaining[spec.Name] = struct{}{}
+	}
+
+	sortedSpecs := make([]hostFileBlockSpec, 0, len(specs))
+	for len(remaining) > 0 {
+		candidates := make([]hostFileBlockSpec, 0, len(remaining))
+		for name := range remaining {
+			if indegree[name] == 0 {
+				candidates = append(candidates, byName[name])
+			}
+		}
+		if len(candidates) == 0 {
+			return nil, fmt.Errorf("host file block ordering contains a cycle")
+		}
+		sort.Slice(candidates, func(i int, j int) bool {
+			return hostFileBlockSpecLess(candidates[i], candidates[j])
+		})
+
+		next := candidates[0]
+		sortedSpecs = append(sortedSpecs, next)
+		delete(remaining, next.Name)
+		for _, to := range outgoing[next.Name] {
+			indegree[to]--
+		}
+	}
+
+	return sortedSpecs, nil
+}
+
+func hostFileBlockSpecLess(a hostFileBlockSpec, b hostFileBlockSpec) bool {
+	if a.Order != b.Order {
+		return a.Order < b.Order
+	}
+
+	return a.Name < b.Name
+}
+
+func hostFileBlockListValue(ctx context.Context, specs []hostFileBlockSpec, diags *diag.Diagnostics) types.List {
+	elements := make([]HostFileBlockModel, 0, len(specs))
+	for _, spec := range specs {
+		before := types.ListNull(types.StringType)
+		if len(spec.Before) > 0 {
+			beforeValue, beforeDiags := types.ListValueFrom(ctx, types.StringType, spec.Before)
+			diags.Append(beforeDiags...)
+			before = beforeValue
+		}
+		after := types.ListNull(types.StringType)
+		if len(spec.After) > 0 {
+			afterValue, afterDiags := types.ListValueFrom(ctx, types.StringType, spec.After)
+			diags.Append(afterDiags...)
+			after = afterValue
+		}
+		if diags.HasError() {
+			return types.ListUnknown(hostFileBlockObjectType())
 		}
 
+		content := types.StringNull()
+		if spec.Content != nil {
+			content = types.StringValue(*spec.Content)
+		}
+
+		elements = append(elements, HostFileBlockModel{
+			Name:    types.StringValue(spec.Name),
+			Before:  before,
+			After:   after,
+			Content: content,
+		})
+	}
+
+	block, blockDiags := types.ListValueFrom(ctx, hostFileBlockObjectType(), elements)
+	diags.Append(blockDiags...)
+	if diags.HasError() {
+		return types.ListUnknown(hostFileBlockObjectType())
+	}
+
+	return block
+}
+
+func hostFileBlockObjectType() types.ObjectType {
+	return types.ObjectType{
+		AttrTypes: map[string]attr.Type{
+			"name":    types.StringType,
+			"before":  types.ListType{ElemType: types.StringType},
+			"after":   types.ListType{ElemType: types.StringType},
+			"content": types.StringType,
+		},
+	}
+}
+
+func hostFileBlockReferenceMapValue(path string, specs []hostFileBlockSpec, diags *diag.Diagnostics) types.Map {
+	elements := make(map[string]attr.Value, len(specs))
+	for _, spec := range sortedHostFileBlockSpecs(specs) {
 		objectValue, objectDiags := types.ObjectValue(
 			hostFileBlockReferenceAttributeTypes(),
 			map[string]attr.Value{
-				"name":     types.StringValue(spec.Name),
-				"path":     types.StringValue(path),
-				"render":   types.StringValue(render),
-				"priority": types.Int64Value(spec.Priority),
-				"content":  contentValue,
+				"name": types.StringValue(spec.Name),
+				"path": types.StringValue(path),
 			},
 		)
 		diags.Append(objectDiags...)
@@ -443,11 +1080,8 @@ func hostFileBlockMapValue(path string, render string, specs []hostFileBlockSpec
 
 func hostFileBlockReferenceAttributeTypes() map[string]attr.Type {
 	return map[string]attr.Type{
-		"name":     types.StringType,
-		"path":     types.StringType,
-		"render":   types.StringType,
-		"priority": types.Int64Type,
-		"content":  types.StringType,
+		"name": types.StringType,
+		"path": types.StringType,
 	}
 }
 
@@ -458,14 +1092,10 @@ func hostFileBlockReferenceObjectType() types.ObjectType {
 }
 
 func sortedHostFileBlockSpecs(specs []hostFileBlockSpec) []hostFileBlockSpec {
-	sortedSpecs := append([]hostFileBlockSpec(nil), specs...)
-	sort.Slice(sortedSpecs, func(i, j int) bool {
-		if sortedSpecs[i].Priority != sortedSpecs[j].Priority {
-			return sortedSpecs[i].Priority < sortedSpecs[j].Priority
-		}
-
-		return sortedSpecs[i].Name < sortedSpecs[j].Name
-	})
+	sortedSpecs, err := sortHostFileBlockSpecs(specs)
+	if err != nil {
+		return append([]hostFileBlockSpec(nil), specs...)
+	}
 
 	return sortedSpecs
 }
@@ -474,43 +1104,29 @@ func hostFileUsesFullContent(model HostFileResourceModel) bool {
 	return !model.Content.IsNull() && !model.Content.IsUnknown()
 }
 
-func hostFileHasConfiguredBlocks(blocks types.Map) bool {
+func hostFileHasConfiguredBlocks(blocks types.List) bool {
 	return !blocks.IsNull() && !blocks.IsUnknown() && len(blocks.Elements()) > 0
 }
 
-func hostFileRender(model HostFileResourceModel) string {
-	if model.Render.IsNull() || model.Render.IsUnknown() || model.Render.ValueString() == "" {
-		return hostFileRenderMarkers
+func hostFileHasConfiguredSectionsV0(sections types.List) bool {
+	return !sections.IsNull() && !sections.IsUnknown() && len(sections.Elements()) > 0
+}
+
+func stringListValue(ctx context.Context, value types.List, label string) ([]string, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	if value.IsNull() {
+		return nil, diags
+	}
+	if value.IsUnknown() {
+		diags.AddError("Invalid "+label, label+" list is unknown")
+		return nil, diags
 	}
 
-	return model.Render.ValueString()
-}
-
-func validateHostFileRender(render string) error {
-	switch render {
-	case hostFileRenderMarkers, hostFileRenderClean:
-		return nil
-	default:
-		return fmt.Errorf("render must be %q or %q", hostFileRenderMarkers, hostFileRenderClean)
+	var elements []string
+	diags.Append(value.ElementsAs(ctx, &elements, false)...)
+	if diags.HasError() {
+		return nil, diags
 	}
-}
 
-func syncHostFileByRender(ctx context.Context, path string, render string, blockSpecs []hostFileBlockSpec) error {
-	return withLockedHostFile(ctx, path, func(resolvedPath string) error {
-		if render == hostFileRenderClean {
-			return syncCleanHostFileBlocks(resolvedPath, blockSpecs)
-		}
-
-		return syncHostFileBlocks(resolvedPath, blockSpecs)
-	})
-}
-
-func deleteHostFileByRender(ctx context.Context, path string, render string, blockSpecs []hostFileBlockSpec) error {
-	return withLockedHostFile(ctx, path, func(resolvedPath string) error {
-		if render == hostFileRenderClean {
-			return deleteCleanHostFile(resolvedPath)
-		}
-
-		return deleteHostFileBlocks(resolvedPath, hostFileBlockSpecNames(blockSpecs))
-	})
+	return elements, diags
 }

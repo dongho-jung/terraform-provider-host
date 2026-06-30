@@ -1,51 +1,52 @@
 resource "host_file" "zshrc" {
   path = "~/.zshrc"
 
-  content = trimspace(<<-EOT
+  content = <<-EOT
     export EDITOR=nvim
     eval "$(starship init zsh)"
   EOT
-  )
 }
 
-resource "host_file" "zshrc_sections" {
-  path   = "~/.zshrc"
-  render = "clean"
+resource "host_file" "zshrc_blocks" {
+  path = "~/.zshrc"
 
-  block = {
-    options = {
-      priority = 10
-      content = trimspace(<<-EOT
-        setopt autocd
-        bindkey -v
-      EOT
-      )
-    }
-    alias = {
-      priority = 20
-    }
-    functions = {
-      priority = 30
-    }
+  block {
+    name    = "options"
+    content = <<-EOT
+      setopt autocd
+      bindkey -v
+    EOT
+  }
+
+  block {
+    name = "alias"
+  }
+
+  block {
+    name = "functions"
   }
 }
 
 resource "host_file_block" "foo_alias" {
-  file_block = host_file.zshrc_sections.block["alias"]
-  content    = "alias foo=foobar"
+  block   = host_file.zshrc_blocks.blocks.alias
+  content = "alias foo=foobar"
 }
 
 resource "host_file_block" "bar_alias" {
-  file_block = host_file.zshrc_sections.block["alias"]
-  content    = "alias bar=barbaz"
+  block   = host_file.zshrc_blocks.blocks.alias
+  content = "alias bar=barbaz"
 }
 
 resource "host_file_block" "foo_function" {
-  file_block = host_file.zshrc_sections.block["functions"]
-  content    = "foo() { echo foo }"
+  block   = host_file.zshrc_blocks.blocks.functions
+  content = <<-EOT
+    foo() { echo foo }
+  EOT
 }
 
 resource "host_file_block" "bar_function" {
-  file_block = host_file.zshrc_sections.block["functions"]
-  content    = "bar() { echo bar }"
+  block   = host_file.zshrc_blocks.blocks.functions
+  content = <<-EOT
+    bar() { echo bar }
+  EOT
 }
