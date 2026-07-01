@@ -788,14 +788,14 @@ func sortCleanHostFileBlockStateItems(blocks []struct {
 }
 
 func cleanHostFileStatePath(path string) (string, error) {
-	home, err := os.UserHomeDir()
+	stateDir, err := providerRuntimeSubdir("host_files")
 	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
+		return "", err
 	}
 
 	sum := sha256.Sum256([]byte(path))
 
-	return filepath.Join(home, ".terraform-provider-host", "host_files", hex.EncodeToString(sum[:])+".json"), nil
+	return filepath.Join(stateDir, hex.EncodeToString(sum[:])+".json"), nil
 }
 
 func reconcileHostFileBlocks(content string, specs []hostFileBlockSpec) (string, error) {

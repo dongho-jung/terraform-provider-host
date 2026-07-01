@@ -98,7 +98,7 @@ resource "host_file" "zshrc" {
 }
 ```
 
-Block mode renders a marker-free file while still letting separate resources contribute content. The provider stores block tracking metadata under `~/.terraform-provider-host/host_files`, so the rendered host file stays readable and Terraform can still reconcile component-owned snippets.
+Block mode renders a marker-free file while still letting separate resources contribute content. The provider stores block tracking metadata under `./.terraform-provider-host/host_files` relative to the Terraform working directory, so the rendered host file stays readable and Terraform can still reconcile component-owned snippets.
 
 Declare file blocks with nested `block` blocks. Separate `host_file_block` resources target them through the computed `blocks` references:
 
@@ -155,6 +155,29 @@ Multiple `host_file_block` resources in the same file block are ordered by `afte
 File blocks are ordered by declaration order. Use `block.after` or `block.before` when one declared block must move relative to another.
 
 Terraform does not support single-quoted strings. Use heredocs when shell content contains quotes, command substitutions, or functions; the provider trims surrounding whitespace before rendering.
+
+## Schedules
+
+Use `host_schedule` to manage a user schedule without configuring a separate schedule name. The provider generates an internal ID, writes runtime files under `./.terraform-provider-host/schedules/<id>`, and installs a managed entry in the current user's crontab.
+
+Set either `every` for interval schedules or `schedule` for five-field cron-style calendar schedules:
+
+```hcl
+resource "host_schedule" "hourly_example" {
+  every   = "1h"
+  command = "date >> ~/tmp/host-schedule-example.log"
+}
+
+resource "host_schedule" "daily_example" {
+  schedule = "0 3 * * *"
+  command  = "echo daily >> ~/tmp/host-schedule-example.log"
+
+  stdout_path = "~/tmp/host-schedule-example.out.log"
+  stderr_path = "~/tmp/host-schedule-example.err.log"
+}
+```
+
+The `schedule` attribute supports numeric cron fields, lists, ranges, steps, and `@hourly`, `@daily`, `@weekly`, `@monthly`, and `@yearly`. The rendered crontab entry points at the generated `run.sh`, so `crontab -l` shows the active schedules directly. On Fedora-like systems where `crontab` is missing, the provider tries to install `cronie` through DNF before writing the schedule.
 
 ## Local Development
 

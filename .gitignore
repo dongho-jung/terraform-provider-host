@@ -12,6 +12,7 @@
 .DS_Store
 .idea/
 .terraform/
+.terraform-provider-host/
 .terraform.lock.hcl
 bin/
 dist/

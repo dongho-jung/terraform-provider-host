@@ -1,0 +1,877 @@
+package provider
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const (
+	hostScheduleRuntimeDirName     = "schedules"
+	hostScheduleCronMarkerPrefix   = "# terraform-provider-host schedule "
+	hostScheduleLegacyLabelPrefix  = "com.dongho-jung.host.schedule."
+	hostSchedulePackageFedoraCron  = "cronie"
+	hostScheduleCrondSystemdUnit   = "crond.service"
+	hostScheduleCronNoCrontabToken = "no crontab"
+)
+
+var hostScheduleIDPattern = regexp.MustCompile(`^[a-f0-9]{16}$`)
+
+type ScheduleManager interface {
+	UpsertSchedule(ctx context.Context, spec HostScheduleSpec) (HostScheduleStatus, error)
+	ReadSchedule(ctx context.Context, spec HostScheduleSpec) (HostScheduleStatus, bool, error)
+	DeleteSchedule(ctx context.Context, id string) error
+}
+
+type HostScheduleSpec struct {
+	ID               string            `json:"id"`
+	Command          string            `json:"command"`
+	Schedule         string            `json:"schedule,omitempty"`
+	Every            string            `json:"every,omitempty"`
+	Shell            string            `json:"shell"`
+	Enabled          bool              `json:"enabled"`
+	RunAtLoad        bool              `json:"run_at_load"`
+	WorkingDirectory string            `json:"working_directory,omitempty"`
+	Environment      map[string]string `json:"environment,omitempty"`
+	StdoutPath       string            `json:"stdout_path,omitempty"`
+	StderrPath       string            `json:"stderr_path,omitempty"`
+}
+
+type HostScheduleStatus struct {
+	ID         string
+	Backend    string
+	ScriptPath string
+}
+
+type CLICronScheduleManager struct {
+	crontabPath    string
+	launchctlPath  string
+	packageManager PackageManager
+}
+
+type hostScheduleMetadata struct {
+	Spec       HostScheduleSpec `json:"spec"`
+	Backend    string           `json:"backend"`
+	ScriptPath string           `json:"script_path"`
+}
+
+func NewCLICronScheduleManager(crontabPath string, launchctlPath string, packageManager PackageManager) *CLICronScheduleManager {
+	return &CLICronScheduleManager{
+		crontabPath:    crontabPath,
+		launchctlPath:  launchctlPath,
+		packageManager: packageManager,
+	}
+}
+
+func newHostScheduleID() (string, error) {
+	var bytes [8]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		return "", fmt.Errorf("generate schedule ID: %w", err)
+	}
+
+	return hex.EncodeToString(bytes[:]), nil
+}
+
+func validateHostScheduleID(id string) error {
+	if !hostScheduleIDPattern.MatchString(id) {
+		return fmt.Errorf("schedule ID must be 16 lowercase hexadecimal characters")
+	}
+
+	return nil
+}
+
+func hostScheduleLegacyLabel(id string) string {
+	return hostScheduleLegacyLabelPrefix + id
+}
+
+func hostScheduleRuntimeDir(id string) (string, error) {
+	if err := validateHostScheduleID(id); err != nil {
+		return "", err
+	}
+
+	scheduleDir, err := providerRuntimeSubdir(hostScheduleRuntimeDirName)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(scheduleDir, id), nil
+}
+
+func hostScheduleScriptPath(id string) (string, error) {
+	runtimeDir, err := hostScheduleRuntimeDir(id)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(runtimeDir, "run.sh"), nil
+}
+
+func hostScheduleMetadataPath(id string) (string, error) {
+	runtimeDir, err := hostScheduleRuntimeDir(id)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(runtimeDir, "metadata.json"), nil
+}
+
+func hostScheduleRuntimePlistPath(id string) (string, error) {
+	runtimeDir, err := hostScheduleRuntimeDir(id)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(runtimeDir, "launchd.plist"), nil
+}
+
+func hostScheduleLegacyLaunchAgentPlistPath(id string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+
+	return filepath.Join(home, "Library", "LaunchAgents", hostScheduleLegacyLabel(id)+".plist"), nil
+}
+
+func (m *CLICronScheduleManager) UpsertSchedule(ctx context.Context, spec HostScheduleSpec) (HostScheduleStatus, error) {
+	if err := validateHostScheduleSpec(spec); err != nil {
+		return HostScheduleStatus{}, err
+	}
+
+	status, err := hostScheduleStatus(spec.ID)
+	if err != nil {
+		return HostScheduleStatus{}, err
+	}
+
+	if err := writeHostScheduleRuntimeFiles(spec, status); err != nil {
+		return HostScheduleStatus{}, err
+	}
+
+	if err := m.syncCronEntry(ctx, spec, status); err != nil {
+		return HostScheduleStatus{}, err
+	}
+	if err := m.removeLegacyLaunchdSchedule(ctx, spec.ID); err != nil {
+		return HostScheduleStatus{}, err
+	}
+
+	return status, nil
+}
+
+func (m *CLICronScheduleManager) ReadSchedule(ctx context.Context, spec HostScheduleSpec) (HostScheduleStatus, bool, error) {
+	if err := validateHostScheduleID(spec.ID); err != nil {
+		return HostScheduleStatus{}, false, err
+	}
+
+	status, err := hostScheduleStatus(spec.ID)
+	if err != nil {
+		return HostScheduleStatus{}, false, err
+	}
+
+	cronInstalled := false
+	if m.resolveCrontabPath() {
+		lines, _, err := m.readCrontab(ctx)
+		if err != nil {
+			return HostScheduleStatus{}, false, err
+		}
+		cronInstalled = hostScheduleCronEntryExists(lines, spec.ID, status.ScriptPath)
+	}
+	if cronInstalled {
+		status.Backend = "cron"
+		return status, true, nil
+	}
+
+	legacyExists, err := legacyLaunchdScheduleExists(spec.ID)
+	if err != nil {
+		return HostScheduleStatus{}, false, err
+	}
+	if legacyExists {
+		status.Backend = "launchd"
+		return status, true, nil
+	}
+
+	metadataExists, err := hostScheduleMetadataExists(spec.ID)
+	if err != nil {
+		return HostScheduleStatus{}, false, err
+	}
+	if metadataExists && !spec.Enabled {
+		return status, true, nil
+	}
+
+	return status, false, nil
+}
+
+func (m *CLICronScheduleManager) DeleteSchedule(ctx context.Context, id string) error {
+	if err := validateHostScheduleID(id); err != nil {
+		return err
+	}
+
+	status, err := hostScheduleStatus(id)
+	if err != nil {
+		return err
+	}
+
+	if err := m.removeCronEntry(ctx, id, status.ScriptPath); err != nil {
+		return err
+	}
+	if err := m.removeLegacyLaunchdSchedule(ctx, id); err != nil {
+		return err
+	}
+
+	runtimeDir, err := hostScheduleRuntimeDir(id)
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(runtimeDir); err != nil {
+		return fmt.Errorf("remove schedule runtime directory %q: %w", runtimeDir, err)
+	}
+
+	return nil
+}
+
+func hostScheduleStatus(id string) (HostScheduleStatus, error) {
+	if err := validateHostScheduleID(id); err != nil {
+		return HostScheduleStatus{}, err
+	}
+
+	scriptPath, err := hostScheduleScriptPath(id)
+	if err != nil {
+		return HostScheduleStatus{}, err
+	}
+
+	return HostScheduleStatus{
+		ID:         id,
+		Backend:    "cron",
+		ScriptPath: scriptPath,
+	}, nil
+}
+
+func writeHostScheduleRuntimeFiles(spec HostScheduleSpec, status HostScheduleStatus) error {
+	runtimeDir, err := hostScheduleRuntimeDir(spec.ID)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+		return fmt.Errorf("create schedule runtime directory %q: %w", runtimeDir, err)
+	}
+
+	script, err := renderHostScheduleScript(spec)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(status.ScriptPath, []byte(script), 0o700); err != nil {
+		return fmt.Errorf("write schedule script %q: %w", status.ScriptPath, err)
+	}
+	if err := os.Chmod(status.ScriptPath, 0o700); err != nil {
+		return fmt.Errorf("chmod schedule script %q: %w", status.ScriptPath, err)
+	}
+
+	metadata := hostScheduleMetadata{
+		Spec:       spec,
+		Backend:    "cron",
+		ScriptPath: status.ScriptPath,
+	}
+	metadataBytes, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode schedule metadata: %w", err)
+	}
+	metadataPath, err := hostScheduleMetadataPath(spec.ID)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(metadataPath, append(metadataBytes, '\n'), 0o600); err != nil {
+		return fmt.Errorf("write schedule metadata %q: %w", metadataPath, err)
+	}
+
+	return nil
+}
+
+func (m *CLICronScheduleManager) syncCronEntry(ctx context.Context, spec HostScheduleSpec, status HostScheduleStatus) error {
+	if err := m.ensureCrontab(ctx); err != nil {
+		return err
+	}
+
+	lines, _, err := m.readCrontab(ctx)
+	if err != nil {
+		return err
+	}
+
+	next := filterHostScheduleCronEntry(lines, spec.ID, status.ScriptPath)
+	if spec.Enabled {
+		entry, err := renderHostScheduleCronEntry(spec, status)
+		if err != nil {
+			return err
+		}
+		next = append(next, entry...)
+	}
+
+	if stringSlicesEqual(lines, next) {
+		return nil
+	}
+
+	return m.writeCrontab(ctx, next)
+}
+
+func (m *CLICronScheduleManager) removeCronEntry(ctx context.Context, id string, scriptPath string) error {
+	if !m.resolveCrontabPath() {
+		return nil
+	}
+
+	lines, _, err := m.readCrontab(ctx)
+	if err != nil {
+		return err
+	}
+
+	next := filterHostScheduleCronEntry(lines, id, scriptPath)
+	if stringSlicesEqual(lines, next) {
+		return nil
+	}
+
+	return m.writeCrontab(ctx, next)
+}
+
+func (m *CLICronScheduleManager) ensureCrontab(ctx context.Context) error {
+	if m.resolveCrontabPath() {
+		return nil
+	}
+
+	if runtime.GOOS == "linux" && m.packageManager != nil {
+		if err := m.packageManager.InstallPackages(ctx, []string{hostSchedulePackageFedoraCron}); err != nil {
+			return fmt.Errorf("install cron dependency %q: %w", hostSchedulePackageFedoraCron, err)
+		}
+		if m.resolveCrontabPath() {
+			_ = startCrondService(ctx)
+			return nil
+		}
+	}
+
+	return fmt.Errorf("crontab executable not found in PATH")
+}
+
+func (m *CLICronScheduleManager) resolveCrontabPath() bool {
+	if m.crontabPath != "" {
+		return true
+	}
+
+	crontabPath, err := exec.LookPath("crontab")
+	if err != nil {
+		return false
+	}
+	m.crontabPath = crontabPath
+
+	return true
+}
+
+func startCrondService(ctx context.Context) error {
+	systemctlPath, err := exec.LookPath("systemctl")
+	if err != nil {
+		return nil
+	}
+
+	cmd := exec.CommandContext(ctx, systemctlPath, "enable", "--now", hostScheduleCrondSystemdUnit)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("start %s: %w\n%s", hostScheduleCrondSystemdUnit, err, strings.TrimSpace(stderr.String()))
+	}
+
+	return nil
+}
+
+func (m *CLICronScheduleManager) readCrontab(ctx context.Context) ([]string, bool, error) {
+	if !m.resolveCrontabPath() {
+		return nil, false, fmt.Errorf("crontab executable not found in PATH")
+	}
+
+	cmd := exec.CommandContext(ctx, m.crontabPath, "-l")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		output := strings.ToLower(strings.TrimSpace(stderr.String() + "\n" + stdout.String()))
+		if strings.Contains(output, hostScheduleCronNoCrontabToken) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("%s -l failed: %w\n%s", m.crontabPath, err, strings.TrimSpace(stderr.String()))
+	}
+
+	return splitCronLines(stdout.String()), true, nil
+}
+
+func (m *CLICronScheduleManager) writeCrontab(ctx context.Context, lines []string) error {
+	if !m.resolveCrontabPath() {
+		return fmt.Errorf("crontab executable not found in PATH")
+	}
+
+	tempFile, err := os.CreateTemp("", "terraform-provider-host-crontab-*.txt")
+	if err != nil {
+		return fmt.Errorf("create temporary crontab: %w", err)
+	}
+	tempPath := tempFile.Name()
+	defer os.Remove(tempPath)
+
+	content := strings.Join(lines, "\n")
+	if content != "" {
+		content += "\n"
+	}
+	if _, err := tempFile.WriteString(content); err != nil {
+		tempFile.Close()
+		return fmt.Errorf("write temporary crontab %q: %w", tempPath, err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("close temporary crontab %q: %w", tempPath, err)
+	}
+
+	cmd := exec.CommandContext(ctx, m.crontabPath, tempPath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s %s failed: %w\n%s", m.crontabPath, tempPath, err, strings.TrimSpace(stderr.String()))
+	}
+
+	return nil
+}
+
+func renderHostScheduleCronEntry(spec HostScheduleSpec, status HostScheduleStatus) ([]string, error) {
+	expression, err := cronExpressionForSpec(spec)
+	if err != nil {
+		return nil, err
+	}
+
+	return []string{
+		hostScheduleCronMarkerPrefix + spec.ID,
+		expression + " " + shellQuote(status.ScriptPath),
+	}, nil
+}
+
+func filterHostScheduleCronEntry(lines []string, id string, scriptPath string) []string {
+	next := make([]string, 0, len(lines))
+	marker := hostScheduleCronMarkerPrefix + id
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if line == marker {
+			if i+1 < len(lines) {
+				i++
+			}
+			continue
+		}
+		if scriptPath != "" && strings.Contains(lines[i], scriptPath) {
+			continue
+		}
+		next = append(next, lines[i])
+	}
+
+	return next
+}
+
+func hostScheduleCronEntryExists(lines []string, id string, scriptPath string) bool {
+	marker := hostScheduleCronMarkerPrefix + id
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == marker {
+			return true
+		}
+		if scriptPath != "" && strings.Contains(line, scriptPath) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func splitCronLines(content string) []string {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.TrimRight(content, "\n")
+	if content == "" {
+		return nil
+	}
+
+	return strings.Split(content, "\n")
+}
+
+func validateHostScheduleSpec(spec HostScheduleSpec) error {
+	if err := validateHostScheduleID(spec.ID); err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(spec.Command) == "" {
+		return fmt.Errorf("command must be non-empty")
+	}
+	if strings.Contains(spec.Command, "\x00") {
+		return fmt.Errorf("command must not contain NUL bytes")
+	}
+	if spec.RunAtLoad {
+		return fmt.Errorf("run_at_load is not supported by the cron backend")
+	}
+
+	if spec.Schedule == "" && spec.Every == "" {
+		return fmt.Errorf("one of `schedule` or `every` must be set")
+	}
+	if spec.Schedule != "" && spec.Every != "" {
+		return fmt.Errorf("only one of `schedule` or `every` can be set")
+	}
+	if _, err := cronExpressionForSpec(spec); err != nil {
+		return err
+	}
+	if err := validateScheduleShell(spec.Shell); err != nil {
+		return err
+	}
+	if spec.WorkingDirectory != "" {
+		if _, err := expandHostPath(spec.WorkingDirectory); err != nil {
+			return fmt.Errorf("invalid working_directory: %w", err)
+		}
+	}
+	if spec.StdoutPath != "" {
+		if _, err := expandHostPath(spec.StdoutPath); err != nil {
+			return fmt.Errorf("invalid stdout_path: %w", err)
+		}
+	}
+	if spec.StderrPath != "" {
+		if _, err := expandHostPath(spec.StderrPath); err != nil {
+			return fmt.Errorf("invalid stderr_path: %w", err)
+		}
+	}
+	for key, value := range spec.Environment {
+		if strings.TrimSpace(key) != key || key == "" {
+			return fmt.Errorf("environment variable names must be non-empty and must not contain leading or trailing whitespace")
+		}
+		if strings.ContainsAny(key, "\x00=") || strings.ContainsAny(value, "\x00") {
+			return fmt.Errorf("environment variables must not contain NUL bytes, and names must not contain `=`")
+		}
+	}
+
+	return nil
+}
+
+func validateScheduleShell(shell string) error {
+	if shell == "" {
+		return fmt.Errorf("shell must be non-empty")
+	}
+	if strings.TrimSpace(shell) != shell {
+		return fmt.Errorf("shell must not contain leading or trailing whitespace")
+	}
+	if strings.ContainsAny(shell, "\r\n\x00") {
+		return fmt.Errorf("shell must not contain control characters")
+	}
+	if !filepath.IsAbs(shell) {
+		return fmt.Errorf("shell must be an absolute path")
+	}
+
+	return nil
+}
+
+func cronExpressionForSpec(spec HostScheduleSpec) (string, error) {
+	if spec.Schedule != "" {
+		expression := strings.TrimSpace(spec.Schedule)
+		if err := validateCronExpression(expression); err != nil {
+			return "", err
+		}
+		return expression, nil
+	}
+
+	return cronExpressionFromEvery(spec.Every)
+}
+
+func validateCronExpression(expression string) error {
+	switch expression {
+	case "@hourly", "@daily", "@midnight", "@weekly", "@monthly", "@yearly", "@annually":
+		return nil
+	}
+
+	fields := strings.Fields(expression)
+	if len(fields) != 5 {
+		return fmt.Errorf("schedule must be a five-field cron expression or one of @hourly, @daily, @weekly, @monthly, @yearly")
+	}
+
+	validators := []struct {
+		label           string
+		min             int
+		max             int
+		normalizeSunday bool
+	}{
+		{label: "minute", min: 0, max: 59},
+		{label: "hour", min: 0, max: 23},
+		{label: "day-of-month", min: 1, max: 31},
+		{label: "month", min: 1, max: 12},
+		{label: "day-of-week", min: 0, max: 7, normalizeSunday: true},
+	}
+	for i, validator := range validators {
+		if err := validateCronNumberField(fields[i], validator.min, validator.max, validator.normalizeSunday); err != nil {
+			return fmt.Errorf("invalid %s field: %w", validator.label, err)
+		}
+	}
+
+	return nil
+}
+
+func validateCronNumberField(field string, min int, max int, normalizeSunday bool) error {
+	field = strings.TrimSpace(field)
+	if field == "" {
+		return fmt.Errorf("field is empty")
+	}
+
+	for _, part := range strings.Split(field, ",") {
+		if err := validateCronNumberPart(strings.TrimSpace(part), min, max, normalizeSunday); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateCronNumberPart(part string, min int, max int, normalizeSunday bool) error {
+	if part == "" {
+		return fmt.Errorf("empty list item")
+	}
+
+	rangePart := part
+	if before, after, ok := strings.Cut(part, "/"); ok {
+		rangePart = before
+		parsedStep, err := strconv.Atoi(after)
+		if err != nil || parsedStep <= 0 {
+			return fmt.Errorf("invalid step %q", after)
+		}
+	}
+
+	start := min
+	end := max
+	if rangePart != "*" {
+		if before, after, ok := strings.Cut(rangePart, "-"); ok {
+			parsedStart, err := strconv.Atoi(before)
+			if err != nil {
+				return fmt.Errorf("invalid range start %q", before)
+			}
+			parsedEnd, err := strconv.Atoi(after)
+			if err != nil {
+				return fmt.Errorf("invalid range end %q", after)
+			}
+			start = parsedStart
+			end = parsedEnd
+		} else {
+			value, err := strconv.Atoi(rangePart)
+			if err != nil {
+				return fmt.Errorf("invalid value %q", rangePart)
+			}
+			start = value
+			end = value
+		}
+	}
+
+	if start > end {
+		return fmt.Errorf("range start %d is greater than end %d", start, end)
+	}
+	if start < min || end > max {
+		return fmt.Errorf("value range %d-%d is outside %d-%d", start, end, min, max)
+	}
+	if normalizeSunday && start == 7 && end == 7 {
+		return nil
+	}
+
+	return nil
+}
+
+func cronExpressionFromEvery(value string) (string, error) {
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return "", fmt.Errorf("invalid every duration %q: %w", value, err)
+	}
+	if duration < time.Minute {
+		return "", fmt.Errorf("every duration must be at least one minute for the cron backend")
+	}
+	if duration%time.Minute != 0 {
+		return "", fmt.Errorf("every duration must be a whole number of minutes for the cron backend")
+	}
+
+	minutes := int(duration / time.Minute)
+	switch {
+	case minutes < 60:
+		if 60%minutes != 0 {
+			return "", fmt.Errorf("every duration %q cannot be represented exactly by cron; use `schedule` instead", value)
+		}
+		if minutes == 1 {
+			return "* * * * *", nil
+		}
+		return fmt.Sprintf("*/%d * * * *", minutes), nil
+	case minutes == 60:
+		return "0 * * * *", nil
+	case minutes < 24*60 && minutes%60 == 0:
+		hours := minutes / 60
+		if 24%hours != 0 {
+			return "", fmt.Errorf("every duration %q cannot be represented exactly by cron; use `schedule` instead", value)
+		}
+		return fmt.Sprintf("0 */%d * * *", hours), nil
+	case minutes == 24*60:
+		return "0 0 * * *", nil
+	default:
+		return "", fmt.Errorf("every duration %q cannot be represented exactly by cron; use `schedule` instead", value)
+	}
+}
+
+func renderHostScheduleScript(spec HostScheduleSpec) (string, error) {
+	var builder strings.Builder
+	builder.WriteString("#!")
+	builder.WriteString(spec.Shell)
+	builder.WriteString("\n")
+
+	if spec.StdoutPath != "" {
+		path, err := expandHostPath(spec.StdoutPath)
+		if err != nil {
+			return "", fmt.Errorf("invalid stdout_path: %w", err)
+		}
+		builder.WriteString("exec >> ")
+		builder.WriteString(shellQuote(path))
+		builder.WriteString("\n")
+	}
+	if spec.StderrPath != "" {
+		path, err := expandHostPath(spec.StderrPath)
+		if err != nil {
+			return "", fmt.Errorf("invalid stderr_path: %w", err)
+		}
+		builder.WriteString("exec 2>> ")
+		builder.WriteString(shellQuote(path))
+		builder.WriteString("\n")
+	}
+	if len(spec.Environment) > 0 {
+		for _, key := range sortedStringKeys(spec.Environment) {
+			builder.WriteString("export ")
+			builder.WriteString(key)
+			builder.WriteString("=")
+			builder.WriteString(shellQuote(spec.Environment[key]))
+			builder.WriteString("\n")
+		}
+	}
+	if spec.WorkingDirectory != "" {
+		path, err := expandHostPath(spec.WorkingDirectory)
+		if err != nil {
+			return "", fmt.Errorf("invalid working_directory: %w", err)
+		}
+		builder.WriteString("cd ")
+		builder.WriteString(shellQuote(path))
+		builder.WriteString("\n")
+	}
+
+	command := strings.TrimSpace(spec.Command)
+	builder.WriteString(command)
+	builder.WriteString("\n")
+
+	return builder.String(), nil
+}
+
+func (m *CLICronScheduleManager) removeLegacyLaunchdSchedule(ctx context.Context, id string) error {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+
+	label := hostScheduleLegacyLabel(id)
+	plistPath, err := hostScheduleLegacyLaunchAgentPlistPath(id)
+	if err != nil {
+		return err
+	}
+
+	if m.launchctlPath != "" {
+		_ = m.runLaunchctl(ctx, "bootout", launchdUserDomain(), plistPath)
+		_ = m.runLaunchctl(ctx, "bootout", launchdUserDomain()+"/"+label)
+	}
+	if err := os.Remove(plistPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove legacy launch agent plist %q: %w", plistPath, err)
+	}
+
+	runtimePlistPath, err := hostScheduleRuntimePlistPath(id)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(runtimePlistPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove legacy runtime launchd plist %q: %w", runtimePlistPath, err)
+	}
+
+	return nil
+}
+
+func legacyLaunchdScheduleExists(id string) (bool, error) {
+	if runtime.GOOS != "darwin" {
+		return false, nil
+	}
+
+	plistPath, err := hostScheduleLegacyLaunchAgentPlistPath(id)
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(plistPath); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read legacy launch agent plist %q: %w", plistPath, err)
+	}
+
+	return true, nil
+}
+
+func hostScheduleMetadataExists(id string) (bool, error) {
+	metadataPath, err := hostScheduleMetadataPath(id)
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(metadataPath); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read schedule metadata %q: %w", metadataPath, err)
+	}
+
+	return true, nil
+}
+
+func (m *CLICronScheduleManager) runLaunchctl(ctx context.Context, args ...string) error {
+	cmd := exec.CommandContext(ctx, m.launchctlPath, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("launchctl %s failed: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+
+	return nil
+}
+
+func launchdUserDomain() string {
+	return fmt.Sprintf("gui/%d", os.Getuid())
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+}
+
+func sortedStringKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	return keys
+}
+
+func stringSlicesEqual(a []string, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+
+	return true
+}
