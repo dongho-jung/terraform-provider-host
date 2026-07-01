@@ -10,3 +10,10 @@ resource "host_schedule" "daily_example" {
   stdout_path = "~/tmp/host-schedule-example.out.log"
   stderr_path = "~/tmp/host-schedule-example.err.log"
 }
+
+resource "host_schedule" "system_example" {
+  scope = "system"
+
+  schedule = "0 4 * * *"
+  command  = "/usr/local/bin/system-maintenance"
+}

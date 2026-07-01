@@ -81,6 +81,38 @@ resource "host_package_brew" "terraform" {
 
 Set `tap` for packages that live outside Homebrew's default taps. The provider checks `brew tap`, runs `brew tap <tap>` during apply when needed, and then manages the package as `<tap>/<name>`.
 
+## Host Users and Groups
+
+Use `host_group` and `host_user` to manage local users and supplementary group membership. Passwords are intentionally not managed by this provider; use the operating system, MDM, or a secrets workflow for password setup.
+
+Prefer references for group membership instead of repeating literal group names:
+
+```hcl
+data "host_group" "admin" {
+  role = "admin"
+}
+
+resource "host_group" "developers" {
+  name = "developers"
+}
+
+resource "host_user" "deploy" {
+  username    = "deploy"
+  full_name   = "Deploy User"
+  shell       = "/bin/zsh"
+  create_home = true
+
+  groups = [
+    data.host_group.admin.name,
+    host_group.developers.name,
+  ]
+}
+```
+
+The `admin` role resolves to `admin` on macOS and the first existing `wheel` or `sudo` group on Linux. `host_user.groups` manages only the groups listed in Terraform state; other groups attached outside Terraform are left untouched. Removing a user does not remove the home directory unless `remove_home_on_destroy = true` is set.
+
+Mutating user and group operations require root privileges. When Terraform is not running as root, the provider prompts through `sudo -v` before running commands such as `useradd`, `usermod`, `groupadd`, `dscl`, or `dseditgroup`.
+
 ## Host File Blocks
 
 Use `host_file` to manage a whole file without markers, or use `host_file` and `host_file_block` together to manage Terraform-owned blocks inside an existing host file such as `~/.zshrc`.
@@ -171,7 +203,7 @@ The provider creates a symlink only. It refuses to replace an existing regular f
 
 ## Schedules
 
-Use `host_schedule` to manage a user schedule without configuring a separate schedule name. The provider generates an internal ID, writes runtime files under `./.terraform-provider-host/schedules/<id>`, and installs a managed entry in the current user's crontab.
+Use `host_schedule` to manage a user schedule without configuring a separate schedule name. The provider generates an internal ID, writes runtime files under `./.terraform-provider-host/schedules/<id>`, and installs a managed entry in a crontab.
 
 Set either `every` for interval schedules or `schedule` for five-field cron-style calendar schedules:
 
@@ -188,9 +220,18 @@ resource "host_schedule" "daily_example" {
   stdout_path = "~/tmp/host-schedule-example.out.log"
   stderr_path = "~/tmp/host-schedule-example.err.log"
 }
+
+resource "host_schedule" "system_example" {
+  scope = "system"
+
+  schedule = "0 4 * * *"
+  command  = "/usr/local/bin/system-maintenance"
+}
 ```
 
-The `schedule` attribute supports numeric cron fields, lists, ranges, steps, and `@hourly`, `@daily`, `@weekly`, `@monthly`, and `@yearly`. The rendered crontab entry points at the generated `run.sh`, so `crontab -l` shows the active schedules directly. On Fedora-like systems where `crontab` is missing, the provider tries to install `cronie` through DNF before writing the schedule.
+The default `scope = "user"` manages the current Terraform user's crontab. Set `user` to manage another user's crontab, or set `scope = "system"` to manage root's crontab. Non-current-user schedules use `crontab -u <user>` and prompt through sudo when Terraform is not already running as root.
+
+The `schedule` attribute supports numeric cron fields, lists, ranges, steps, and `@hourly`, `@daily`, `@weekly`, `@monthly`, and `@yearly`. The rendered crontab entry points at the generated `run.sh`, so `crontab -l` or `sudo crontab -u <user> -l` shows the active schedules directly. On Fedora-like systems where `crontab` is missing, the provider tries to install `cronie` through DNF before writing the schedule.
 
 ## Local Development
 

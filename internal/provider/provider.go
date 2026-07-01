@@ -40,13 +40,13 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 
 	var data HostProviderData
 
+	sudoPath, err := exec.LookPath("sudo")
+	if err != nil {
+		sudoPath = ""
+	}
+
 	dnfPath, err := exec.LookPath("dnf")
 	if err == nil {
-		sudoPath, err := exec.LookPath("sudo")
-		if err != nil {
-			sudoPath = ""
-		}
-
 		data.PackageManager = NewCLIPackageManager(dnfPath, sudoPath)
 	}
 
@@ -63,9 +63,11 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 	if err != nil {
 		launchctlPath = ""
 	}
-	data.ScheduleManager = NewCLICronScheduleManager(crontabPath, launchctlPath, data.PackageManager)
+	data.ScheduleManager = NewCLICronScheduleManager(crontabPath, launchctlPath, data.PackageManager, sudoPath)
+	data.IdentityManager = NewCLIIdentityManager(sudoPath)
 
 	resp.ResourceData = data
+	resp.DataSourceData = data
 }
 
 func (p *HostProvider) Resources(ctx context.Context) []func() resource.Resource {
@@ -76,11 +78,15 @@ func (p *HostProvider) Resources(ctx context.Context) []func() resource.Resource
 		NewHostFileBlockResource,
 		NewHostLinkResource,
 		NewHostScheduleResource,
+		NewHostGroupResource,
+		NewHostUserResource,
 	}
 }
 
 func (p *HostProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
-	return nil
+	return []func() datasource.DataSource{
+		NewHostGroupDataSource,
+	}
 }
 
 func New(version string) func() provider.Provider {

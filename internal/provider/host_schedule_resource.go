@@ -26,6 +26,8 @@ type HostScheduleResource struct {
 
 type HostScheduleResourceModel struct {
 	ID               types.String `tfsdk:"id"`
+	User             types.String `tfsdk:"user"`
+	Scope            types.String `tfsdk:"scope"`
 	Command          types.String `tfsdk:"command"`
 	Schedule         types.String `tfsdk:"schedule"`
 	Every            types.String `tfsdk:"every"`
@@ -64,6 +66,16 @@ func (r *HostScheduleResource) Schema(ctx context.Context, req resource.SchemaRe
 			"command": schema.StringAttribute{
 				Required:            true,
 				MarkdownDescription: "Shell command to run when the schedule fires. The provider writes this command into `./.terraform-provider-host/schedules/<id>/run.sh`.",
+			},
+			"user": schema.StringAttribute{
+				Optional:            true,
+				Computed:            true,
+				MarkdownDescription: "User whose crontab should contain the schedule. Defaults to the current Terraform user for `scope = \"user\"`, or `root` for `scope = \"system\"`.",
+			},
+			"scope": schema.StringAttribute{
+				Optional:            true,
+				Computed:            true,
+				MarkdownDescription: "Schedule scope. Supported values are `user` and `system`. `system` manages the root crontab and requires root privileges.",
 			},
 			"schedule": schema.StringAttribute{
 				Optional:            true,
@@ -180,9 +192,18 @@ func (r *HostScheduleResource) ModifyPlan(ctx context.Context, req resource.Modi
 		return
 	}
 
+	if err := normalizeHostSchedulePlanTarget(&plan); err != nil {
+		resp.Diagnostics.AddError("Invalid schedule target", err.Error())
+		return
+	}
+
 	if !state.ID.IsNull() && !state.ID.IsUnknown() {
 		plan.ID = state.ID
-		status, err := hostScheduleStatus(state.ID.ValueString())
+		status, err := hostScheduleStatus(HostScheduleSpec{
+			ID:    state.ID.ValueString(),
+			User:  plan.User.ValueString(),
+			Scope: plan.Scope.ValueString(),
+		})
 		if err != nil {
 			resp.Diagnostics.AddError("Invalid schedule state", err.Error())
 			return
@@ -309,6 +330,18 @@ func (r *HostScheduleResource) Update(ctx context.Context, req resource.UpdateRe
 		return
 	}
 
+	stateSpec, stateDiags := hostScheduleSpecFromModel(ctx, state)
+	resp.Diagnostics.Append(stateDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if stateSpec.ID != "" && (stateSpec.User != spec.User || stateSpec.Scope != spec.Scope) {
+		if err := r.manager.DeleteSchedule(ctx, stateSpec); err != nil {
+			resp.Diagnostics.AddError("Failed to delete previous schedule", err.Error())
+			return
+		}
+	}
+
 	status, err := r.manager.UpsertSchedule(ctx, spec)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to sync schedule", err.Error())
@@ -333,7 +366,13 @@ func (r *HostScheduleResource) Delete(ctx context.Context, req resource.DeleteRe
 		return
 	}
 
-	if err := r.manager.DeleteSchedule(ctx, state.ID.ValueString()); err != nil {
+	spec, diags := hostScheduleSpecFromModel(ctx, state)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if err := r.manager.DeleteSchedule(ctx, spec); err != nil {
 		resp.Diagnostics.AddError("Failed to delete schedule", err.Error())
 	}
 }
@@ -353,6 +392,8 @@ func (r *HostScheduleResource) requireManager(diags *diag.Diagnostics) bool {
 
 func hydrateHostScheduleComputedState(model *HostScheduleResourceModel, status HostScheduleStatus) {
 	model.ID = types.StringValue(status.ID)
+	model.User = types.StringValue(status.User)
+	model.Scope = types.StringValue(status.Scope)
 	model.Backend = types.StringValue(status.Backend)
 	model.Label = types.StringNull()
 	model.PlistPath = types.StringNull()
@@ -373,6 +414,12 @@ func hostScheduleSpecFromModel(ctx context.Context, model HostScheduleResourceMo
 	}
 	if !model.ID.IsNull() && !model.ID.IsUnknown() {
 		spec.ID = model.ID.ValueString()
+	}
+	if !model.User.IsNull() && !model.User.IsUnknown() {
+		spec.User = model.User.ValueString()
+	}
+	if !model.Scope.IsNull() && !model.Scope.IsUnknown() {
+		spec.Scope = model.Scope.ValueString()
 	}
 	if !model.Command.IsNull() && !model.Command.IsUnknown() {
 		spec.Command = model.Command.ValueString()
@@ -401,6 +448,10 @@ func hostScheduleSpecFromModel(ctx context.Context, model HostScheduleResourceMo
 	if !model.StderrPath.IsNull() && !model.StderrPath.IsUnknown() {
 		spec.StderrPath = model.StderrPath.ValueString()
 	}
+	if err := normalizeHostScheduleSpecTarget(&spec); err != nil {
+		diags.AddError("Invalid schedule target", err.Error())
+		return HostScheduleSpec{}, diags
+	}
 
 	return spec, diags
 }
@@ -415,6 +466,8 @@ func scheduleResourceConfigReady(model HostScheduleResourceModel) bool {
 		return false
 	}
 	if model.Shell.IsNull() || model.Shell.IsUnknown() ||
+		model.User.IsNull() || model.User.IsUnknown() ||
+		model.Scope.IsNull() || model.Scope.IsUnknown() ||
 		model.Enabled.IsNull() || model.Enabled.IsUnknown() ||
 		model.RunAtLoad.IsNull() || model.RunAtLoad.IsUnknown() {
 		return false
@@ -426,6 +479,27 @@ func scheduleResourceConfigReady(model HostScheduleResourceModel) bool {
 	}
 
 	return true
+}
+
+func normalizeHostSchedulePlanTarget(model *HostScheduleResourceModel) error {
+	scope := ""
+	if !model.Scope.IsNull() && !model.Scope.IsUnknown() {
+		scope = model.Scope.ValueString()
+	}
+
+	targetUser := ""
+	if !model.User.IsNull() && !model.User.IsUnknown() {
+		targetUser = model.User.ValueString()
+	}
+
+	normalizedScope, normalizedUser, err := normalizeHostScheduleTarget(scope, targetUser)
+	if err != nil {
+		return err
+	}
+
+	model.Scope = types.StringValue(normalizedScope)
+	model.User = types.StringValue(normalizedUser)
+	return nil
 }
 
 func stringMapValue(ctx context.Context, value types.Map, label string) (map[string]string, diag.Diagnostics) {

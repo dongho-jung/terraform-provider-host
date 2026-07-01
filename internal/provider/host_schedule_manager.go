@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	osuser "os/user"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -25,6 +26,9 @@ const (
 	hostSchedulePackageFedoraCron  = "cronie"
 	hostScheduleCrondSystemdUnit   = "crond.service"
 	hostScheduleCronNoCrontabToken = "no crontab"
+	hostScheduleScopeUser          = "user"
+	hostScheduleScopeSystem        = "system"
+	hostScheduleRootUser           = "root"
 )
 
 var hostScheduleIDPattern = regexp.MustCompile(`^[a-f0-9]{16}$`)
@@ -32,11 +36,13 @@ var hostScheduleIDPattern = regexp.MustCompile(`^[a-f0-9]{16}$`)
 type ScheduleManager interface {
 	UpsertSchedule(ctx context.Context, spec HostScheduleSpec) (HostScheduleStatus, error)
 	ReadSchedule(ctx context.Context, spec HostScheduleSpec) (HostScheduleStatus, bool, error)
-	DeleteSchedule(ctx context.Context, id string) error
+	DeleteSchedule(ctx context.Context, spec HostScheduleSpec) error
 }
 
 type HostScheduleSpec struct {
 	ID               string            `json:"id"`
+	User             string            `json:"user"`
+	Scope            string            `json:"scope"`
 	Command          string            `json:"command"`
 	Schedule         string            `json:"schedule,omitempty"`
 	Every            string            `json:"every,omitempty"`
@@ -51,6 +57,8 @@ type HostScheduleSpec struct {
 
 type HostScheduleStatus struct {
 	ID         string
+	User       string
+	Scope      string
 	Backend    string
 	ScriptPath string
 }
@@ -59,6 +67,7 @@ type CLICronScheduleManager struct {
 	crontabPath    string
 	launchctlPath  string
 	packageManager PackageManager
+	sudoPath       string
 }
 
 type hostScheduleMetadata struct {
@@ -67,11 +76,12 @@ type hostScheduleMetadata struct {
 	ScriptPath string           `json:"script_path"`
 }
 
-func NewCLICronScheduleManager(crontabPath string, launchctlPath string, packageManager PackageManager) *CLICronScheduleManager {
+func NewCLICronScheduleManager(crontabPath string, launchctlPath string, packageManager PackageManager, sudoPath string) *CLICronScheduleManager {
 	return &CLICronScheduleManager{
 		crontabPath:    crontabPath,
 		launchctlPath:  launchctlPath,
 		packageManager: packageManager,
+		sudoPath:       sudoPath,
 	}
 }
 
@@ -149,8 +159,11 @@ func (m *CLICronScheduleManager) UpsertSchedule(ctx context.Context, spec HostSc
 	if err := validateHostScheduleSpec(spec); err != nil {
 		return HostScheduleStatus{}, err
 	}
+	if err := normalizeHostScheduleSpecTarget(&spec); err != nil {
+		return HostScheduleStatus{}, err
+	}
 
-	status, err := hostScheduleStatus(spec.ID)
+	status, err := hostScheduleStatus(spec)
 	if err != nil {
 		return HostScheduleStatus{}, err
 	}
@@ -173,15 +186,18 @@ func (m *CLICronScheduleManager) ReadSchedule(ctx context.Context, spec HostSche
 	if err := validateHostScheduleID(spec.ID); err != nil {
 		return HostScheduleStatus{}, false, err
 	}
+	if err := normalizeHostScheduleSpecTarget(&spec); err != nil {
+		return HostScheduleStatus{}, false, err
+	}
 
-	status, err := hostScheduleStatus(spec.ID)
+	status, err := hostScheduleStatus(spec)
 	if err != nil {
 		return HostScheduleStatus{}, false, err
 	}
 
 	cronInstalled := false
 	if m.resolveCrontabPath() {
-		lines, _, err := m.readCrontab(ctx)
+		lines, _, err := m.readCrontab(ctx, spec.User)
 		if err != nil {
 			return HostScheduleStatus{}, false, err
 		}
@@ -212,24 +228,27 @@ func (m *CLICronScheduleManager) ReadSchedule(ctx context.Context, spec HostSche
 	return status, false, nil
 }
 
-func (m *CLICronScheduleManager) DeleteSchedule(ctx context.Context, id string) error {
-	if err := validateHostScheduleID(id); err != nil {
+func (m *CLICronScheduleManager) DeleteSchedule(ctx context.Context, spec HostScheduleSpec) error {
+	if err := validateHostScheduleID(spec.ID); err != nil {
+		return err
+	}
+	if err := normalizeHostScheduleSpecTarget(&spec); err != nil {
 		return err
 	}
 
-	status, err := hostScheduleStatus(id)
+	status, err := hostScheduleStatus(spec)
 	if err != nil {
 		return err
 	}
 
-	if err := m.removeCronEntry(ctx, id, status.ScriptPath); err != nil {
+	if err := m.removeCronEntry(ctx, spec, status); err != nil {
 		return err
 	}
-	if err := m.removeLegacyLaunchdSchedule(ctx, id); err != nil {
+	if err := m.removeLegacyLaunchdSchedule(ctx, spec.ID); err != nil {
 		return err
 	}
 
-	runtimeDir, err := hostScheduleRuntimeDir(id)
+	runtimeDir, err := hostScheduleRuntimeDir(spec.ID)
 	if err != nil {
 		return err
 	}
@@ -240,18 +259,23 @@ func (m *CLICronScheduleManager) DeleteSchedule(ctx context.Context, id string) 
 	return nil
 }
 
-func hostScheduleStatus(id string) (HostScheduleStatus, error) {
-	if err := validateHostScheduleID(id); err != nil {
+func hostScheduleStatus(spec HostScheduleSpec) (HostScheduleStatus, error) {
+	if err := validateHostScheduleID(spec.ID); err != nil {
+		return HostScheduleStatus{}, err
+	}
+	if err := normalizeHostScheduleSpecTarget(&spec); err != nil {
 		return HostScheduleStatus{}, err
 	}
 
-	scriptPath, err := hostScheduleScriptPath(id)
+	scriptPath, err := hostScheduleScriptPath(spec.ID)
 	if err != nil {
 		return HostScheduleStatus{}, err
 	}
 
 	return HostScheduleStatus{
-		ID:         id,
+		ID:         spec.ID,
+		User:       spec.User,
+		Scope:      spec.Scope,
 		Backend:    "cron",
 		ScriptPath: scriptPath,
 	}, nil
@@ -262,18 +286,25 @@ func writeHostScheduleRuntimeFiles(spec HostScheduleSpec, status HostScheduleSta
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+	dirMode, scriptMode, err := hostScheduleRuntimeModes(spec)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(runtimeDir, dirMode); err != nil {
 		return fmt.Errorf("create schedule runtime directory %q: %w", runtimeDir, err)
+	}
+	if err := chmodHostScheduleRuntimeDirs(spec, runtimeDir, dirMode); err != nil {
+		return err
 	}
 
 	script, err := renderHostScheduleScript(spec)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(status.ScriptPath, []byte(script), 0o700); err != nil {
+	if err := os.WriteFile(status.ScriptPath, []byte(script), scriptMode); err != nil {
 		return fmt.Errorf("write schedule script %q: %w", status.ScriptPath, err)
 	}
-	if err := os.Chmod(status.ScriptPath, 0o700); err != nil {
+	if err := os.Chmod(status.ScriptPath, scriptMode); err != nil {
 		return fmt.Errorf("chmod schedule script %q: %w", status.ScriptPath, err)
 	}
 
@@ -297,12 +328,60 @@ func writeHostScheduleRuntimeFiles(spec HostScheduleSpec, status HostScheduleSta
 	return nil
 }
 
+func hostScheduleRuntimeModes(spec HostScheduleSpec) (os.FileMode, os.FileMode, error) {
+	shared, err := hostScheduleNeedsSharedRuntime(spec)
+	if err != nil {
+		return 0, 0, err
+	}
+	if shared {
+		return 0o755, 0o755, nil
+	}
+
+	return 0o700, 0o700, nil
+}
+
+func hostScheduleNeedsSharedRuntime(spec HostScheduleSpec) (bool, error) {
+	currentUser, err := currentHostUsername()
+	if err != nil {
+		return false, err
+	}
+
+	return spec.User != "" && spec.User != currentUser && spec.User != hostScheduleRootUser, nil
+}
+
+func chmodHostScheduleRuntimeDirs(spec HostScheduleSpec, runtimeDir string, mode os.FileMode) error {
+	shared, err := hostScheduleNeedsSharedRuntime(spec)
+	if err != nil {
+		return err
+	}
+
+	if !shared {
+		return nil
+	}
+
+	runtimeRoot, err := providerRuntimeDir()
+	if err != nil {
+		return err
+	}
+	schedulesRoot, err := providerRuntimeSubdir(hostScheduleRuntimeDirName)
+	if err != nil {
+		return err
+	}
+	for _, path := range []string{runtimeRoot, schedulesRoot, runtimeDir} {
+		if err := os.Chmod(path, mode); err != nil {
+			return fmt.Errorf("chmod schedule runtime directory %q: %w", path, err)
+		}
+	}
+
+	return nil
+}
+
 func (m *CLICronScheduleManager) syncCronEntry(ctx context.Context, spec HostScheduleSpec, status HostScheduleStatus) error {
 	if err := m.ensureCrontab(ctx); err != nil {
 		return err
 	}
 
-	lines, _, err := m.readCrontab(ctx)
+	lines, _, err := m.readCrontab(ctx, spec.User)
 	if err != nil {
 		return err
 	}
@@ -320,25 +399,25 @@ func (m *CLICronScheduleManager) syncCronEntry(ctx context.Context, spec HostSch
 		return nil
 	}
 
-	return m.writeCrontab(ctx, next)
+	return m.writeCrontab(ctx, spec.User, next)
 }
 
-func (m *CLICronScheduleManager) removeCronEntry(ctx context.Context, id string, scriptPath string) error {
+func (m *CLICronScheduleManager) removeCronEntry(ctx context.Context, spec HostScheduleSpec, status HostScheduleStatus) error {
 	if !m.resolveCrontabPath() {
 		return nil
 	}
 
-	lines, _, err := m.readCrontab(ctx)
+	lines, _, err := m.readCrontab(ctx, spec.User)
 	if err != nil {
 		return err
 	}
 
-	next := filterHostScheduleCronEntry(lines, id, scriptPath)
+	next := filterHostScheduleCronEntry(lines, spec.ID, status.ScriptPath)
 	if stringSlicesEqual(lines, next) {
 		return nil
 	}
 
-	return m.writeCrontab(ctx, next)
+	return m.writeCrontab(ctx, spec.User, next)
 }
 
 func (m *CLICronScheduleManager) ensureCrontab(ctx context.Context) error {
@@ -389,12 +468,15 @@ func startCrondService(ctx context.Context) error {
 	return nil
 }
 
-func (m *CLICronScheduleManager) readCrontab(ctx context.Context) ([]string, bool, error) {
+func (m *CLICronScheduleManager) readCrontab(ctx context.Context, targetUser string) ([]string, bool, error) {
 	if !m.resolveCrontabPath() {
 		return nil, false, fmt.Errorf("crontab executable not found in PATH")
 	}
 
-	cmd := exec.CommandContext(ctx, m.crontabPath, "-l")
+	cmd, display, err := m.crontabCommand(ctx, targetUser, "-l")
+	if err != nil {
+		return nil, false, err
+	}
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -405,13 +487,13 @@ func (m *CLICronScheduleManager) readCrontab(ctx context.Context) ([]string, boo
 		if strings.Contains(output, hostScheduleCronNoCrontabToken) {
 			return nil, false, nil
 		}
-		return nil, false, fmt.Errorf("%s -l failed: %w\n%s", m.crontabPath, err, strings.TrimSpace(stderr.String()))
+		return nil, false, fmt.Errorf("%s failed: %w\n%s", display, err, strings.TrimSpace(stderr.String()))
 	}
 
 	return splitCronLines(stdout.String()), true, nil
 }
 
-func (m *CLICronScheduleManager) writeCrontab(ctx context.Context, lines []string) error {
+func (m *CLICronScheduleManager) writeCrontab(ctx context.Context, targetUser string, lines []string) error {
 	if !m.resolveCrontabPath() {
 		return fmt.Errorf("crontab executable not found in PATH")
 	}
@@ -435,11 +517,70 @@ func (m *CLICronScheduleManager) writeCrontab(ctx context.Context, lines []strin
 		return fmt.Errorf("close temporary crontab %q: %w", tempPath, err)
 	}
 
-	cmd := exec.CommandContext(ctx, m.crontabPath, tempPath)
+	cmd, display, err := m.crontabCommand(ctx, targetUser, tempPath)
+	if err != nil {
+		return err
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s %s failed: %w\n%s", m.crontabPath, tempPath, err, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("%s failed: %w\n%s", display, err, strings.TrimSpace(stderr.String()))
+	}
+
+	return nil
+}
+
+func (m *CLICronScheduleManager) crontabCommand(ctx context.Context, targetUser string, args ...string) (*exec.Cmd, string, error) {
+	currentUser, err := currentHostUsername()
+	if err != nil {
+		return nil, "", err
+	}
+
+	crontabArgs, targetsOtherUser := hostScheduleCrontabArgs(targetUser, currentUser, args...)
+	commandName := m.crontabPath
+	commandArgs := crontabArgs
+
+	if targetsOtherUser && os.Geteuid() != 0 {
+		if m.sudoPath == "" {
+			return nil, "", fmt.Errorf("managing crontab for user %q requires root privileges, but sudo was not found in PATH", targetUser)
+		}
+		if err := m.authenticateSudo(ctx, m.crontabPath, crontabArgs...); err != nil {
+			return nil, "", err
+		}
+
+		commandName = m.sudoPath
+		commandArgs = append([]string{m.crontabPath}, crontabArgs...)
+	}
+
+	display := strings.TrimSpace(commandName + " " + strings.Join(commandArgs, " "))
+	return exec.CommandContext(ctx, commandName, commandArgs...), display, nil
+}
+
+func hostScheduleCrontabArgs(targetUser string, currentUser string, args ...string) ([]string, bool) {
+	if targetUser == "" || targetUser == currentUser {
+		return args, false
+	}
+
+	withUser := append([]string{"-u", targetUser}, args...)
+	return withUser, true
+}
+
+func (m *CLICronScheduleManager) authenticateSudo(ctx context.Context, name string, args ...string) error {
+	check := exec.CommandContext(ctx, m.sudoPath, "-n", "true")
+	if err := check.Run(); err == nil {
+		return nil
+	}
+
+	fmt.Fprintf(os.Stderr, "\nTerraform provider host needs sudo privileges for: %s %s\n", name, strings.Join(args, " "))
+	fmt.Fprintln(os.Stderr, "Enter your sudo password at the prompt below, or run `sudo -v` before `terraform apply`.")
+
+	cmd := exec.CommandContext(ctx, m.sudoPath, "-v")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("sudo authentication failed: %w. Run `sudo -v` before `terraform apply`, or configure passwordless sudo for local schedule management", err)
 	}
 
 	return nil
@@ -506,6 +647,9 @@ func validateHostScheduleSpec(spec HostScheduleSpec) error {
 	if err := validateHostScheduleID(spec.ID); err != nil {
 		return err
 	}
+	if err := normalizeHostScheduleSpecTarget(&spec); err != nil {
+		return err
+	}
 
 	if strings.TrimSpace(spec.Command) == "" {
 		return fmt.Errorf("command must be non-empty")
@@ -554,6 +698,73 @@ func validateHostScheduleSpec(spec HostScheduleSpec) error {
 	}
 
 	return nil
+}
+
+func normalizeHostScheduleSpecTarget(spec *HostScheduleSpec) error {
+	scope, targetUser, err := normalizeHostScheduleTarget(spec.Scope, spec.User)
+	if err != nil {
+		return err
+	}
+
+	spec.Scope = scope
+	spec.User = targetUser
+	return nil
+}
+
+func normalizeHostScheduleTarget(scope string, targetUser string) (string, string, error) {
+	scope = strings.TrimSpace(scope)
+	targetUser = strings.TrimSpace(targetUser)
+
+	if scope == "" {
+		if targetUser == hostScheduleRootUser {
+			scope = hostScheduleScopeSystem
+		} else {
+			scope = hostScheduleScopeUser
+		}
+	}
+
+	switch scope {
+	case hostScheduleScopeUser:
+		if targetUser == "" {
+			currentUser, err := currentHostUsername()
+			if err != nil {
+				return "", "", err
+			}
+			targetUser = currentUser
+		}
+	case hostScheduleScopeSystem:
+		if targetUser == "" {
+			targetUser = hostScheduleRootUser
+		}
+		if targetUser != hostScheduleRootUser {
+			return "", "", fmt.Errorf("scope %q manages the root crontab, so user must be unset or %q", hostScheduleScopeSystem, hostScheduleRootUser)
+		}
+	default:
+		return "", "", fmt.Errorf("scope must be %q or %q", hostScheduleScopeUser, hostScheduleScopeSystem)
+	}
+
+	if err := validateHostUserName(targetUser); err != nil {
+		return "", "", err
+	}
+
+	return scope, targetUser, nil
+}
+
+func currentHostUsername() (string, error) {
+	current, err := osuser.Current()
+	if err != nil {
+		return "", fmt.Errorf("resolve current user: %w", err)
+	}
+	if strings.TrimSpace(current.Username) == "" {
+		return "", fmt.Errorf("resolve current user: username is empty")
+	}
+
+	username := current.Username
+	if before, after, ok := strings.Cut(username, "\\"); ok && before != "" && after != "" {
+		username = after
+	}
+
+	return username, nil
 }
 
 func validateScheduleShell(shell string) error {

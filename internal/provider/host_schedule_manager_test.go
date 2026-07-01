@@ -133,3 +133,84 @@ func TestRenderHostScheduleScript(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeHostScheduleTargetDefaultsToCurrentUser(t *testing.T) {
+	t.Parallel()
+
+	scope, targetUser, err := normalizeHostScheduleTarget("", "")
+	if err != nil {
+		t.Fatalf("normalizeHostScheduleTarget: %s", err)
+	}
+	if scope != hostScheduleScopeUser {
+		t.Fatalf("scope got %q, want %q", scope, hostScheduleScopeUser)
+	}
+	if targetUser == "" {
+		t.Fatal("expected current username")
+	}
+}
+
+func TestNormalizeHostScheduleTargetSystemDefaultsToRoot(t *testing.T) {
+	t.Parallel()
+
+	scope, targetUser, err := normalizeHostScheduleTarget(hostScheduleScopeSystem, "")
+	if err != nil {
+		t.Fatalf("normalizeHostScheduleTarget: %s", err)
+	}
+	if scope != hostScheduleScopeSystem || targetUser != hostScheduleRootUser {
+		t.Fatalf("got scope=%q user=%q", scope, targetUser)
+	}
+}
+
+func TestNormalizeHostScheduleTargetRootInfersSystem(t *testing.T) {
+	t.Parallel()
+
+	scope, targetUser, err := normalizeHostScheduleTarget("", hostScheduleRootUser)
+	if err != nil {
+		t.Fatalf("normalizeHostScheduleTarget: %s", err)
+	}
+	if scope != hostScheduleScopeSystem || targetUser != hostScheduleRootUser {
+		t.Fatalf("got scope=%q user=%q", scope, targetUser)
+	}
+}
+
+func TestNormalizeHostScheduleTargetRejectsSystemNonRootUser(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := normalizeHostScheduleTarget(hostScheduleScopeSystem, "deploy")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "root crontab") {
+		t.Fatalf("unexpected error: %s", err)
+	}
+}
+
+func TestHostScheduleCrontabArgsCurrentUser(t *testing.T) {
+	t.Parallel()
+
+	got, targetsOtherUser := hostScheduleCrontabArgs("dongho", "dongho", "-l")
+	if targetsOtherUser {
+		t.Fatal("expected current user target")
+	}
+	if len(got) != 1 || got[0] != "-l" {
+		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestHostScheduleCrontabArgsOtherUser(t *testing.T) {
+	t.Parallel()
+
+	got, targetsOtherUser := hostScheduleCrontabArgs("root", "dongho", "-l")
+	if !targetsOtherUser {
+		t.Fatal("expected other user target")
+	}
+	want := []string{"-u", "root", "-l"}
+	if len(got) != len(want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %#v, want %#v", got, want)
+		}
+	}
+}
