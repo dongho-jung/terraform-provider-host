@@ -378,10 +378,7 @@ func (r *DNFPackageResource) addPrivilegeWarning(diags *diag.Diagnostics, action
 		return
 	}
 
-	diags.AddWarning(
-		"sudo authentication may be required",
-		fmt.Sprintf("Applying this plan will %s DNF package %q. The provider will run `sudo -v` immediately before the DNF command, so be ready to enter your sudo password. You can also run `sudo -v` before `terraform apply`.", action, name),
-	)
+	addSudoPrivilegeWarningOnce(diags)
 }
 
 func (r *DNFPackageResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {

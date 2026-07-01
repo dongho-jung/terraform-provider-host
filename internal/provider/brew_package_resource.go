@@ -342,10 +342,7 @@ func (r *BrewPackageResource) addCaskPrivilegeWarning(diags *diag.Diagnostics, a
 		return
 	}
 
-	diags.AddWarning(
-		"sudo authentication may be required",
-		fmt.Sprintf("Applying this plan will %s Homebrew cask %q. The provider will prompt once through the current terminal when sudo is not already authenticated, keep that sudo lease alive, and reuse it for later cask operations in the same Terraform run. If Terraform status lines bury the prompt, type your password in the same terminal and press Enter; the provider will keep printing reminders while it waits. You can also run `sudo -v` before `terraform apply`.", action, brewPackageCommandName(model)),
-	)
+	addSudoPrivilegeWarningOnce(diags)
 }
 
 func (r *BrewPackageResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
