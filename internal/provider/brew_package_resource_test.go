@@ -193,6 +193,24 @@ func TestBrewPackageResourceSyncUpgradesOutdatedCask(t *testing.T) {
 	}
 }
 
+func TestMarkBrewVersionStateUnknown(t *testing.T) {
+	t.Parallel()
+
+	model := BrewPackageResourceModel{
+		InstalledVersion: types.StringValue("1.17377.1"),
+		CandidateVersion: types.StringValue("1.17377.1"),
+	}
+
+	markBrewVersionStateUnknown(&model)
+
+	if !model.InstalledVersion.IsUnknown() {
+		t.Fatalf("installed version should be unknown, got %#v", model.InstalledVersion)
+	}
+	if !model.CandidateVersion.IsUnknown() {
+		t.Fatalf("candidate version should be unknown, got %#v", model.CandidateVersion)
+	}
+}
+
 func TestBrewPackageCommandNameSupportsQualifiedPackageName(t *testing.T) {
 	t.Parallel()
 
