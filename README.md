@@ -156,6 +156,19 @@ File blocks are ordered by declaration order. Use `block.after` or `block.before
 
 Terraform does not support single-quoted strings. Use heredocs when shell content contains quotes, command substitutions, or functions; the provider trims surrounding whitespace before rendering.
 
+## Host Links
+
+Use `host_link` to manage a symbolic link from a host destination path to a source file or directory in your Terraform working directory. Relative `source` paths are resolved from the Terraform working directory, so larger config trees can stay as normal files with editor and language-server support:
+
+```hcl
+resource "host_link" "nvim" {
+  source      = "./nvim"
+  destination = "~/.config/nvim"
+}
+```
+
+The provider creates a symlink only. It refuses to replace an existing regular file or directory at `destination`; move existing content aside before applying.
+
 ## Schedules
 
 Use `host_schedule` to manage a user schedule without configuring a separate schedule name. The provider generates an internal ID, writes runtime files under `./.terraform-provider-host/schedules/<id>`, and installs a managed entry in the current user's crontab.

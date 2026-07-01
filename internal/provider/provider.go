@@ -74,6 +74,7 @@ func (p *HostProvider) Resources(ctx context.Context) []func() resource.Resource
 		NewBrewPackageResource,
 		NewHostFileResource,
 		NewHostFileBlockResource,
+		NewHostLinkResource,
 		NewHostScheduleResource,
 	}
 }
