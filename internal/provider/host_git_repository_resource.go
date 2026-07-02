@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"strings"
 
-	tfpath "github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
@@ -257,7 +256,75 @@ func (r *HostGitRepositoryResource) Delete(ctx context.Context, req resource.Del
 }
 
 func (r *HostGitRepositoryResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, tfpath.Root("path"), req, resp)
+	state, err := r.importRepositoryState(ctx, req.ID)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to import Git repository", err.Error())
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+func (r *HostGitRepositoryResource) importRepositoryState(ctx context.Context, importID string) (HostGitRepositoryResourceModel, error) {
+	if r.gitPath == "" {
+		return HostGitRepositoryResourceModel{}, fmt.Errorf("git executable not found in PATH")
+	}
+
+	pathValue := strings.TrimSpace(importID)
+	if pathValue == "" {
+		return HostGitRepositoryResourceModel{}, fmt.Errorf("import ID must be the repository path")
+	}
+	pathResolved, err := expandHostPath(pathValue)
+	if err != nil {
+		return HostGitRepositoryResourceModel{}, err
+	}
+	if exists, err := pathExists(pathResolved); err != nil {
+		return HostGitRepositoryResourceModel{}, err
+	} else if !exists {
+		return HostGitRepositoryResourceModel{}, fmt.Errorf("repository path %q does not exist", pathResolved)
+	}
+
+	spec := hostGitRepositorySpec{
+		Path:            pathValue,
+		PathResolved:    pathResolved,
+		RemoteName:      "origin",
+		TrackRemote:     false,
+		Recursive:       false,
+		Force:           false,
+		DeleteOnDestroy: false,
+	}
+	if err := ensureGitRepositoryPath(ctx, r.gitPath, spec.PathResolved); err != nil {
+		return HostGitRepositoryResourceModel{}, err
+	}
+
+	url, err := gitRemoteURL(ctx, r.gitPath, spec.PathResolved, spec.RemoteName)
+	if err != nil {
+		return HostGitRepositoryResourceModel{}, err
+	}
+	commit, err := gitCurrentCommit(ctx, r.gitPath, spec.PathResolved)
+	if err != nil {
+		return HostGitRepositoryResourceModel{}, err
+	}
+	dirty, err := gitCheckoutDirty(ctx, r.gitPath, spec.PathResolved)
+	if err != nil {
+		return HostGitRepositoryResourceModel{}, err
+	}
+
+	return HostGitRepositoryResourceModel{
+		ID:              types.StringValue(spec.Path),
+		URL:             types.StringValue(url),
+		Path:            types.StringValue(spec.Path),
+		PathResolved:    types.StringValue(spec.PathResolved),
+		Ref:             types.StringNull(),
+		RemoteName:      types.StringValue(spec.RemoteName),
+		TrackRemote:     types.BoolValue(spec.TrackRemote),
+		Recursive:       types.BoolValue(spec.Recursive),
+		Force:           types.BoolValue(spec.Force),
+		DeleteOnDestroy: types.BoolValue(spec.DeleteOnDestroy),
+		Commit:          types.StringValue(commit),
+		RemoteCommit:    types.StringNull(),
+		Dirty:           types.BoolValue(dirty),
+	}, nil
 }
 
 func (r *HostGitRepositoryResource) syncRepository(ctx context.Context, model HostGitRepositoryResourceModel) (HostGitRepositoryResourceModel, error) {
@@ -528,18 +595,8 @@ func syncGitRepositoryCheckout(ctx context.Context, gitPath string, spec hostGit
 }
 
 func ensureGitRepositoryMatches(ctx context.Context, gitPath string, spec hostGitRepositorySpec) error {
-	info, err := os.Lstat(spec.PathResolved)
-	if err != nil {
-		return fmt.Errorf("read repository path %q: %w", spec.PathResolved, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("repository path %q is a symbolic link; refusing to manage it as host_git_repo", spec.PathResolved)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("repository path %q exists and is not a directory", spec.PathResolved)
-	}
-	if _, err := runGit(ctx, gitPath, spec.PathResolved, "rev-parse", "--is-inside-work-tree"); err != nil {
-		return fmt.Errorf("path %q exists and is not a Git repository", spec.PathResolved)
+	if err := ensureGitRepositoryPath(ctx, gitPath, spec.PathResolved); err != nil {
+		return err
 	}
 	remoteURL, err := gitRemoteURL(ctx, gitPath, spec.PathResolved, spec.RemoteName)
 	if err != nil {
@@ -547,6 +604,23 @@ func ensureGitRepositoryMatches(ctx context.Context, gitPath string, spec hostGi
 	}
 	if remoteURL != spec.URL {
 		return fmt.Errorf("repository %q remote %q is %q, want %q", spec.PathResolved, spec.RemoteName, remoteURL, spec.URL)
+	}
+	return nil
+}
+
+func ensureGitRepositoryPath(ctx context.Context, gitPath string, repoPath string) error {
+	info, err := os.Lstat(repoPath)
+	if err != nil {
+		return fmt.Errorf("read repository path %q: %w", repoPath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("repository path %q is a symbolic link; refusing to manage it as host_git_repo", repoPath)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("repository path %q exists and is not a directory", repoPath)
+	}
+	if _, err := runGit(ctx, gitPath, repoPath, "rev-parse", "--is-inside-work-tree"); err != nil {
+		return fmt.Errorf("path %q exists and is not a Git repository", repoPath)
 	}
 	return nil
 }

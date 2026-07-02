@@ -94,6 +94,44 @@ func TestHostGitRepositorySyncClonesTrackedRef(t *testing.T) {
 	}
 }
 
+func TestHostGitRepositoryImportStateReadsExistingCheckout(t *testing.T) {
+	t.Parallel()
+
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+
+	source := t.TempDir()
+	runTestGit(t, gitPath, source, "init", "-b", "main")
+	runTestGit(t, gitPath, source, "config", "user.email", "test@example.com")
+	runTestGit(t, gitPath, source, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("test\n"), 0o644); err != nil {
+		t.Fatalf("write README: %s", err)
+	}
+	runTestGit(t, gitPath, source, "add", "README.md")
+	runTestGit(t, gitPath, source, "commit", "-m", "initial")
+	wantCommit := stringTrimSpace(runTestGit(t, gitPath, source, "rev-parse", "HEAD"))
+
+	destination := filepath.Join(t.TempDir(), "checkout")
+	runTestGit(t, gitPath, "", "clone", source, destination)
+
+	resource := &HostGitRepositoryResource{gitPath: gitPath}
+	state, err := resource.importRepositoryState(context.Background(), destination)
+	if err != nil {
+		t.Fatalf("importRepositoryState: %s", err)
+	}
+	if state.URL.ValueString() != source {
+		t.Fatalf("url got %q, want %q", state.URL.ValueString(), source)
+	}
+	if state.Commit.ValueString() != wantCommit {
+		t.Fatalf("commit got %q, want %q", state.Commit.ValueString(), wantCommit)
+	}
+	if state.DeleteOnDestroy.ValueBool() {
+		t.Fatal("delete_on_destroy should default to false on import")
+	}
+}
+
 func runTestGit(t *testing.T, gitPath string, workDir string, args ...string) []byte {
 	t.Helper()
 
