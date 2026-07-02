@@ -5,4 +5,5 @@ type HostProviderData struct {
 	BrewManager     BrewPackageManager
 	ScheduleManager ScheduleManager
 	IdentityManager IdentityManager
+	GitPath         string
 }

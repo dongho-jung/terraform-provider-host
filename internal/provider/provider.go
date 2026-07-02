@@ -55,6 +55,11 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		data.BrewManager = NewCLIBrewPackageManager(brewPath)
 	}
 
+	gitPath, err := exec.LookPath("git")
+	if err == nil {
+		data.GitPath = gitPath
+	}
+
 	crontabPath, err := exec.LookPath("crontab")
 	if err != nil {
 		crontabPath = ""
@@ -74,8 +79,10 @@ func (p *HostProvider) Resources(ctx context.Context) []func() resource.Resource
 	return []func() resource.Resource{
 		NewDNFPackageResource,
 		NewBrewPackageResource,
+		NewHostDirResource,
 		NewHostFileResource,
 		NewHostFileBlockResource,
+		NewHostGitRepositoryResource,
 		NewHostLinkResource,
 		NewHostScheduleResource,
 		NewHostGroupResource,

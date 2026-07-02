@@ -81,6 +81,19 @@ resource "host_package_brew" "terraform" {
 
 Set `tap` for packages that live outside Homebrew's default taps. The provider checks `brew tap`, runs `brew tap <tap>` during apply when needed, and then manages the package as `<tap>/<name>`.
 
+## Host Directories
+
+Use `host_dir` to create and permission a host directory:
+
+```hcl
+resource "host_dir" "projects" {
+  path = "~/projects"
+  mode = "0755"
+}
+```
+
+Destroy removes an empty directory by default. Set `recursive_delete = true` only when Terraform should remove the entire directory tree.
+
 ## Host Users and Groups
 
 Use `host_group` and `host_user` to manage local users and supplementary group membership. Passwords are intentionally not managed by this provider; use the operating system, MDM, or a secrets workflow for password setup.
@@ -200,6 +213,22 @@ resource "host_link" "nvim" {
 ```
 
 The provider creates a symlink only. It refuses to replace an existing regular file or directory at `destination`; move existing content aside before applying.
+
+## Git Repositories
+
+Use `host_git_repo` to clone a Git repository into a host path. The `url` can be any remote accepted by `git clone`, including GitHub, GitLab, sourcehut, SSH URLs, HTTPS URLs, or a local path:
+
+```hcl
+resource "host_git_repo" "alias_tips" {
+  url  = "https://github.com/djui/alias-tips.git"
+  path = "~/.zsh/alias-tips"
+
+  ref          = "master"
+  track_remote = true
+}
+```
+
+When `track_remote = true`, the provider resolves the latest remote commit for `ref` during planning and moves the checkout to that commit during apply. When false, the provider clones the repository and leaves an existing checkout at its current commit unless configuration changes. The checkout is detached when Terraform moves it to a specific commit.
 
 ## Schedules
 
