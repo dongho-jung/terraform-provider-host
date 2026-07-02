@@ -230,6 +230,55 @@ resource "host_git_repo" "alias_tips" {
 
 When `track_remote = true`, the provider resolves the latest remote commit for `ref` during planning and moves the checkout to that commit during apply. When false, the provider clones the repository and leaves an existing checkout at its current commit unless configuration changes. The checkout is detached when Terraform moves it to a specific commit.
 
+## macOS Defaults
+
+Use `host_macos_default` to manage one typed macOS `defaults` key. This is the low-level building block for Dock, menu bar, trackpad, language, clock, and accessibility settings:
+
+```hcl
+resource "host_macos_default" "dock_autohide" {
+  domain = "com.apple.dock"
+  key    = "autohide"
+  bool   = true
+
+  restart = ["Dock"]
+}
+
+resource "host_macos_default" "languages" {
+  domain      = "NSGlobalDomain"
+  key         = "AppleLanguages"
+  string_list = ["ko-KR", "en-US"]
+}
+```
+
+Exactly one of `bool`, `int`, `float`, `string`, or `string_list` must be set. The provider uses the macOS `defaults` command when available and can restart affected processes with `restart`, such as `Dock`, `Finder`, or `SystemUIServer`.
+
+When `restart` is omitted, the provider applies built-in restarts for known domains such as Dock, Finder, SystemUIServer menu extras, global preferences, trackpad preferences, and accessibility preferences. Set `restart = []` to disable restarts for a specific default.
+
+Import existing values with `terraform import` using `domain:key`, `user:domain:key`, or `currentHost:domain:key`:
+
+```shell
+terraform import host_macos_default.dock_autohide user:com.apple.dock:autohide
+```
+
+## macOS Dock
+
+Use `host_macos_dock` to manage Dock persistent apps and folders as whole ordered lists:
+
+```hcl
+resource "host_macos_dock" "default" {
+  apps = [
+    "/System/Applications/System Settings.app",
+    "/Applications/Google Chrome.app",
+  ]
+
+  folders = [
+    "/Users/dongho/Downloads",
+  ]
+}
+```
+
+The resource owns the full `persistent-apps` and `persistent-others` arrays. It preserves other Dock settings, restarts Dock by default after writes, and does not clear the Dock on destroy unless `delete_on_destroy = true`.
+
 ## Schedules
 
 Use `host_schedule` to manage a user schedule without configuring a separate schedule name. The provider generates an internal ID, writes runtime files under `./.terraform-provider-host/schedules/<id>`, and installs a managed entry in a crontab.

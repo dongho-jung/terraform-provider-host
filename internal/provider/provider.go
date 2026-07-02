@@ -70,6 +70,12 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 	}
 	data.ScheduleManager = NewCLICronScheduleManager(crontabPath, launchctlPath, data.PackageManager, sudoPath)
 	data.IdentityManager = NewCLIIdentityManager(sudoPath)
+	defaultsPath, err := exec.LookPath("defaults")
+	if err == nil {
+		killallPath, _ := exec.LookPath("killall")
+		data.MacOSDefaultsManager = NewCLIMacOSDefaultsManager(defaultsPath, killallPath)
+		data.MacOSDockManager = NewCLIMacOSDockManager(defaultsPath, killallPath)
+	}
 
 	resp.ResourceData = data
 	resp.DataSourceData = data
@@ -84,6 +90,8 @@ func (p *HostProvider) Resources(ctx context.Context) []func() resource.Resource
 		NewHostFileBlockResource,
 		NewHostGitRepositoryResource,
 		NewHostLinkResource,
+		NewMacOSDefaultResource,
+		NewMacOSDockResource,
 		NewHostScheduleResource,
 		NewHostGroupResource,
 		NewHostUserResource,
