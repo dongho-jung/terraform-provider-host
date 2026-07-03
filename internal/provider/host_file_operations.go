@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 )
 
 const (
@@ -49,10 +48,6 @@ type cleanHostFileManagedBlockState struct {
 	Content string   `json:"content"`
 }
 
-type lockedHostFile struct {
-	lockFile *os.File
-}
-
 func withLockedHostFile(ctx context.Context, path string, fn func(path string) error) error {
 	resolvedPath, err := expandHostPath(path)
 	if err != nil {
@@ -72,28 +67,6 @@ func withLockedHostFile(ctx context.Context, path string, fn func(path string) e
 	}
 
 	return fn(resolvedPath)
-}
-
-func lockHostFile(path string) (*lockedHostFile, error) {
-	sum := sha256.Sum256([]byte(path))
-	lockPath := filepath.Join(os.TempDir(), "terraform-provider-host-"+hex.EncodeToString(sum[:])+".lock")
-
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("open lock file %q: %w", lockPath, err)
-	}
-
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
-		_ = lockFile.Close()
-		return nil, fmt.Errorf("lock file %q: %w", lockPath, err)
-	}
-
-	return &lockedHostFile{lockFile: lockFile}, nil
-}
-
-func (f *lockedHostFile) close() {
-	_ = syscall.Flock(int(f.lockFile.Fd()), syscall.LOCK_UN)
-	_ = f.lockFile.Close()
 }
 
 func readHostFileBlockSpecs(path string, specs []hostFileBlockSpec) ([]hostFileBlockSpec, bool, error) {
