@@ -8,6 +8,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	tfpath "github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -16,8 +17,9 @@ import (
 )
 
 var (
-	_ resource.Resource               = &HostFileResource{}
-	_ resource.ResourceWithModifyPlan = &HostFileResource{}
+	_ resource.Resource                = &HostFileResource{}
+	_ resource.ResourceWithImportState = &HostFileResource{}
+	_ resource.ResourceWithModifyPlan  = &HostFileResource{}
 )
 
 type HostFileResource struct {
@@ -419,6 +421,10 @@ func (r *HostFileResource) Delete(ctx context.Context, req resource.DeleteReques
 	}); err != nil {
 		resp.Diagnostics.AddError("Failed to delete host file blocks", err.Error())
 	}
+}
+
+func (r *HostFileResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, tfpath.Root("path"), req, resp)
 }
 
 func hostFileBlockSpecs(ctx context.Context, blocks types.List) ([]hostFileBlockSpec, diag.Diagnostics) {

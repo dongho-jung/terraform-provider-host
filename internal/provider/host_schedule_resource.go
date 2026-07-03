@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
@@ -15,9 +16,10 @@ import (
 )
 
 var (
-	_ resource.Resource               = &HostScheduleResource{}
-	_ resource.ResourceWithConfigure  = &HostScheduleResource{}
-	_ resource.ResourceWithModifyPlan = &HostScheduleResource{}
+	_ resource.Resource                = &HostScheduleResource{}
+	_ resource.ResourceWithConfigure   = &HostScheduleResource{}
+	_ resource.ResourceWithImportState = &HostScheduleResource{}
+	_ resource.ResourceWithModifyPlan  = &HostScheduleResource{}
 )
 
 type HostScheduleResource struct {
@@ -383,6 +385,15 @@ func (r *HostScheduleResource) Delete(ctx context.Context, req resource.DeleteRe
 	if err := r.manager.DeleteSchedule(ctx, spec); err != nil {
 		resp.Diagnostics.AddError("Failed to delete schedule", err.Error())
 	}
+}
+
+func (r *HostScheduleResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	if err := validateHostScheduleID(req.ID); err != nil {
+		resp.Diagnostics.AddError("Invalid schedule import ID", err.Error())
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), types.StringValue(req.ID))...)
 }
 
 func (r *HostScheduleResource) requireManager(diags *diag.Diagnostics) bool {
