@@ -36,4 +36,6 @@ provider "host" {}
 
 Resources use tools available on the machine running Terraform, such as `dnf`, `brew`, `git`, `crontab`, `defaults`, and `killall`. Resources that mutate protected host state may prompt through `sudo` when Terraform is not already running with the required privileges.
 
-The provider currently has no provider-level configuration arguments.
+By default the provider resolves these tools from PATH and stores runtime metadata under `./.terraform-provider-host` relative to the Terraform working directory. Set provider-level path overrides when Terraform runs with a constrained PATH, or set `runtime_dir` to move generated metadata such as file block state and schedule scripts.
+
+Available provider arguments are `runtime_dir`, `sudo_path`, `dnf_path`, `brew_path`, `git_path`, `crontab_path`, `defaults_path`, `killall_path`, and `swift_path`.

@@ -87,10 +87,15 @@ type brewCaskInfo struct {
 	AutoUpdates bool    `json:"auto_updates"`
 }
 
-func NewCLIBrewPackageManager(brewPath string) *CLIBrewPackageManager {
-	sudoPath, err := exec.LookPath("sudo")
-	if err != nil {
-		sudoPath = ""
+func NewCLIBrewPackageManager(brewPath string, sudoPathOverride ...string) *CLIBrewPackageManager {
+	sudoPath := ""
+	if len(sudoPathOverride) > 0 {
+		sudoPath = sudoPathOverride[0]
+	} else {
+		resolved, err := exec.LookPath("sudo")
+		if err == nil {
+			sudoPath = resolved
+		}
 	}
 
 	return &CLIBrewPackageManager{
