@@ -91,6 +91,7 @@ func (p *HostProvider) Resources(ctx context.Context) []func() resource.Resource
 		NewHostGitRepositoryResource,
 		NewHostLinkResource,
 		NewMacOSDefaultResource,
+		NewMacOSDefaultsResource,
 		NewMacOSDockResource,
 		NewHostScheduleResource,
 		NewHostGroupResource,

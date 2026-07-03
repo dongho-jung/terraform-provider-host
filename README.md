@@ -242,17 +242,40 @@ resource "host_macos_default" "dock_autohide" {
 
   restart = ["Dock"]
 }
+```
 
-resource "host_macos_default" "languages" {
-  domain      = "NSGlobalDomain"
-  key         = "AppleLanguages"
-  string_list = ["ko-KR", "en-US"]
+For larger preference sets, use `host_macos_defaults` and define the keys in one map:
+
+```hcl
+resource "host_macos_defaults" "settings" {
+  defaults = {
+    dock_autohide = {
+      domain = "com.apple.dock"
+      key    = "autohide"
+      bool   = true
+    }
+
+    languages = {
+      domain      = "NSGlobalDomain"
+      key         = "AppleLanguages"
+      string_list = ["ko-KR", "en-US"]
+    }
+
+    show_battery_percent = {
+      domain  = "com.apple.menuextra.battery"
+      key     = "ShowPercent"
+      string  = "YES"
+      restart = ["SystemUIServer"]
+    }
+  }
 }
 ```
 
 Exactly one of `bool`, `int`, `float`, `string`, or `string_list` must be set. The provider uses the macOS `defaults` command when available and can restart affected processes with `restart`, such as `Dock`, `Finder`, or `SystemUIServer`.
 
 When `restart` is omitted, the provider applies built-in restarts for known domains such as Dock, Finder, SystemUIServer menu extras, global preferences, trackpad preferences, and accessibility preferences. Set `restart = []` to disable restarts for a specific default.
+
+Removing an entry from `host_macos_defaults.defaults` leaves that macOS setting in place unless the entry had `delete_on_destroy = true`.
 
 Import existing values with `terraform import` using `domain:key`, `user:domain:key`, or `currentHost:domain:key`:
 
