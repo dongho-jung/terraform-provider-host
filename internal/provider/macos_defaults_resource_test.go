@@ -69,19 +69,10 @@ func TestMacOSDefaultsSpecsFromModelRejectsDuplicateDefaults(t *testing.T) {
 func TestMacOSDefaultsSpecsFromModelParsesGroups(t *testing.T) {
 	t.Parallel()
 
-	groups := mustMacOSSettingsGroupsMap(t, map[string]MacOSSettingsGroupModel{
-		"clock": {
-			Domain: mustMacOSSettingDomain(t, "com.apple.menuextra.clock"),
-			Settings: mustMacOSSettingsGroupSettingsMap(t, map[string]MacOSSettingsGroupSettingModel{
-				"analog": {
-					Key:   types.StringValue("IsAnalog"),
-					Value: mustMacOSDefaultDynamic(t, macOSDefaultValue{Type: macOSDefaultValueBool, Bool: true}),
-				},
-				"show_ampm": {
-					Key:   types.StringValue("ShowAMPM"),
-					Value: mustMacOSDefaultDynamic(t, macOSDefaultValue{Type: macOSDefaultValueBool, Bool: true}),
-				},
-			}),
+	groups := mustMacOSSettingsGroupsMap(t, map[string]map[string]attr.Value{
+		"menuextra.clock": {
+			"IsAnalog": types.BoolValue(true),
+			"ShowAMPM": types.BoolValue(true),
 		},
 	})
 
@@ -94,11 +85,119 @@ func TestMacOSDefaultsSpecsFromModelParsesGroups(t *testing.T) {
 	if len(specs) != 2 {
 		t.Fatalf("got %d specs, want 2", len(specs))
 	}
-	if specs[0].GroupName != "clock" || specs[0].Name != "analog" || specs[0].Spec.ID != "user:com.apple.menuextra.clock:IsAnalog" {
+	if specs[0].GroupName != "menuextra.clock" || specs[0].Name != "IsAnalog" || specs[0].Spec.ID != "user:com.apple.menuextra.clock:IsAnalog" {
 		t.Fatalf("unexpected first grouped spec: %#v", specs[0])
 	}
-	if specs[1].GroupName != "clock" || specs[1].Name != "show_ampm" || specs[1].Spec.ID != "user:com.apple.menuextra.clock:ShowAMPM" {
+	if specs[1].GroupName != "menuextra.clock" || specs[1].Name != "ShowAMPM" || specs[1].Spec.ID != "user:com.apple.menuextra.clock:ShowAMPM" {
 		t.Fatalf("unexpected second grouped spec: %#v", specs[1])
+	}
+}
+
+func TestMacOSDefaultsSpecsFromModelParsesGroupSettingsByMapKey(t *testing.T) {
+	t.Parallel()
+
+	groups := mustMacOSSettingsGroupsMap(t, map[string]map[string]attr.Value{
+		"dock": {
+			"autohide":     types.BoolValue(true),
+			"show-recents": types.BoolValue(false),
+		},
+	})
+
+	specs, diags := macOSDefaultsSpecsFromModel(context.Background(), MacOSDefaultsResourceModel{
+		Groups: groups,
+	})
+	if diags.HasError() {
+		t.Fatalf("unexpected diagnostics: %s", diagnosticsError(diags))
+	}
+	if len(specs) != 2 {
+		t.Fatalf("got %d specs, want 2", len(specs))
+	}
+	if specs[0].Name != "autohide" || specs[0].Spec.ID != "user:com.apple.dock:autohide" || !specs[0].Spec.Value.Bool {
+		t.Fatalf("unexpected autohide spec: %#v", specs[0])
+	}
+	if specs[1].Name != "show-recents" || specs[1].Spec.ID != "user:com.apple.dock:show-recents" || specs[1].Spec.Value.Bool {
+		t.Fatalf("unexpected show-recents spec: %#v", specs[1])
+	}
+}
+
+func TestMacOSDefaultsSpecsFromModelParsesSpecialGroupDomains(t *testing.T) {
+	t.Parallel()
+
+	groups := mustMacOSSettingsGroupsMap(t, map[string]map[string]attr.Value{
+		"global": {
+			"AppleLanguages": types.ListValueMust(types.StringType, []attr.Value{
+				types.StringValue("ko-KR"),
+				types.StringValue("en-US"),
+			}),
+		},
+		"raw:com.example.app": {
+			"Enabled": types.BoolValue(true),
+		},
+	})
+
+	specs, diags := macOSDefaultsSpecsFromModel(context.Background(), MacOSDefaultsResourceModel{
+		Groups: groups,
+	})
+	if diags.HasError() {
+		t.Fatalf("unexpected diagnostics: %s", diagnosticsError(diags))
+	}
+	if len(specs) != 2 {
+		t.Fatalf("got %d specs, want 2", len(specs))
+	}
+	if specs[0].GroupName != "global" || specs[0].Spec.ID != "user:NSGlobalDomain:AppleLanguages" {
+		t.Fatalf("unexpected global spec: %#v", specs[0])
+	}
+	if specs[1].GroupName != "raw:com.example.app" || specs[1].Spec.ID != "user:com.example.app:Enabled" {
+		t.Fatalf("unexpected raw spec: %#v", specs[1])
+	}
+}
+
+func TestMacOSDefaultsSpecsFromModelRejectsGroupSettingsWrapper(t *testing.T) {
+	t.Parallel()
+
+	wrappedSettings, err := macOSSettingsObjectValue(context.Background(), map[string]attr.Value{
+		"autohide": types.BoolValue(true),
+	})
+	if err != nil {
+		t.Fatalf("settings object: %s", err)
+	}
+
+	groups := mustMacOSSettingsGroupsMap(t, map[string]map[string]attr.Value{
+		"dock": {
+			"settings": wrappedSettings,
+		},
+	})
+
+	_, diags := macOSDefaultsSpecsFromModel(context.Background(), MacOSDefaultsResourceModel{
+		Groups: groups,
+	})
+	if !diags.HasError() {
+		t.Fatal("expected settings wrapper diagnostics")
+	}
+}
+
+func TestMacOSDefaultsSpecsFromModelRejectsGroupSettingObjectForm(t *testing.T) {
+	t.Parallel()
+
+	objectForm, err := macOSSettingsObjectValue(context.Background(), map[string]attr.Value{
+		"key":   types.StringValue("show-recents"),
+		"value": types.BoolValue(false),
+	})
+	if err != nil {
+		t.Fatalf("object value: %s", err)
+	}
+
+	groups := mustMacOSSettingsGroupsMap(t, map[string]map[string]attr.Value{
+		"dock": {
+			"show-recents": objectForm,
+		},
+	})
+
+	_, diags := macOSDefaultsSpecsFromModel(context.Background(), MacOSDefaultsResourceModel{
+		Groups: groups,
+	})
+	if !diags.HasError() {
+		t.Fatal("expected object-form group setting diagnostics")
 	}
 }
 
@@ -123,18 +222,27 @@ func TestMacOSDefaultsImportSpecs(t *testing.T) {
 func TestMacOSDefaultsImportSpecsParsesGroupedNames(t *testing.T) {
 	t.Parallel()
 
-	specs, err := macOSDefaultsImportSpecs("clock.analog=user:com.apple.menuextra.clock:IsAnalog,clock.show_ampm=user:com.apple.menuextra.clock:ShowAMPM")
+	specs, err := macOSDefaultsImportSpecs("menuextra.clock/IsAnalog=user:com.apple.menuextra.clock:IsAnalog,menuextra.clock/ShowAMPM=user:com.apple.menuextra.clock:ShowAMPM")
 	if err != nil {
 		t.Fatalf("macOSDefaultsImportSpecs: %s", err)
 	}
 	if len(specs) != 2 {
 		t.Fatalf("got %d specs, want 2", len(specs))
 	}
-	if specs[0].GroupName != "clock" || specs[0].Name != "analog" || specs[0].Spec.ID != "user:com.apple.menuextra.clock:IsAnalog" {
+	if specs[0].GroupName != "menuextra.clock" || specs[0].Name != "IsAnalog" || specs[0].Spec.ID != "user:com.apple.menuextra.clock:IsAnalog" {
 		t.Fatalf("unexpected first grouped import: %#v", specs[0])
 	}
-	if specs[1].GroupName != "clock" || specs[1].Name != "show_ampm" || specs[1].Spec.ID != "user:com.apple.menuextra.clock:ShowAMPM" {
+	if specs[1].GroupName != "menuextra.clock" || specs[1].Name != "ShowAMPM" || specs[1].Spec.ID != "user:com.apple.menuextra.clock:ShowAMPM" {
 		t.Fatalf("unexpected second grouped import: %#v", specs[1])
+	}
+}
+
+func TestMacOSDefaultsImportSpecsRejectsGroupedDomainMismatch(t *testing.T) {
+	t.Parallel()
+
+	_, err := macOSDefaultsImportSpecs("dock/IsAnalog=user:com.apple.menuextra.clock:IsAnalog")
+	if err == nil {
+		t.Fatal("expected grouped domain mismatch error")
 	}
 }
 
@@ -290,16 +398,12 @@ func mustMacOSDefaultsMap(t *testing.T, values map[string]MacOSDefaultsDefaultMo
 	return dynamic
 }
 
-func mustMacOSSettingsGroupsMap(t *testing.T, values map[string]MacOSSettingsGroupModel) types.Dynamic {
+func mustMacOSSettingsGroupsMap(t *testing.T, values map[string]map[string]attr.Value) types.Dynamic {
 	t.Helper()
 
 	elements := make(map[string]attr.Value, len(values))
 	for name, value := range values {
-		if value.Restart.IsNull() {
-			value.Restart = types.ListNull(types.StringType)
-		}
-
-		objectValue, err := macOSSettingsGroupObjectValue(context.Background(), value)
+		objectValue, err := macOSSettingsObjectValue(context.Background(), value)
 		if err != nil {
 			t.Fatalf("group object value: %s", err)
 		}
@@ -309,25 +413,6 @@ func mustMacOSSettingsGroupsMap(t *testing.T, values map[string]MacOSSettingsGro
 	dynamic, err := macOSSettingsDynamicObject(context.Background(), elements)
 	if err != nil {
 		t.Fatalf("groups value: %s", err)
-	}
-	return dynamic
-}
-
-func mustMacOSSettingsGroupSettingsMap(t *testing.T, values map[string]MacOSSettingsGroupSettingModel) types.Dynamic {
-	t.Helper()
-
-	elements := make(map[string]attr.Value, len(values))
-	for name, value := range values {
-		objectValue, err := macOSSettingsGroupSettingObjectValue(context.Background(), value)
-		if err != nil {
-			t.Fatalf("group setting object value: %s", err)
-		}
-		elements[name] = objectValue
-	}
-
-	dynamic, err := macOSSettingsDynamicObject(context.Background(), elements)
-	if err != nil {
-		t.Fatalf("group settings value: %s", err)
 	}
 	return dynamic
 }

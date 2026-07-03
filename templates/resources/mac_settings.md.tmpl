@@ -18,15 +18,17 @@ Use this resource when you want one compact macOS settings block. Put related pr
 
 ## Value Attributes
 
-Set `value` to a bool, number, string, or list of strings. In `groups`, each setting only needs `key` and `value` because the domain is inherited from the group.
+In `groups`, the outer map key is the macOS defaults domain selector and the inner map is defaults key to value. Apple domains omit `com.apple.`, `global` means `NSGlobalDomain`, and non-Apple domains use `raw:<domain>`. Quote keys that contain punctuation, such as `"show-recents" = false`.
+
+Values can be bools, numbers, strings, or lists of strings. Top-level `settings` entries still include `domain`, `key`, and `value`; use them when a setting needs explicit `restart`, `current_host`, or `delete_on_destroy` behavior.
 
 ## Restart Behavior
 
-The provider writes all configured settings, collects restart processes, de-duplicates them, and restarts each process once. When `restart` is omitted for an entry or group, the provider applies built-in restarts for known domains such as Dock, Finder, SystemUIServer menu extras, global preferences, trackpad preferences, and accessibility preferences. Set `restart = []` to disable restarts.
+The provider writes all configured settings, collects restart processes, de-duplicates them, and restarts each process once. Grouped settings use built-in restarts for known domains such as Dock, Finder, SystemUIServer menu extras, global preferences, trackpad preferences, and accessibility preferences. Top-level `settings` entries can set `restart = []` to disable restarts.
 
 ## Destroy Behavior
 
-Removing an entry from `settings` or `groups`, or destroying the resource, leaves that macOS setting in place by default. Set `delete_on_destroy = true` on an entry or group when Terraform should delete defaults keys after removal or destroy.
+Removing an entry from `settings` or `groups`, or destroying the resource, leaves that macOS setting in place by default. Set `delete_on_destroy = true` on a top-level `settings` entry when Terraform should delete a defaults key after removal or destroy.
 
 ## Import
 
@@ -38,10 +40,10 @@ terraform import 'host_mac_settings.settings' 'dock_autohide=user:com.apple.dock
 
 Each import entry uses `<map_key>=<domain>:<key>`, `<map_key>=user:<domain>:<key>`, or `<map_key>=currentHost:<domain>:<key>`. The provider reads only the defaults keys listed in the import ID; it does not scan an entire defaults domain.
 
-Use `<group>.<setting>=<default_id>` when importing directly into `groups`:
+Use `<group>/<setting>=<default_id>` when importing directly into `groups`:
 
 ```shell
-terraform import 'host_mac_settings.settings' 'clock.analog=user:com.apple.menuextra.clock:IsAnalog,clock.show_ampm=user:com.apple.menuextra.clock:ShowAMPM'
+terraform import 'host_mac_settings.settings' 'menuextra.clock/IsAnalog=user:com.apple.menuextra.clock:IsAnalog,menuextra.clock/ShowAMPM=user:com.apple.menuextra.clock:ShowAMPM'
 ```
 
 {{ .SchemaMarkdown | trimspace }}

@@ -253,59 +253,26 @@ For larger preference sets, use `host_mac_settings` and group related keys under
 resource "host_mac_settings" "settings" {
   groups = {
     dock = {
-      domain = {
-        apple = "dock"
-      }
-
-      settings = {
-        autohide = {
-          key   = "autohide"
-          value = true
-        }
-
-        show_recents = {
-          key   = "show-recents"
-          value = false
-        }
-      }
+      autohide       = true
+      "show-recents" = false
     }
 
     global = {
-      domain = {
-        global = true
-      }
-
-      settings = {
-        languages = {
-          key   = "AppleLanguages"
-          value = ["ko-KR", "en-US"]
-        }
-      }
+      AppleLanguages = ["ko-KR", "en-US"]
     }
 
-    battery = {
-      domain = {
-        apple = "menuextra.battery"
-      }
-
-      restart = ["SystemUIServer"]
-
-      settings = {
-        show_percent = {
-          key   = "ShowPercent"
-          value = "YES"
-        }
-      }
+    "menuextra.battery" = {
+      ShowPercent = "YES"
     }
   }
 }
 ```
 
-`value` accepts bools, numbers, strings, and string lists. Domain selectors support `domain.apple` for `com.apple.*` domains, `domain.global = true` for `NSGlobalDomain`, and `domain.raw` for explicit non-Apple domains. The provider uses the macOS `defaults` command when available and can restart affected processes with `restart`, such as `Dock`, `Finder`, or `SystemUIServer`.
+`value` accepts bools, numbers, strings, and string lists. In `groups`, the outer map key is the defaults domain selector and the inner map is defaults key to value. Apple domains omit `com.apple.`, `global` means `NSGlobalDomain`, and non-Apple domains use `raw:<domain>`. The provider uses the macOS `defaults` command when available and can restart affected processes such as `Dock`, `Finder`, or `SystemUIServer`.
 
-When `restart` is omitted, the provider applies built-in restarts for known domains such as Dock, Finder, SystemUIServer menu extras, global preferences, trackpad preferences, and accessibility preferences. Set `restart = []` to disable restarts for a specific setting.
+The provider applies built-in restarts for known domains such as Dock, Finder, SystemUIServer menu extras, global preferences, trackpad preferences, and accessibility preferences. Use top-level `settings` entries when a setting needs explicit `restart`, `current_host`, or `delete_on_destroy` behavior.
 
-Removing an entry from `host_mac_settings.settings` or `host_mac_settings.groups` leaves that macOS setting in place unless the entry had `delete_on_destroy = true`.
+Removing an entry from `host_mac_settings.settings` or `host_mac_settings.groups` leaves that macOS setting in place by default. Use a top-level `settings` entry with `delete_on_destroy = true` when Terraform should delete the defaults key after removal or destroy.
 
 Import one existing value with `terraform import` using `domain:key`, `user:domain:key`, or `currentHost:domain:key`:
 
