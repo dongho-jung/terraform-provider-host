@@ -3,8 +3,10 @@ package provider
 import (
 	"context"
 	"reflect"
+	"sync"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -61,6 +63,14 @@ func (m *fakeBrewPackageManager) MarkPackageOnRequest(ctx context.Context, name 
 func (m *fakeBrewPackageManager) RemovePackage(ctx context.Context, name string, packageType string, autoremove bool, zap bool) error {
 	m.removed = append(m.removed, brewPackageID(packageType, name))
 	return nil
+}
+
+type privilegeReportingBrewPackageManager struct {
+	fakeBrewPackageManager
+}
+
+func (m *privilegeReportingBrewPackageManager) NeedsPrivilegeEscalation() bool {
+	return true
 }
 
 func TestBrewPackageResourceRefreshStateInstalledFormula(t *testing.T) {
@@ -314,5 +324,26 @@ func TestFakeBrewPackageManagerRecordsRemove(t *testing.T) {
 	want := []string{"cask:firefox"}
 	if !reflect.DeepEqual(manager.removed, want) {
 		t.Fatalf("removed %#v, want %#v", manager.removed, want)
+	}
+}
+
+func TestBrewPackageResourceCaskPlanAddsWarningWithoutAuthenticating(t *testing.T) {
+	sudoPlanWarningOnce = sync.Once{}
+
+	resource := &BrewPackageResource{
+		manager: &privilegeReportingBrewPackageManager{},
+	}
+
+	var diags diag.Diagnostics
+	resource.addCaskPrivilegeWarning(&diags, BrewPackageResourceModel{
+		Name:        types.StringValue("firefox"),
+		PackageType: types.StringValue(brewPackageTypeCask),
+	})
+
+	if diags.HasError() {
+		t.Fatalf("expected warning only, got diagnostics: %s", diagnosticsError(diags))
+	}
+	if len(diags.Warnings()) != 1 {
+		t.Fatalf("warnings got %d, want 1", len(diags.Warnings()))
 	}
 }

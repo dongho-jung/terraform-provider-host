@@ -162,7 +162,7 @@ func (r *BrewPackageResource) ModifyPlan(ctx context.Context, req resource.Modif
 		if resp.Diagnostics.HasError() {
 			return
 		}
-		r.addCaskPrivilegeWarning(ctx, &resp.Diagnostics, "remove", state)
+		r.addCaskPrivilegeWarning(&resp.Diagnostics, state)
 		return
 	}
 
@@ -196,7 +196,7 @@ func (r *BrewPackageResource) ModifyPlan(ctx context.Context, req resource.Modif
 			plan.InstalledVersion = types.StringUnknown()
 			plan.CandidateVersion = types.StringUnknown()
 			plan.Pinned = types.BoolUnknown()
-			r.addCaskPrivilegeWarning(ctx, &resp.Diagnostics, "install", plan)
+			r.addCaskPrivilegeWarning(&resp.Diagnostics, plan)
 			resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 			return
 		}
@@ -221,10 +221,10 @@ func (r *BrewPackageResource) ModifyPlan(ctx context.Context, req resource.Modif
 	}
 
 	if !status.Installed {
-		r.addCaskPrivilegeWarning(ctx, &resp.Diagnostics, "install", plan)
+		r.addCaskPrivilegeWarning(&resp.Diagnostics, plan)
 		markBrewVersionStateUnknown(&plan)
 	} else if shouldUpgradeBrewPackage(plan.Version.ValueString(), status) {
-		r.addCaskPrivilegeWarning(ctx, &resp.Diagnostics, "upgrade", plan)
+		r.addCaskPrivilegeWarning(&resp.Diagnostics, plan)
 		markBrewVersionStateUnknown(&plan)
 	}
 
@@ -332,7 +332,7 @@ func (r *BrewPackageResource) Delete(ctx context.Context, req resource.DeleteReq
 	}
 }
 
-func (r *BrewPackageResource) addCaskPrivilegeWarning(ctx context.Context, diags *diag.Diagnostics, action string, model BrewPackageResourceModel) {
+func (r *BrewPackageResource) addCaskPrivilegeWarning(diags *diag.Diagnostics, model BrewPackageResourceModel) {
 	if model.PackageType.IsNull() || model.PackageType.IsUnknown() || model.PackageType.ValueString() != brewPackageTypeCask {
 		return
 	}
@@ -343,22 +343,6 @@ func (r *BrewPackageResource) addCaskPrivilegeWarning(ctx context.Context, diags
 	}
 
 	addSudoPrivilegeWarningOnce(diags)
-
-	preparer, ok := r.manager.(brewCaskPrivilegePreparer)
-	if !ok {
-		return
-	}
-	if err := preparer.PrepareCaskPrivilege(ctx, brewCaskPlanReason(action, model)); err != nil {
-		diags.AddError("Failed to authenticate sudo for Homebrew casks", err.Error())
-	}
-}
-
-type brewCaskPrivilegePreparer interface {
-	PrepareCaskPrivilege(ctx context.Context, reason string) error
-}
-
-func brewCaskPlanReason(action string, model BrewPackageResourceModel) string {
-	return fmt.Sprintf("planned Homebrew cask %s for %q", action, brewPackageCommandName(model))
 }
 
 func (r *BrewPackageResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {

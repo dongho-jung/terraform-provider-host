@@ -270,7 +270,7 @@ func (m *CLIBrewPackageManager) NeedsPrivilegeEscalation() bool {
 }
 
 func (m *CLIBrewPackageManager) keepSudoAlive(ctx context.Context) {
-	ticker := time.NewTicker(time.Minute)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -293,6 +293,10 @@ func (m *CLIBrewPackageManager) ensureCaskSudoLease(ctx context.Context, reason 
 
 	brewSudoLease.mu.Lock()
 	defer brewSudoLease.mu.Unlock()
+
+	if brewSudoLease.active {
+		return nil
+	}
 
 	if err := m.validateSudo(ctx); err == nil {
 		m.startSudoKeepAliveLocked()
