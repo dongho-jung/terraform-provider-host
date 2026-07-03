@@ -679,7 +679,7 @@ func macOSDefaultSpecFromModel(ctx context.Context, model MacOSDefaultResourceMo
 		diags.AddError("Invalid macOS setting", "key must not contain control characters")
 	}
 
-	value, valueDiags := macOSDefaultValueFromModel(ctx, model)
+	value, valueDiags := macOSDefaultValueFromModel(model)
 	diags.Append(valueDiags...)
 	restart, restartDiags := stringListValue(ctx, model.Restart, "restart")
 	diags.Append(restartDiags...)
@@ -702,11 +702,11 @@ func macOSDefaultSpecFromModel(ctx context.Context, model MacOSDefaultResourceMo
 	}, diags
 }
 
-func macOSDefaultValueFromModel(ctx context.Context, model MacOSDefaultResourceModel) (macOSDefaultValue, diag.Diagnostics) {
-	return macOSDefaultValueFromDynamic(ctx, model.Value)
+func macOSDefaultValueFromModel(model MacOSDefaultResourceModel) (macOSDefaultValue, diag.Diagnostics) {
+	return macOSDefaultValueFromDynamic(model.Value)
 }
 
-func macOSDefaultValueFromDynamic(ctx context.Context, value types.Dynamic) (macOSDefaultValue, diag.Diagnostics) {
+func macOSDefaultValueFromDynamic(value types.Dynamic) (macOSDefaultValue, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
 	if value.IsNull() || value.IsUnknown() || value.IsUnderlyingValueNull() || value.IsUnderlyingValueUnknown() {
@@ -778,13 +778,13 @@ func macOSDefaultModelWithValue(ctx context.Context, model MacOSDefaultResourceM
 	model.DomainResolved = types.StringValue(domain)
 
 	if !model.Value.IsNull() && !model.Value.IsUnknown() && !model.Value.IsUnderlyingValueNull() && !model.Value.IsUnderlyingValueUnknown() {
-		configured, valueDiags := macOSDefaultValueFromDynamic(ctx, model.Value)
+		configured, valueDiags := macOSDefaultValueFromDynamic(model.Value)
 		if !valueDiags.HasError() && macOSDefaultValuesEqual(configured, value) {
 			return model, nil
 		}
 	}
 
-	dynamic, err := macOSDefaultDynamicValue(ctx, value)
+	dynamic, err := macOSDefaultDynamicValue(value)
 	if err != nil {
 		return model, err
 	}
@@ -823,7 +823,7 @@ func macOSDefaultStringSliceFromElements(elements []attr.Value) ([]string, error
 	return result, nil
 }
 
-func macOSDefaultDynamicValue(ctx context.Context, value macOSDefaultValue) (types.Dynamic, error) {
+func macOSDefaultDynamicValue(value macOSDefaultValue) (types.Dynamic, error) {
 	switch value.Type {
 	case macOSDefaultValueBool:
 		return types.DynamicValue(types.BoolValue(value.Bool)), nil

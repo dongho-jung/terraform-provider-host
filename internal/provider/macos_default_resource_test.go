@@ -12,14 +12,14 @@ import (
 func TestMacOSDefaultValueFromModelRequiresExactlyOneValue(t *testing.T) {
 	t.Parallel()
 
-	_, diags := macOSDefaultValueFromModel(context.Background(), MacOSDefaultResourceModel{
+	_, diags := macOSDefaultValueFromModel(MacOSDefaultResourceModel{
 		Value: types.DynamicNull(),
 	})
 	if !diags.HasError() {
 		t.Fatal("expected error when no value is configured")
 	}
 
-	value, diags := macOSDefaultValueFromModel(context.Background(), MacOSDefaultResourceModel{
+	value, diags := macOSDefaultValueFromModel(MacOSDefaultResourceModel{
 		Value: types.DynamicValue(types.BoolValue(true)),
 	})
 	if diags.HasError() {
@@ -171,7 +171,7 @@ func TestMacOSDefaultResourceImportStateReadsCurrentValue(t *testing.T) {
 	if state.DomainResolved.ValueString() != "com.apple.dock" || state.Key.ValueString() != "autohide" {
 		t.Fatalf("got domain=%q key=%q", state.DomainResolved.ValueString(), state.Key.ValueString())
 	}
-	importedValue, diags := macOSDefaultValueFromDynamic(context.Background(), state.Value)
+	importedValue, diags := macOSDefaultValueFromDynamic(state.Value)
 	if diags.HasError() {
 		t.Fatalf("imported value diagnostics: %s", diagnosticsError(diags))
 	}
@@ -238,7 +238,7 @@ func mustMacOSSettingDomain(t *testing.T, domain string) types.Object {
 func mustMacOSDefaultDynamic(t *testing.T, value macOSDefaultValue) types.Dynamic {
 	t.Helper()
 
-	dynamic, err := macOSDefaultDynamicValue(context.Background(), value)
+	dynamic, err := macOSDefaultDynamicValue(value)
 	if err != nil {
 		t.Fatalf("dynamic value: %s", err)
 	}

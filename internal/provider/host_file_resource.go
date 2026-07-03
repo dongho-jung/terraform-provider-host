@@ -571,58 +571,6 @@ func hostFileBlockSpecLess(a hostFileBlockSpec, b hostFileBlockSpec) bool {
 	return a.Name < b.Name
 }
 
-func hostFileBlockListValue(ctx context.Context, specs []hostFileBlockSpec, diags *diag.Diagnostics) types.List {
-	elements := make([]HostFileBlockModel, 0, len(specs))
-	for _, spec := range specs {
-		before := types.ListNull(types.StringType)
-		if len(spec.Before) > 0 {
-			beforeValue, beforeDiags := types.ListValueFrom(ctx, types.StringType, spec.Before)
-			diags.Append(beforeDiags...)
-			before = beforeValue
-		}
-		after := types.ListNull(types.StringType)
-		if len(spec.After) > 0 {
-			afterValue, afterDiags := types.ListValueFrom(ctx, types.StringType, spec.After)
-			diags.Append(afterDiags...)
-			after = afterValue
-		}
-		if diags.HasError() {
-			return types.ListUnknown(hostFileBlockObjectType())
-		}
-
-		content := types.StringNull()
-		if spec.Content != nil {
-			content = types.StringValue(*spec.Content)
-		}
-
-		elements = append(elements, HostFileBlockModel{
-			Name:    types.StringValue(spec.Name),
-			Before:  before,
-			After:   after,
-			Content: content,
-		})
-	}
-
-	block, blockDiags := types.ListValueFrom(ctx, hostFileBlockObjectType(), elements)
-	diags.Append(blockDiags...)
-	if diags.HasError() {
-		return types.ListUnknown(hostFileBlockObjectType())
-	}
-
-	return block
-}
-
-func hostFileBlockObjectType() types.ObjectType {
-	return types.ObjectType{
-		AttrTypes: map[string]attr.Type{
-			"name":    types.StringType,
-			"before":  types.ListType{ElemType: types.StringType},
-			"after":   types.ListType{ElemType: types.StringType},
-			"content": types.StringType,
-		},
-	}
-}
-
 func hostFileBlockReferenceMapValue(path string, pathResolved string, specs []hostFileBlockSpec, diags *diag.Diagnostics) types.Map {
 	elements := make(map[string]attr.Value, len(specs))
 	for _, spec := range sortedHostFileBlockSpecs(specs) {

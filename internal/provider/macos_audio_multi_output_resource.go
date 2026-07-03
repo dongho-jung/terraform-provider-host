@@ -288,7 +288,7 @@ func (r *MacOSAudioMultiOutputResource) ImportState(ctx context.Context, req res
 		return
 	}
 
-	state, err := macOSAudioMultiOutputImportedModel(ctx, actual)
+	state, err := macOSAudioMultiOutputImportedModel(actual)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to import macOS multi-output device", err.Error())
 		return
@@ -608,7 +608,7 @@ func macOSAudioMultiOutputDevicesList(models []MacOSAudioMultiOutputDeviceModel)
 	return list, nil
 }
 
-func macOSAudioMultiOutputImportedModel(ctx context.Context, spec MacOSAudioMultiOutputSpec) (MacOSAudioMultiOutputResourceModel, error) {
+func macOSAudioMultiOutputImportedModel(spec MacOSAudioMultiOutputSpec) (MacOSAudioMultiOutputResourceModel, error) {
 	primary, err := macOSAudioDeviceSelectorObject(MacOSAudioDeviceSelectorModel{
 		UID:         types.StringValue(spec.PrimaryDeviceUID),
 		ResolvedUID: types.StringValue(spec.PrimaryDeviceUID),
