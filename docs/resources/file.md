@@ -83,6 +83,7 @@ resource "host_file_block" "bar_function" {
 
 - `blocks` (Attributes Map) Computed file block references for `host_file_block` resources. (see [below for nested schema](#nestedatt--blocks))
 - `id` (String) Resource identifier, equal to `path`.
+- `path_resolved` (String) Resolved absolute host file path.
 - `rendered_content` (String) Last content observed in the host file. Used to detect drift.
 
 <a id="nestedblock--block"></a>
@@ -106,3 +107,4 @@ Read-Only:
 
 - `name` (String) File block name.
 - `path` (String) Path to the host file that contains this block.
+- `path_resolved` (String) Resolved absolute host file path that contains this block.

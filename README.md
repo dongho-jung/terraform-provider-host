@@ -230,65 +230,101 @@ resource "host_git_repo" "alias_tips" {
 
 When `track_remote = true`, the provider resolves the latest remote commit for `ref` during planning and moves the checkout to that commit during apply. When false, the provider clones the repository and leaves an existing checkout at its current commit unless configuration changes. The checkout is detached when Terraform moves it to a specific commit.
 
-## macOS Defaults
+## macOS Settings
 
-Use `host_macos_default` to manage one typed macOS `defaults` key. This is the low-level building block for Dock, menu bar, trackpad, language, clock, and accessibility settings:
+Use `host_mac_setting` to manage one macOS setting backed by a `defaults` key. This is the low-level building block for Dock, menu bar, trackpad, language, clock, and accessibility settings:
 
 ```hcl
-resource "host_macos_default" "dock_autohide" {
-  domain = "com.apple.dock"
-  key    = "autohide"
-  bool   = true
+resource "host_mac_setting" "dock_autohide" {
+  domain = {
+    apple = "dock"
+  }
+
+  key   = "autohide"
+  value = true
 
   restart = ["Dock"]
 }
 ```
 
-For larger preference sets, use `host_macos_defaults` and define the keys in one map:
+For larger preference sets, use `host_mac_settings` and group related keys under a shared domain:
 
 ```hcl
-resource "host_macos_defaults" "settings" {
-  defaults = {
-    dock_autohide = {
-      domain = "com.apple.dock"
-      key    = "autohide"
-      bool   = true
+resource "host_mac_settings" "settings" {
+  groups = {
+    dock = {
+      domain = {
+        apple = "dock"
+      }
+
+      settings = {
+        autohide = {
+          key   = "autohide"
+          value = true
+        }
+
+        show_recents = {
+          key   = "show-recents"
+          value = false
+        }
+      }
     }
 
-    languages = {
-      domain      = "NSGlobalDomain"
-      key         = "AppleLanguages"
-      string_list = ["ko-KR", "en-US"]
+    global = {
+      domain = {
+        global = true
+      }
+
+      settings = {
+        languages = {
+          key   = "AppleLanguages"
+          value = ["ko-KR", "en-US"]
+        }
+      }
     }
 
-    show_battery_percent = {
-      domain  = "com.apple.menuextra.battery"
-      key     = "ShowPercent"
-      string  = "YES"
+    battery = {
+      domain = {
+        apple = "menuextra.battery"
+      }
+
       restart = ["SystemUIServer"]
+
+      settings = {
+        show_percent = {
+          key   = "ShowPercent"
+          value = "YES"
+        }
+      }
     }
   }
 }
 ```
 
-Exactly one of `bool`, `int`, `float`, `string`, or `string_list` must be set. The provider uses the macOS `defaults` command when available and can restart affected processes with `restart`, such as `Dock`, `Finder`, or `SystemUIServer`.
+`value` accepts bools, numbers, strings, and string lists. Domain selectors support `domain.apple` for `com.apple.*` domains, `domain.global = true` for `NSGlobalDomain`, and `domain.raw` for explicit non-Apple domains. The provider uses the macOS `defaults` command when available and can restart affected processes with `restart`, such as `Dock`, `Finder`, or `SystemUIServer`.
 
-When `restart` is omitted, the provider applies built-in restarts for known domains such as Dock, Finder, SystemUIServer menu extras, global preferences, trackpad preferences, and accessibility preferences. Set `restart = []` to disable restarts for a specific default.
+When `restart` is omitted, the provider applies built-in restarts for known domains such as Dock, Finder, SystemUIServer menu extras, global preferences, trackpad preferences, and accessibility preferences. Set `restart = []` to disable restarts for a specific setting.
 
-Removing an entry from `host_macos_defaults.defaults` leaves that macOS setting in place unless the entry had `delete_on_destroy = true`.
+Removing an entry from `host_mac_settings.settings` or `host_mac_settings.groups` leaves that macOS setting in place unless the entry had `delete_on_destroy = true`.
 
-Import existing values with `terraform import` using `domain:key`, `user:domain:key`, or `currentHost:domain:key`:
+Import one existing value with `terraform import` using `domain:key`, `user:domain:key`, or `currentHost:domain:key`:
 
 ```shell
-terraform import host_macos_default.dock_autohide user:com.apple.dock:autohide
+terraform import host_mac_setting.dock_autohide user:com.apple.dock:autohide
+```
+
+For grouped settings, import the selected existing values with `<map_key>=<setting_id>` entries:
+
+```shell
+terraform import 'host_mac_settings.settings' 'dock_autohide=user:com.apple.dock:autohide,languages=NSGlobalDomain:AppleLanguages'
 ```
 
 ## macOS Dock
 
-Use `host_macos_dock` to manage Dock persistent apps and folders as whole ordered lists:
+Use `host_mac_dock` to manage Dock persistent apps and folders as whole ordered lists:
 
 ```hcl
-resource "host_macos_dock" "default" {
+resource "host_mac_dock" "default" {
   apps = [
     "/System/Applications/System Settings.app",
     "/Applications/Google Chrome.app",
@@ -301,6 +337,44 @@ resource "host_macos_dock" "default" {
 ```
 
 The resource owns the full `persistent-apps` and `persistent-others` arrays. It preserves other Dock settings, restarts Dock by default after writes, and does not clear the Dock on destroy unless `delete_on_destroy = true`.
+
+## macOS Audio
+
+Use `host_mac_audio_multi_output` to create or adopt a CoreAudio multi-output device. Use `depends_on` to ensure virtual audio drivers are installed before the provider resolves CoreAudio devices:
+
+```hcl
+resource "host_package_brew" "blackhole_2ch" {
+  name         = "blackhole-2ch"
+  package_type = "cask"
+}
+
+resource "host_mac_audio_multi_output" "default" {
+  name = "Multi-Output Device"
+
+  primary_device = {
+    name = "BlackHole 2ch"
+  }
+
+  devices = [
+    {
+      builtin_output = "headphones"
+    },
+    {
+      name = "BlackHole 2ch"
+    },
+  ]
+
+  sample_rate_hz = 48000
+  default_output = true
+  system_output  = true
+
+  depends_on = [
+    host_package_brew.blackhole_2ch,
+  ]
+}
+```
+
+When `uid` is omitted, the provider adopts an existing multi-output device with the same name if exactly one exists. Otherwise it creates one with a provider-owned UID.
 
 ## Schedules
 

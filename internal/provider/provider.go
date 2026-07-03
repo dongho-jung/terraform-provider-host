@@ -64,17 +64,17 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 	if err != nil {
 		crontabPath = ""
 	}
-	launchctlPath, err := exec.LookPath("launchctl")
-	if err != nil {
-		launchctlPath = ""
-	}
-	data.ScheduleManager = NewCLICronScheduleManager(crontabPath, launchctlPath, data.PackageManager, sudoPath)
+	data.ScheduleManager = NewCLICronScheduleManager(crontabPath, data.PackageManager, sudoPath)
 	data.IdentityManager = NewCLIIdentityManager(sudoPath)
 	defaultsPath, err := exec.LookPath("defaults")
 	if err == nil {
 		killallPath, _ := exec.LookPath("killall")
 		data.MacOSDefaultsManager = NewCLIMacOSDefaultsManager(defaultsPath, killallPath)
 		data.MacOSDockManager = NewCLIMacOSDockManager(defaultsPath, killallPath)
+	}
+	swiftPath, err := exec.LookPath("swift")
+	if err == nil {
+		data.MacOSAudioManager = NewCLIMacOSAudioManager(swiftPath)
 	}
 
 	resp.ResourceData = data
@@ -93,6 +93,7 @@ func (p *HostProvider) Resources(ctx context.Context) []func() resource.Resource
 		NewMacOSDefaultResource,
 		NewMacOSDefaultsResource,
 		NewMacOSDockResource,
+		NewMacOSAudioMultiOutputResource,
 		NewHostScheduleResource,
 		NewHostGroupResource,
 		NewHostUserResource,
@@ -102,6 +103,7 @@ func (p *HostProvider) Resources(ctx context.Context) []func() resource.Resource
 func (p *HostProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		NewHostGroupDataSource,
+		NewMacOSAudioDeviceDataSource,
 	}
 }
 

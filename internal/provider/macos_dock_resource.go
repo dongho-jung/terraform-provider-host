@@ -73,7 +73,7 @@ func NewMacOSDockResource() resource.Resource {
 }
 
 func (r *MacOSDockResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
-	resp.TypeName = req.ProviderTypeName + "_macos_dock"
+	resp.TypeName = req.ProviderTypeName + "_mac_dock"
 }
 
 func (r *MacOSDockResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
@@ -121,7 +121,7 @@ func (r *MacOSDockResource) Configure(ctx context.Context, req resource.Configur
 	switch data := req.ProviderData.(type) {
 	case HostProviderData:
 		if data.MacOSDockManager == nil {
-			resp.Diagnostics.AddError("macOS Dock unavailable", "`host_macos_dock` requires the macOS `defaults` command.")
+			resp.Diagnostics.AddError("macOS Dock unavailable", "`host_mac_dock` requires the macOS `defaults` command.")
 			return
 		}
 		r.manager = data.MacOSDockManager
@@ -213,7 +213,7 @@ func (r *MacOSDockResource) Delete(ctx context.Context, req resource.DeleteReque
 		return
 	}
 	if r.manager == nil {
-		resp.Diagnostics.AddError("macOS Dock unavailable", "`host_macos_dock` requires the macOS `defaults` command.")
+		resp.Diagnostics.AddError("macOS Dock unavailable", "`host_mac_dock` requires the macOS `defaults` command.")
 		return
 	}
 
@@ -235,7 +235,7 @@ func (r *MacOSDockResource) ImportState(ctx context.Context, req resource.Import
 		return
 	}
 	if r.manager == nil {
-		resp.Diagnostics.AddError("macOS Dock unavailable", "`host_macos_dock` requires the macOS `defaults` command.")
+		resp.Diagnostics.AddError("macOS Dock unavailable", "`host_mac_dock` requires the macOS `defaults` command.")
 		return
 	}
 

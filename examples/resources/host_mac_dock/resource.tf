@@ -1,4 +1,4 @@
-resource "host_macos_dock" "default" {
+resource "host_mac_dock" "default" {
   apps = [
     "/System/Applications/System Settings.app",
     "/Applications/Google Chrome.app",

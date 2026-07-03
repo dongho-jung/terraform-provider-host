@@ -46,7 +46,6 @@ resource "host_schedule" "system_example" {
 - `enabled` (Boolean) Whether the schedule should be present in the user's crontab.
 - `environment` (Map of String) Environment variables passed to the scheduled command.
 - `every` (String) Interval duration such as `15m`, `1h`, or `24h`. Mutually exclusive with `schedule`.
-- `run_at_load` (Boolean) Run the command when the scheduler loads. Not supported by the cron backend.
 - `schedule` (String) Five-field cron-style calendar schedule, or one of `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`. Mutually exclusive with `every`.
 - `scope` (String) Schedule scope. Supported values are `user` and `system`. `system` manages the root crontab and requires root privileges.
 - `shell` (String) Absolute path to the shell used as the generated script interpreter.
@@ -57,8 +56,10 @@ resource "host_schedule" "system_example" {
 
 ### Read-Only
 
-- `backend` (String) Scheduler backend currently managing this schedule. New and updated schedules use `cron`; existing local `launchd` schedules are migrated to `cron` on the next update.
+- `backend` (String) Scheduler backend currently managing this schedule. This provider currently writes cron schedules.
 - `id` (String) Provider-generated schedule identifier. This is stored in Terraform state and is not configured manually.
-- `label` (String) Legacy launchd label. This is null for cron-backed schedules.
-- `plist_path` (String) Legacy launchd plist path. This is null for cron-backed schedules.
+- `runtime_dir` (String) Generated schedule runtime directory under `./.terraform-provider-host/schedules/<id>`.
 - `script_path` (String) Generated script path under `./.terraform-provider-host/schedules/<id>`.
+- `stderr_path_resolved` (String) Resolved absolute stderr log path, when `stderr_path` is set.
+- `stdout_path_resolved` (String) Resolved absolute stdout log path, when `stdout_path` is set.
+- `working_directory_resolved` (String) Resolved absolute working directory path, when `working_directory` is set.

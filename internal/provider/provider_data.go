@@ -8,4 +8,5 @@ type HostProviderData struct {
 	GitPath              string
 	MacOSDefaultsManager MacOSDefaultsManager
 	MacOSDockManager     MacOSDockManager
+	MacOSAudioManager    MacOSAudioManager
 }

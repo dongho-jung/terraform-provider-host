@@ -193,31 +193,6 @@ func TestUpsertManagedBlockSortsByAfterReferences(t *testing.T) {
 	}
 }
 
-func TestParseManagedBlockLinesSupportsLegacyBlocks(t *testing.T) {
-	t.Parallel()
-
-	block, err := parseManagedBlockLines(splitHostFileLines("# BEGIN Terraform host_file_block id-legacy\nalias legacy=legacy\n# END Terraform host_file_block id-legacy\n"))
-	if err != nil {
-		t.Fatalf("unexpected error: %s", err)
-	}
-
-	if block.body != "alias legacy=legacy\n" {
-		t.Fatalf("got body %q", block.body)
-	}
-}
-
-func TestParseManagedBlockLinesSkipsLegacyPriorityMarker(t *testing.T) {
-	t.Parallel()
-
-	block, err := parseManagedBlockLines(splitHostFileLines("# BEGIN Terraform host_file_block id-legacy\n# Terraform host_file_block priority 10\nalias legacy=legacy\n# END Terraform host_file_block id-legacy\n"))
-	if err != nil {
-		t.Fatalf("unexpected error: %s", err)
-	}
-	if block.body != "alias legacy=legacy\n" {
-		t.Fatalf("got body %q", block.body)
-	}
-}
-
 func TestReconcileHostFileBlocksSetsInlineContentAndPreservesManagedBlocks(t *testing.T) {
 	t.Parallel()
 

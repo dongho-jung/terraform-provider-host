@@ -19,11 +19,10 @@ import (
 const versionLatest = "latest"
 
 var (
-	_ resource.Resource                 = &DNFPackageResource{}
-	_ resource.ResourceWithConfigure    = &DNFPackageResource{}
-	_ resource.ResourceWithImportState  = &DNFPackageResource{}
-	_ resource.ResourceWithModifyPlan   = &DNFPackageResource{}
-	_ resource.ResourceWithUpgradeState = &DNFPackageResource{}
+	_ resource.Resource                = &DNFPackageResource{}
+	_ resource.ResourceWithConfigure   = &DNFPackageResource{}
+	_ resource.ResourceWithImportState = &DNFPackageResource{}
+	_ resource.ResourceWithModifyPlan  = &DNFPackageResource{}
 )
 
 type DNFPackageResource struct {
@@ -41,21 +40,6 @@ type DNFPackageResourceModel struct {
 	Autoremove       types.Bool   `tfsdk:"autoremove"`
 	InstalledVersion types.String `tfsdk:"installed_version"`
 	CandidateVersion types.String `tfsdk:"candidate_version"`
-}
-
-type dnfPackageResourceModelV1 struct {
-	ID         types.String `tfsdk:"id"`
-	Name       types.String `tfsdk:"name"`
-	Autoremove types.Bool   `tfsdk:"autoremove"`
-}
-
-type dnfPackageResourceModelV0 struct {
-	ID         types.String `tfsdk:"id"`
-	Name       types.String `tfsdk:"name"`
-	Autoremove types.Bool   `tfsdk:"autoremove"`
-	Installed  types.Bool   `tfsdk:"installed"`
-	Reason     types.String `tfsdk:"reason"`
-	ReasonUser types.Bool   `tfsdk:"reason_user"`
 }
 
 func NewDNFPackageResource() resource.Resource {
@@ -110,94 +94,6 @@ func (r *DNFPackageResource) Schema(ctx context.Context, req resource.SchemaRequ
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
-			},
-		},
-	}
-}
-
-func (r *DNFPackageResource) UpgradeState(ctx context.Context) map[int64]resource.StateUpgrader {
-	return map[int64]resource.StateUpgrader{
-		0: {
-			PriorSchema: &schema.Schema{
-				Attributes: map[string]schema.Attribute{
-					"id": schema.StringAttribute{
-						Computed: true,
-					},
-					"name": schema.StringAttribute{
-						Required: true,
-					},
-					"autoremove": schema.BoolAttribute{
-						Optional: true,
-						Computed: true,
-					},
-					"installed": schema.BoolAttribute{
-						Computed: true,
-					},
-					"reason": schema.StringAttribute{
-						Computed: true,
-					},
-					"reason_user": schema.BoolAttribute{
-						Computed: true,
-					},
-				},
-			},
-			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
-				var prior dnfPackageResourceModelV0
-				resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
-				if resp.Diagnostics.HasError() {
-					return
-				}
-
-				upgraded := DNFPackageResourceModel{
-					ID:               prior.ID,
-					Name:             prior.Name,
-					Version:          types.StringValue(versionLatest),
-					Autoremove:       prior.Autoremove,
-					InstalledVersion: types.StringNull(),
-					CandidateVersion: types.StringNull(),
-				}
-				if upgraded.Autoremove.IsNull() || upgraded.Autoremove.IsUnknown() {
-					upgraded.Autoremove = types.BoolValue(true)
-				}
-
-				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
-			},
-		},
-		1: {
-			PriorSchema: &schema.Schema{
-				Attributes: map[string]schema.Attribute{
-					"id": schema.StringAttribute{
-						Computed: true,
-					},
-					"name": schema.StringAttribute{
-						Required: true,
-					},
-					"autoremove": schema.BoolAttribute{
-						Optional: true,
-						Computed: true,
-					},
-				},
-			},
-			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
-				var prior dnfPackageResourceModelV1
-				resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
-				if resp.Diagnostics.HasError() {
-					return
-				}
-
-				upgraded := DNFPackageResourceModel{
-					ID:               prior.ID,
-					Name:             prior.Name,
-					Version:          types.StringValue(versionLatest),
-					Autoremove:       prior.Autoremove,
-					InstalledVersion: types.StringNull(),
-					CandidateVersion: types.StringNull(),
-				}
-				if upgraded.Autoremove.IsNull() || upgraded.Autoremove.IsUnknown() {
-					upgraded.Autoremove = types.BoolValue(true)
-				}
-
-				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
 			},
 		},
 	}

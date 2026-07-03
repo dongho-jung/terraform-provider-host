@@ -29,5 +29,6 @@ resource "host_link" "nvim" {
 
 ### Read-Only
 
+- `destination_path` (String) Resolved absolute symbolic link destination path.
 - `id` (String) Resource identifier, equal to `destination`.
 - `source_path` (String) Resolved absolute source path currently stored in the symbolic link.

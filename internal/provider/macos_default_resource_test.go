@@ -12,21 +12,15 @@ import (
 func TestMacOSDefaultValueFromModelRequiresExactlyOneValue(t *testing.T) {
 	t.Parallel()
 
-	_, diags := macOSDefaultValueFromModel(context.Background(), MacOSDefaultResourceModel{})
+	_, diags := macOSDefaultValueFromModel(context.Background(), MacOSDefaultResourceModel{
+		Value: types.DynamicNull(),
+	})
 	if !diags.HasError() {
 		t.Fatal("expected error when no value is configured")
 	}
 
-	_, diags = macOSDefaultValueFromModel(context.Background(), MacOSDefaultResourceModel{
-		Bool:   types.BoolValue(true),
-		String: types.StringValue("true"),
-	})
-	if !diags.HasError() {
-		t.Fatal("expected error when multiple values are configured")
-	}
-
 	value, diags := macOSDefaultValueFromModel(context.Background(), MacOSDefaultResourceModel{
-		Bool: types.BoolValue(true),
+		Value: types.DynamicValue(types.BoolValue(true)),
 	})
 	if diags.HasError() {
 		t.Fatalf("unexpected diagnostics: %s", diagnosticsError(diags))
@@ -86,10 +80,10 @@ func TestMacOSDefaultSpecUsesDefaultRestartsWhenRestartOmitted(t *testing.T) {
 	t.Parallel()
 
 	spec, diags := macOSDefaultSpecFromModel(context.Background(), MacOSDefaultResourceModel{
-		Domain:          types.StringValue("com.apple.dock"),
+		Domain:          mustMacOSSettingDomain(t, "com.apple.dock"),
 		Key:             types.StringValue("autohide"),
 		CurrentHost:     types.BoolValue(false),
-		Bool:            types.BoolValue(true),
+		Value:           mustMacOSDefaultDynamic(t, macOSDefaultValue{Type: macOSDefaultValueBool, Bool: true}),
 		DeleteOnDestroy: types.BoolValue(false),
 		Restart:         types.ListNull(types.StringType),
 	})
@@ -110,10 +104,10 @@ func TestMacOSDefaultSpecRespectsEmptyRestartList(t *testing.T) {
 	}
 
 	spec, specDiags := macOSDefaultSpecFromModel(context.Background(), MacOSDefaultResourceModel{
-		Domain:          types.StringValue("com.apple.dock"),
+		Domain:          mustMacOSSettingDomain(t, "com.apple.dock"),
 		Key:             types.StringValue("autohide"),
 		CurrentHost:     types.BoolValue(false),
-		Bool:            types.BoolValue(true),
+		Value:           mustMacOSDefaultDynamic(t, macOSDefaultValue{Type: macOSDefaultValueBool, Bool: true}),
 		DeleteOnDestroy: types.BoolValue(false),
 		Restart:         emptyRestart,
 	})
@@ -174,11 +168,15 @@ func TestMacOSDefaultResourceImportStateReadsCurrentValue(t *testing.T) {
 	if state.ID.ValueString() != "user:com.apple.dock:autohide" {
 		t.Fatalf("id got %q", state.ID.ValueString())
 	}
-	if state.Domain.ValueString() != "com.apple.dock" || state.Key.ValueString() != "autohide" {
-		t.Fatalf("got domain=%q key=%q", state.Domain.ValueString(), state.Key.ValueString())
+	if state.DomainResolved.ValueString() != "com.apple.dock" || state.Key.ValueString() != "autohide" {
+		t.Fatalf("got domain=%q key=%q", state.DomainResolved.ValueString(), state.Key.ValueString())
 	}
-	if state.Bool.IsNull() || !state.Bool.ValueBool() {
-		t.Fatalf("expected imported bool true, got %#v", state.Bool)
+	importedValue, diags := macOSDefaultValueFromDynamic(context.Background(), state.Value)
+	if diags.HasError() {
+		t.Fatalf("imported value diagnostics: %s", diagnosticsError(diags))
+	}
+	if importedValue.Type != macOSDefaultValueBool || !importedValue.Bool {
+		t.Fatalf("expected imported bool true, got %#v", importedValue)
 	}
 }
 
@@ -200,6 +198,51 @@ func TestParseMacOSDefaultReadValue(t *testing.T) {
 	if !reflect.DeepEqual(value.StringList, []string{"en-US", "ko-KR"}) {
 		t.Fatalf("got %#v", value.StringList)
 	}
+}
+
+func TestMacOSSettingDomainFromObject(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"com.apple.dock": "com.apple.dock",
+		"NSGlobalDomain": "NSGlobalDomain",
+		"com.apple.driver.AppleBluetoothMultitouch.trackpad": "com.apple.driver.AppleBluetoothMultitouch.trackpad",
+		"org.example.app": "org.example.app",
+	}
+	for input, want := range tests {
+		t.Run(input, func(t *testing.T) {
+			t.Parallel()
+
+			object := mustMacOSSettingDomain(t, input)
+			got, diags := macOSSettingDomainFromObject(context.Background(), object)
+			if diags.HasError() {
+				t.Fatalf("domain from object: %s", diagnosticsError(diags))
+			}
+			if got != want {
+				t.Fatalf("got %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func mustMacOSSettingDomain(t *testing.T, domain string) types.Object {
+	t.Helper()
+
+	object, err := macOSSettingDomainObjectFromResolved(domain)
+	if err != nil {
+		t.Fatalf("domain object: %s", err)
+	}
+	return object
+}
+
+func mustMacOSDefaultDynamic(t *testing.T, value macOSDefaultValue) types.Dynamic {
+	t.Helper()
+
+	dynamic, err := macOSDefaultDynamicValue(context.Background(), value)
+	if err != nil {
+		t.Fatalf("dynamic value: %s", err)
+	}
+	return dynamic
 }
 
 type fakeMacOSDefaultsManager struct {

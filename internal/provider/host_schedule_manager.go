@@ -22,7 +22,6 @@ import (
 const (
 	hostScheduleRuntimeDirName     = "schedules"
 	hostScheduleCronMarkerPrefix   = "# terraform-provider-host schedule "
-	hostScheduleLegacyLabelPrefix  = "com.dongho-jung.host.schedule."
 	hostSchedulePackageFedoraCron  = "cronie"
 	hostScheduleCrondSystemdUnit   = "crond.service"
 	hostScheduleCronNoCrontabToken = "no crontab"
@@ -48,7 +47,6 @@ type HostScheduleSpec struct {
 	Every            string            `json:"every,omitempty"`
 	Shell            string            `json:"shell"`
 	Enabled          bool              `json:"enabled"`
-	RunAtLoad        bool              `json:"run_at_load"`
 	WorkingDirectory string            `json:"working_directory,omitempty"`
 	Environment      map[string]string `json:"environment,omitempty"`
 	StdoutPath       string            `json:"stdout_path,omitempty"`
@@ -56,16 +54,19 @@ type HostScheduleSpec struct {
 }
 
 type HostScheduleStatus struct {
-	ID         string
-	User       string
-	Scope      string
-	Backend    string
-	ScriptPath string
+	ID                       string
+	User                     string
+	Scope                    string
+	Backend                  string
+	RuntimeDir               string
+	ScriptPath               string
+	WorkingDirectoryResolved string
+	StdoutPathResolved       string
+	StderrPathResolved       string
 }
 
 type CLICronScheduleManager struct {
 	crontabPath    string
-	launchctlPath  string
 	packageManager PackageManager
 	sudoPath       string
 }
@@ -76,10 +77,9 @@ type hostScheduleMetadata struct {
 	ScriptPath string           `json:"script_path"`
 }
 
-func NewCLICronScheduleManager(crontabPath string, launchctlPath string, packageManager PackageManager, sudoPath string) *CLICronScheduleManager {
+func NewCLICronScheduleManager(crontabPath string, packageManager PackageManager, sudoPath string) *CLICronScheduleManager {
 	return &CLICronScheduleManager{
 		crontabPath:    crontabPath,
-		launchctlPath:  launchctlPath,
 		packageManager: packageManager,
 		sudoPath:       sudoPath,
 	}
@@ -100,10 +100,6 @@ func validateHostScheduleID(id string) error {
 	}
 
 	return nil
-}
-
-func hostScheduleLegacyLabel(id string) string {
-	return hostScheduleLegacyLabelPrefix + id
 }
 
 func hostScheduleRuntimeDir(id string) (string, error) {
@@ -137,24 +133,6 @@ func hostScheduleMetadataPath(id string) (string, error) {
 	return filepath.Join(runtimeDir, "metadata.json"), nil
 }
 
-func hostScheduleRuntimePlistPath(id string) (string, error) {
-	runtimeDir, err := hostScheduleRuntimeDir(id)
-	if err != nil {
-		return "", err
-	}
-
-	return filepath.Join(runtimeDir, "launchd.plist"), nil
-}
-
-func hostScheduleLegacyLaunchAgentPlistPath(id string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-
-	return filepath.Join(home, "Library", "LaunchAgents", hostScheduleLegacyLabel(id)+".plist"), nil
-}
-
 func (m *CLICronScheduleManager) UpsertSchedule(ctx context.Context, spec HostScheduleSpec) (HostScheduleStatus, error) {
 	if err := validateHostScheduleSpec(spec); err != nil {
 		return HostScheduleStatus{}, err
@@ -173,9 +151,6 @@ func (m *CLICronScheduleManager) UpsertSchedule(ctx context.Context, spec HostSc
 	}
 
 	if err := m.syncCronEntry(ctx, spec, status); err != nil {
-		return HostScheduleStatus{}, err
-	}
-	if err := m.removeLegacyLaunchdSchedule(ctx, spec.ID); err != nil {
 		return HostScheduleStatus{}, err
 	}
 
@@ -208,15 +183,6 @@ func (m *CLICronScheduleManager) ReadSchedule(ctx context.Context, spec HostSche
 		return status, true, nil
 	}
 
-	legacyExists, err := legacyLaunchdScheduleExists(spec.ID)
-	if err != nil {
-		return HostScheduleStatus{}, false, err
-	}
-	if legacyExists {
-		status.Backend = "launchd"
-		return status, true, nil
-	}
-
 	metadataExists, err := hostScheduleMetadataExists(spec.ID)
 	if err != nil {
 		return HostScheduleStatus{}, false, err
@@ -244,9 +210,6 @@ func (m *CLICronScheduleManager) DeleteSchedule(ctx context.Context, spec HostSc
 	if err := m.removeCronEntry(ctx, spec, status); err != nil {
 		return err
 	}
-	if err := m.removeLegacyLaunchdSchedule(ctx, spec.ID); err != nil {
-		return err
-	}
 
 	runtimeDir, err := hostScheduleRuntimeDir(spec.ID)
 	if err != nil {
@@ -271,14 +234,41 @@ func hostScheduleStatus(spec HostScheduleSpec) (HostScheduleStatus, error) {
 	if err != nil {
 		return HostScheduleStatus{}, err
 	}
+	runtimeDir, err := hostScheduleRuntimeDir(spec.ID)
+	if err != nil {
+		return HostScheduleStatus{}, err
+	}
+	workingDirectoryResolved, err := resolveOptionalHostSchedulePath(spec.WorkingDirectory)
+	if err != nil {
+		return HostScheduleStatus{}, fmt.Errorf("invalid working_directory: %w", err)
+	}
+	stdoutPathResolved, err := resolveOptionalHostSchedulePath(spec.StdoutPath)
+	if err != nil {
+		return HostScheduleStatus{}, fmt.Errorf("invalid stdout_path: %w", err)
+	}
+	stderrPathResolved, err := resolveOptionalHostSchedulePath(spec.StderrPath)
+	if err != nil {
+		return HostScheduleStatus{}, fmt.Errorf("invalid stderr_path: %w", err)
+	}
 
 	return HostScheduleStatus{
-		ID:         spec.ID,
-		User:       spec.User,
-		Scope:      spec.Scope,
-		Backend:    "cron",
-		ScriptPath: scriptPath,
+		ID:                       spec.ID,
+		User:                     spec.User,
+		Scope:                    spec.Scope,
+		Backend:                  "cron",
+		RuntimeDir:               runtimeDir,
+		ScriptPath:               scriptPath,
+		WorkingDirectoryResolved: workingDirectoryResolved,
+		StdoutPathResolved:       stdoutPathResolved,
+		StderrPathResolved:       stderrPathResolved,
 	}, nil
+}
+
+func resolveOptionalHostSchedulePath(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	return expandHostPath(path)
 }
 
 func writeHostScheduleRuntimeFiles(spec HostScheduleSpec, status HostScheduleStatus) error {
@@ -657,10 +647,6 @@ func validateHostScheduleSpec(spec HostScheduleSpec) error {
 	if strings.Contains(spec.Command, "\x00") {
 		return fmt.Errorf("command must not contain NUL bytes")
 	}
-	if spec.RunAtLoad {
-		return fmt.Errorf("run_at_load is not supported by the cron backend")
-	}
-
 	if spec.Schedule == "" && spec.Every == "" {
 		return fmt.Errorf("one of `schedule` or `every` must be set")
 	}
@@ -981,55 +967,6 @@ func renderHostScheduleScript(spec HostScheduleSpec) (string, error) {
 	return builder.String(), nil
 }
 
-func (m *CLICronScheduleManager) removeLegacyLaunchdSchedule(ctx context.Context, id string) error {
-	if runtime.GOOS != "darwin" {
-		return nil
-	}
-
-	label := hostScheduleLegacyLabel(id)
-	plistPath, err := hostScheduleLegacyLaunchAgentPlistPath(id)
-	if err != nil {
-		return err
-	}
-
-	if m.launchctlPath != "" {
-		_ = m.runLaunchctl(ctx, "bootout", launchdUserDomain(), plistPath)
-		_ = m.runLaunchctl(ctx, "bootout", launchdUserDomain()+"/"+label)
-	}
-	if err := os.Remove(plistPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove legacy launch agent plist %q: %w", plistPath, err)
-	}
-
-	runtimePlistPath, err := hostScheduleRuntimePlistPath(id)
-	if err != nil {
-		return err
-	}
-	if err := os.Remove(runtimePlistPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove legacy runtime launchd plist %q: %w", runtimePlistPath, err)
-	}
-
-	return nil
-}
-
-func legacyLaunchdScheduleExists(id string) (bool, error) {
-	if runtime.GOOS != "darwin" {
-		return false, nil
-	}
-
-	plistPath, err := hostScheduleLegacyLaunchAgentPlistPath(id)
-	if err != nil {
-		return false, err
-	}
-	if _, err := os.Stat(plistPath); err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("read legacy launch agent plist %q: %w", plistPath, err)
-	}
-
-	return true, nil
-}
-
 func hostScheduleMetadataExists(id string) (bool, error) {
 	metadataPath, err := hostScheduleMetadataPath(id)
 	if err != nil {
@@ -1043,21 +980,6 @@ func hostScheduleMetadataExists(id string) (bool, error) {
 	}
 
 	return true, nil
-}
-
-func (m *CLICronScheduleManager) runLaunchctl(ctx context.Context, args ...string) error {
-	cmd := exec.CommandContext(ctx, m.launchctlPath, args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("launchctl %s failed: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
-	}
-
-	return nil
-}
-
-func launchdUserDomain() string {
-	return fmt.Sprintf("gui/%d", os.Getuid())
 }
 
 func shellQuote(value string) string {

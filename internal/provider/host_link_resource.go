@@ -16,27 +16,20 @@ import (
 )
 
 var (
-	_ resource.Resource                 = &HostLinkResource{}
-	_ resource.ResourceWithImportState  = &HostLinkResource{}
-	_ resource.ResourceWithModifyPlan   = &HostLinkResource{}
-	_ resource.ResourceWithUpgradeState = &HostLinkResource{}
+	_ resource.Resource                = &HostLinkResource{}
+	_ resource.ResourceWithImportState = &HostLinkResource{}
+	_ resource.ResourceWithModifyPlan  = &HostLinkResource{}
 )
 
 type HostLinkResource struct {
 }
 
 type HostLinkResourceModel struct {
-	ID          types.String `tfsdk:"id"`
-	Source      types.String `tfsdk:"source"`
-	Destination types.String `tfsdk:"destination"`
-	SourcePath  types.String `tfsdk:"source_path"`
-}
-
-type hostLinkResourceModelV0 struct {
-	ID         types.String `tfsdk:"id"`
-	Path       types.String `tfsdk:"path"`
-	Target     types.String `tfsdk:"target"`
-	TargetPath types.String `tfsdk:"target_path"`
+	ID              types.String `tfsdk:"id"`
+	Source          types.String `tfsdk:"source"`
+	Destination     types.String `tfsdk:"destination"`
+	SourcePath      types.String `tfsdk:"source_path"`
+	DestinationPath types.String `tfsdk:"destination_path"`
 }
 
 func NewHostLinkResource() resource.Resource {
@@ -74,48 +67,9 @@ func (r *HostLinkResource) Schema(ctx context.Context, req resource.SchemaReques
 				Computed:            true,
 				MarkdownDescription: "Resolved absolute source path currently stored in the symbolic link.",
 			},
-		},
-	}
-}
-
-func (r *HostLinkResource) UpgradeState(ctx context.Context) map[int64]resource.StateUpgrader {
-	return map[int64]resource.StateUpgrader{
-		0: {
-			PriorSchema: hostLinkResourceV0Schema(),
-			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
-				var prior hostLinkResourceModelV0
-				resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
-				if resp.Diagnostics.HasError() {
-					return
-				}
-
-				upgraded := HostLinkResourceModel{
-					ID:          prior.ID,
-					Source:      prior.Target,
-					Destination: prior.Path,
-					SourcePath:  prior.TargetPath,
-				}
-
-				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
-			},
-		},
-	}
-}
-
-func hostLinkResourceV0Schema() *schema.Schema {
-	return &schema.Schema{
-		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Computed: true,
-			},
-			"path": schema.StringAttribute{
-				Required: true,
-			},
-			"target": schema.StringAttribute{
-				Required: true,
-			},
-			"target_path": schema.StringAttribute{
-				Computed: true,
+			"destination_path": schema.StringAttribute{
+				Computed:            true,
+				MarkdownDescription: "Resolved absolute symbolic link destination path.",
 			},
 		},
 	}
@@ -144,6 +98,7 @@ func (r *HostLinkResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 
 	plan.ID = types.StringValue(plan.Destination.ValueString())
 	plan.SourcePath = types.StringValue(link.SourcePath)
+	plan.DestinationPath = types.StringValue(link.DestinationPath)
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
@@ -188,6 +143,7 @@ func (r *HostLinkResource) Read(ctx context.Context, req resource.ReadRequest, r
 
 	state.ID = types.StringValue(state.Destination.ValueString())
 	state.SourcePath = types.StringValue(actualSource)
+	state.DestinationPath = types.StringValue(link.DestinationPath)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -244,6 +200,7 @@ func (r *HostLinkResource) syncLink(model HostLinkResourceModel) (HostLinkResour
 
 	model.ID = types.StringValue(model.Destination.ValueString())
 	model.SourcePath = types.StringValue(link.SourcePath)
+	model.DestinationPath = types.StringValue(link.DestinationPath)
 	return model, nil
 }
 

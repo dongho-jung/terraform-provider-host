@@ -19,7 +19,6 @@ const (
 	hostFileManagedBlockEndPrefix   = "# END Terraform host_file_block "
 	hostFileManagedBlockBefore      = "# Terraform host_file_block before "
 	hostFileManagedBlockAfter       = "# Terraform host_file_block after "
-	hostFileManagedBlockPriority    = "# Terraform host_file_block priority "
 )
 
 type hostFileManagedBlock struct {
@@ -1078,12 +1077,6 @@ func parseManagedBlockLines(lines []string) (hostFileManagedBlock, error) {
 	var after []string
 	for bodyStart < len(lines)-1 {
 		line := lineBody(lines[bodyStart])
-		_, ok := parseManagedBlockPriority(line)
-		if ok {
-			bodyStart++
-			continue
-		}
-
 		parsedBefore, ok := parseManagedBlockReferenceMarker(line, hostFileManagedBlockBefore)
 		if ok {
 			before = parsedBefore
@@ -1264,10 +1257,6 @@ func parseManagedBlockBegin(line string) (string, bool) {
 	}
 
 	return blockID, true
-}
-
-func parseManagedBlockPriority(line string) (string, bool) {
-	return strings.CutPrefix(line, hostFileManagedBlockPriority)
 }
 
 func parseManagedBlockReferenceMarker(line string, prefix string) ([]string, bool) {

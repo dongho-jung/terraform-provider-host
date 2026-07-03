@@ -28,9 +28,9 @@ provider "host" {}
 - Local packages through DNF and Homebrew
 - Directories, whole files, file blocks, and symbolic links
 - Git repositories checked out to host paths
-- Local users, groups, and group lookups
+- Local users, groups, group lookups, and CoreAudio device lookups
 - User and system cron schedules
-- macOS `defaults` keys and Dock persistent items
+- macOS `defaults` keys, Dock persistent items, and CoreAudio multi-output devices
 
 ## Platform Notes
 

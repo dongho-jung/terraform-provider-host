@@ -12,21 +12,21 @@ import (
 func TestMacOSDefaultsSpecsFromModelParsesDefaultsMap(t *testing.T) {
 	t.Parallel()
 
-	defaults := mustMacOSDefaultsMap(t, map[string]MacOSDefaultsDefaultModel{
+	settings := mustMacOSDefaultsMap(t, map[string]MacOSDefaultsDefaultModel{
 		"dock_autohide": {
-			Domain: types.StringValue("com.apple.dock"),
+			Domain: mustMacOSSettingDomain(t, "com.apple.dock"),
 			Key:    types.StringValue("autohide"),
-			Bool:   types.BoolValue(true),
+			Value:  mustMacOSDefaultDynamic(t, macOSDefaultValue{Type: macOSDefaultValueBool, Bool: true}),
 		},
 		"languages": {
-			Domain:     types.StringValue("NSGlobalDomain"),
-			Key:        types.StringValue("AppleLanguages"),
-			StringList: mustStringList(t, []string{"ko-KR", "en-US"}),
+			Domain: mustMacOSSettingDomain(t, "NSGlobalDomain"),
+			Key:    types.StringValue("AppleLanguages"),
+			Value:  mustMacOSDefaultDynamic(t, macOSDefaultValue{Type: macOSDefaultValueStringList, StringList: []string{"ko-KR", "en-US"}}),
 		},
 	})
 
 	specs, diags := macOSDefaultsSpecsFromModel(context.Background(), MacOSDefaultsResourceModel{
-		Defaults: defaults,
+		Settings: settings,
 	})
 	if diags.HasError() {
 		t.Fatalf("unexpected diagnostics: %s", diagnosticsError(diags))
@@ -45,40 +45,161 @@ func TestMacOSDefaultsSpecsFromModelParsesDefaultsMap(t *testing.T) {
 func TestMacOSDefaultsSpecsFromModelRejectsDuplicateDefaults(t *testing.T) {
 	t.Parallel()
 
-	defaults := mustMacOSDefaultsMap(t, map[string]MacOSDefaultsDefaultModel{
+	settings := mustMacOSDefaultsMap(t, map[string]MacOSDefaultsDefaultModel{
 		"dock_autohide": {
-			Domain: types.StringValue("com.apple.dock"),
+			Domain: mustMacOSSettingDomain(t, "com.apple.dock"),
 			Key:    types.StringValue("autohide"),
-			Bool:   types.BoolValue(true),
+			Value:  mustMacOSDefaultDynamic(t, macOSDefaultValue{Type: macOSDefaultValueBool, Bool: true}),
 		},
 		"dock_autohide_again": {
-			Domain: types.StringValue("com.apple.dock"),
+			Domain: mustMacOSSettingDomain(t, "com.apple.dock"),
 			Key:    types.StringValue("autohide"),
-			Bool:   types.BoolValue(false),
+			Value:  mustMacOSDefaultDynamic(t, macOSDefaultValue{Type: macOSDefaultValueBool, Bool: false}),
 		},
 	})
 
 	_, diags := macOSDefaultsSpecsFromModel(context.Background(), MacOSDefaultsResourceModel{
-		Defaults: defaults,
+		Settings: settings,
 	})
 	if !diags.HasError() {
 		t.Fatal("expected duplicate default diagnostics")
 	}
 }
 
+func TestMacOSDefaultsSpecsFromModelParsesGroups(t *testing.T) {
+	t.Parallel()
+
+	groups := mustMacOSSettingsGroupsMap(t, map[string]MacOSSettingsGroupModel{
+		"clock": {
+			Domain: mustMacOSSettingDomain(t, "com.apple.menuextra.clock"),
+			Settings: mustMacOSSettingsGroupSettingsMap(t, map[string]MacOSSettingsGroupSettingModel{
+				"analog": {
+					Key:   types.StringValue("IsAnalog"),
+					Value: mustMacOSDefaultDynamic(t, macOSDefaultValue{Type: macOSDefaultValueBool, Bool: true}),
+				},
+				"show_ampm": {
+					Key:   types.StringValue("ShowAMPM"),
+					Value: mustMacOSDefaultDynamic(t, macOSDefaultValue{Type: macOSDefaultValueBool, Bool: true}),
+				},
+			}),
+		},
+	})
+
+	specs, diags := macOSDefaultsSpecsFromModel(context.Background(), MacOSDefaultsResourceModel{
+		Groups: groups,
+	})
+	if diags.HasError() {
+		t.Fatalf("unexpected diagnostics: %s", diagnosticsError(diags))
+	}
+	if len(specs) != 2 {
+		t.Fatalf("got %d specs, want 2", len(specs))
+	}
+	if specs[0].GroupName != "clock" || specs[0].Name != "analog" || specs[0].Spec.ID != "user:com.apple.menuextra.clock:IsAnalog" {
+		t.Fatalf("unexpected first grouped spec: %#v", specs[0])
+	}
+	if specs[1].GroupName != "clock" || specs[1].Name != "show_ampm" || specs[1].Spec.ID != "user:com.apple.menuextra.clock:ShowAMPM" {
+		t.Fatalf("unexpected second grouped spec: %#v", specs[1])
+	}
+}
+
+func TestMacOSDefaultsImportSpecs(t *testing.T) {
+	t.Parallel()
+
+	specs, err := macOSDefaultsImportSpecs("dock_autohide=user:com.apple.dock:autohide,languages=NSGlobalDomain:AppleLanguages")
+	if err != nil {
+		t.Fatalf("macOSDefaultsImportSpecs: %s", err)
+	}
+	if len(specs) != 2 {
+		t.Fatalf("got %d specs, want 2", len(specs))
+	}
+	if specs[0].Name != "dock_autohide" || specs[0].Spec.ID != "user:com.apple.dock:autohide" {
+		t.Fatalf("unexpected first spec: %#v", specs[0])
+	}
+	if specs[1].Name != "languages" || specs[1].Spec.ID != "user:NSGlobalDomain:AppleLanguages" {
+		t.Fatalf("unexpected second spec: %#v", specs[1])
+	}
+}
+
+func TestMacOSDefaultsImportSpecsParsesGroupedNames(t *testing.T) {
+	t.Parallel()
+
+	specs, err := macOSDefaultsImportSpecs("clock.analog=user:com.apple.menuextra.clock:IsAnalog,clock.show_ampm=user:com.apple.menuextra.clock:ShowAMPM")
+	if err != nil {
+		t.Fatalf("macOSDefaultsImportSpecs: %s", err)
+	}
+	if len(specs) != 2 {
+		t.Fatalf("got %d specs, want 2", len(specs))
+	}
+	if specs[0].GroupName != "clock" || specs[0].Name != "analog" || specs[0].Spec.ID != "user:com.apple.menuextra.clock:IsAnalog" {
+		t.Fatalf("unexpected first grouped import: %#v", specs[0])
+	}
+	if specs[1].GroupName != "clock" || specs[1].Name != "show_ampm" || specs[1].Spec.ID != "user:com.apple.menuextra.clock:ShowAMPM" {
+		t.Fatalf("unexpected second grouped import: %#v", specs[1])
+	}
+}
+
+func TestMacOSDefaultsImportSpecsRejectsDuplicateDefaults(t *testing.T) {
+	t.Parallel()
+
+	_, err := macOSDefaultsImportSpecs("first=user:com.apple.dock:autohide,second=com.apple.dock:autohide")
+	if err == nil {
+		t.Fatal("expected duplicate import error")
+	}
+}
+
+func TestMacOSDefaultsResourceImportStateReadsCurrentValues(t *testing.T) {
+	t.Parallel()
+
+	resource := &MacOSDefaultsResource{
+		manager: fakeMacOSDefaultsManager{
+			values: map[string]macOSDefaultValue{
+				"user:com.apple.dock:autohide": {
+					Type: macOSDefaultValueBool,
+					Bool: true,
+				},
+				"user:NSGlobalDomain:AppleLanguages": {
+					Type:       macOSDefaultValueStringList,
+					StringList: []string{"ko-KR", "en-US"},
+				},
+			},
+		},
+	}
+	state, err := resource.importDefaultsState(context.Background(), "dock_autohide=user:com.apple.dock:autohide,languages=NSGlobalDomain:AppleLanguages")
+	if err != nil {
+		t.Fatalf("importDefaultsState: %s", err)
+	}
+	if state.ID.ValueString() != macOSSettingsResourceID {
+		t.Fatalf("id got %q", state.ID.ValueString())
+	}
+
+	specs, diags := macOSDefaultsSpecsFromModel(context.Background(), state)
+	if diags.HasError() {
+		t.Fatalf("settings state: %s", diagnosticsError(diags))
+	}
+	if len(specs) != 2 {
+		t.Fatalf("got %d specs, want 2", len(specs))
+	}
+	if specs[0].Name != "dock_autohide" || specs[0].Spec.Value.Type != macOSDefaultValueBool || !specs[0].Spec.Value.Bool {
+		t.Fatalf("unexpected dock spec: %#v", specs[0])
+	}
+	if specs[1].Name != "languages" || !reflect.DeepEqual(specs[1].Spec.Value.StringList, []string{"ko-KR", "en-US"}) {
+		t.Fatalf("unexpected languages spec: %#v", specs[1])
+	}
+}
+
 func TestMacOSDefaultsResourceSyncWritesDefaultsAndRestartsOnce(t *testing.T) {
 	t.Parallel()
 
-	defaults := mustMacOSDefaultsMap(t, map[string]MacOSDefaultsDefaultModel{
+	settings := mustMacOSDefaultsMap(t, map[string]MacOSDefaultsDefaultModel{
 		"dock_autohide": {
-			Domain: types.StringValue("com.apple.dock"),
+			Domain: mustMacOSSettingDomain(t, "com.apple.dock"),
 			Key:    types.StringValue("autohide"),
-			Bool:   types.BoolValue(true),
+			Value:  mustMacOSDefaultDynamic(t, macOSDefaultValue{Type: macOSDefaultValueBool, Bool: true}),
 		},
 		"dock_hide_recent_apps": {
-			Domain: types.StringValue("com.apple.dock"),
+			Domain: mustMacOSSettingDomain(t, "com.apple.dock"),
 			Key:    types.StringValue("show-recents"),
-			Bool:   types.BoolValue(false),
+			Value:  mustMacOSDefaultDynamic(t, macOSDefaultValue{Type: macOSDefaultValueBool, Bool: false}),
 		},
 	})
 
@@ -87,12 +208,12 @@ func TestMacOSDefaultsResourceSyncWritesDefaultsAndRestartsOnce(t *testing.T) {
 		manager: manager,
 	}
 	state, err := resource.syncDefaults(context.Background(), MacOSDefaultsResourceModel{
-		Defaults: defaults,
+		Settings: settings,
 	})
 	if err != nil {
 		t.Fatalf("syncDefaults: %s", err)
 	}
-	if state.ID.ValueString() != macOSDefaultsResourceID {
+	if state.ID.ValueString() != macOSSettingsResourceID {
 		t.Fatalf("id got %q", state.ID.ValueString())
 	}
 	if len(manager.writes) != 2 {
@@ -108,17 +229,17 @@ func TestMacOSDefaultsResourceUpdateDeletesRemovedDefaultsWhenConfigured(t *test
 
 	prior := mustMacOSDefaultsMap(t, map[string]MacOSDefaultsDefaultModel{
 		"old_setting": {
-			Domain:          types.StringValue("com.apple.dock"),
+			Domain:          mustMacOSSettingDomain(t, "com.apple.dock"),
 			Key:             types.StringValue("autohide"),
-			Bool:            types.BoolValue(true),
+			Value:           mustMacOSDefaultDynamic(t, macOSDefaultValue{Type: macOSDefaultValueBool, Bool: true}),
 			DeleteOnDestroy: types.BoolValue(true),
 		},
 	})
 	plan := mustMacOSDefaultsMap(t, map[string]MacOSDefaultsDefaultModel{
 		"new_setting": {
-			Domain: types.StringValue("com.apple.dock"),
+			Domain: mustMacOSSettingDomain(t, "com.apple.dock"),
 			Key:    types.StringValue("show-recents"),
-			Bool:   types.BoolValue(false),
+			Value:  mustMacOSDefaultDynamic(t, macOSDefaultValue{Type: macOSDefaultValueBool, Bool: false}),
 		},
 	})
 
@@ -128,8 +249,8 @@ func TestMacOSDefaultsResourceUpdateDeletesRemovedDefaultsWhenConfigured(t *test
 	}
 	if _, err := resource.updateDefaults(
 		context.Background(),
-		MacOSDefaultsResourceModel{Defaults: prior},
-		MacOSDefaultsResourceModel{Defaults: plan},
+		MacOSDefaultsResourceModel{Settings: prior},
+		MacOSDefaultsResourceModel{Settings: plan},
 	); err != nil {
 		t.Fatalf("updateDefaults: %s", err)
 	}
@@ -144,51 +265,71 @@ func TestMacOSDefaultsResourceUpdateDeletesRemovedDefaultsWhenConfigured(t *test
 	}
 }
 
-func mustMacOSDefaultsMap(t *testing.T, values map[string]MacOSDefaultsDefaultModel) types.Map {
+func mustMacOSDefaultsMap(t *testing.T, values map[string]MacOSDefaultsDefaultModel) types.Dynamic {
 	t.Helper()
 
 	elements := make(map[string]attr.Value, len(values))
 	for name, value := range values {
-		if value.StringList.IsNull() {
-			value.StringList = types.ListNull(types.StringType)
+		if value.Value.IsNull() {
+			value.Value = types.DynamicNull()
 		}
 		if value.Restart.IsNull() {
 			value.Restart = types.ListNull(types.StringType)
 		}
-
-		objectValue, diags := types.ObjectValue(macOSDefaultsDefaultAttributeTypes(), map[string]attr.Value{
-			"domain":            value.Domain,
-			"key":               value.Key,
-			"current_host":      value.CurrentHost,
-			"bool":              value.Bool,
-			"int":               value.Int,
-			"float":             value.Float,
-			"string":            value.String,
-			"string_list":       value.StringList,
-			"delete_on_destroy": value.DeleteOnDestroy,
-			"restart":           value.Restart,
-		})
-		if diags.HasError() {
-			t.Fatalf("object value: %s", diagnosticsError(diags))
+		objectValue, err := macOSDefaultsDefaultObjectValue(context.Background(), value)
+		if err != nil {
+			t.Fatalf("object value: %s", err)
 		}
 		elements[name] = objectValue
 	}
 
-	mapValue, diags := types.MapValue(macOSDefaultsDefaultObjectType(), elements)
-	if diags.HasError() {
-		t.Fatalf("map value: %s", diagnosticsError(diags))
+	dynamic, err := macOSSettingsDynamicObject(context.Background(), elements)
+	if err != nil {
+		t.Fatalf("settings value: %s", err)
 	}
-	return mapValue
+	return dynamic
 }
 
-func mustStringList(t *testing.T, values []string) types.List {
+func mustMacOSSettingsGroupsMap(t *testing.T, values map[string]MacOSSettingsGroupModel) types.Dynamic {
 	t.Helper()
 
-	list, diags := types.ListValueFrom(context.Background(), types.StringType, values)
-	if diags.HasError() {
-		t.Fatalf("list value: %s", diagnosticsError(diags))
+	elements := make(map[string]attr.Value, len(values))
+	for name, value := range values {
+		if value.Restart.IsNull() {
+			value.Restart = types.ListNull(types.StringType)
+		}
+
+		objectValue, err := macOSSettingsGroupObjectValue(context.Background(), value)
+		if err != nil {
+			t.Fatalf("group object value: %s", err)
+		}
+		elements[name] = objectValue
 	}
-	return list
+
+	dynamic, err := macOSSettingsDynamicObject(context.Background(), elements)
+	if err != nil {
+		t.Fatalf("groups value: %s", err)
+	}
+	return dynamic
+}
+
+func mustMacOSSettingsGroupSettingsMap(t *testing.T, values map[string]MacOSSettingsGroupSettingModel) types.Dynamic {
+	t.Helper()
+
+	elements := make(map[string]attr.Value, len(values))
+	for name, value := range values {
+		objectValue, err := macOSSettingsGroupSettingObjectValue(context.Background(), value)
+		if err != nil {
+			t.Fatalf("group setting object value: %s", err)
+		}
+		elements[name] = objectValue
+	}
+
+	dynamic, err := macOSSettingsDynamicObject(context.Background(), elements)
+	if err != nil {
+		t.Fatalf("group settings value: %s", err)
+	}
+	return dynamic
 }
 
 type recordingMacOSDefaultsManager struct {

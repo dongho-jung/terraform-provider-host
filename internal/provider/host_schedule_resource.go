@@ -25,23 +25,24 @@ type HostScheduleResource struct {
 }
 
 type HostScheduleResourceModel struct {
-	ID               types.String `tfsdk:"id"`
-	User             types.String `tfsdk:"user"`
-	Scope            types.String `tfsdk:"scope"`
-	Command          types.String `tfsdk:"command"`
-	Schedule         types.String `tfsdk:"schedule"`
-	Every            types.String `tfsdk:"every"`
-	Shell            types.String `tfsdk:"shell"`
-	Enabled          types.Bool   `tfsdk:"enabled"`
-	RunAtLoad        types.Bool   `tfsdk:"run_at_load"`
-	WorkingDirectory types.String `tfsdk:"working_directory"`
-	Environment      types.Map    `tfsdk:"environment"`
-	StdoutPath       types.String `tfsdk:"stdout_path"`
-	StderrPath       types.String `tfsdk:"stderr_path"`
-	Backend          types.String `tfsdk:"backend"`
-	Label            types.String `tfsdk:"label"`
-	PlistPath        types.String `tfsdk:"plist_path"`
-	ScriptPath       types.String `tfsdk:"script_path"`
+	ID                       types.String `tfsdk:"id"`
+	User                     types.String `tfsdk:"user"`
+	Scope                    types.String `tfsdk:"scope"`
+	Command                  types.String `tfsdk:"command"`
+	Schedule                 types.String `tfsdk:"schedule"`
+	Every                    types.String `tfsdk:"every"`
+	Shell                    types.String `tfsdk:"shell"`
+	Enabled                  types.Bool   `tfsdk:"enabled"`
+	WorkingDirectory         types.String `tfsdk:"working_directory"`
+	Environment              types.Map    `tfsdk:"environment"`
+	StdoutPath               types.String `tfsdk:"stdout_path"`
+	StderrPath               types.String `tfsdk:"stderr_path"`
+	Backend                  types.String `tfsdk:"backend"`
+	RuntimeDir               types.String `tfsdk:"runtime_dir"`
+	ScriptPath               types.String `tfsdk:"script_path"`
+	WorkingDirectoryResolved types.String `tfsdk:"working_directory_resolved"`
+	StdoutPathResolved       types.String `tfsdk:"stdout_path_resolved"`
+	StderrPathResolved       types.String `tfsdk:"stderr_path_resolved"`
 }
 
 func NewHostScheduleResource() resource.Resource {
@@ -97,15 +98,13 @@ func (r *HostScheduleResource) Schema(ctx context.Context, req resource.SchemaRe
 				Default:             booldefault.StaticBool(true),
 				MarkdownDescription: "Whether the schedule should be present in the user's crontab.",
 			},
-			"run_at_load": schema.BoolAttribute{
-				Optional:            true,
-				Computed:            true,
-				Default:             booldefault.StaticBool(false),
-				MarkdownDescription: "Run the command when the scheduler loads. Not supported by the cron backend.",
-			},
 			"working_directory": schema.StringAttribute{
 				Optional:            true,
 				MarkdownDescription: "Working directory for the scheduled command. `~` is expanded to the current user's home directory.",
+			},
+			"working_directory_resolved": schema.StringAttribute{
+				Computed:            true,
+				MarkdownDescription: "Resolved absolute working directory path, when `working_directory` is set.",
 			},
 			"environment": schema.MapAttribute{
 				ElementType:         types.StringType,
@@ -116,27 +115,28 @@ func (r *HostScheduleResource) Schema(ctx context.Context, req resource.SchemaRe
 				Optional:            true,
 				MarkdownDescription: "Path where the generated script appends stdout for the command. `~` is expanded to the current user's home directory.",
 			},
+			"stdout_path_resolved": schema.StringAttribute{
+				Computed:            true,
+				MarkdownDescription: "Resolved absolute stdout log path, when `stdout_path` is set.",
+			},
 			"stderr_path": schema.StringAttribute{
 				Optional:            true,
 				MarkdownDescription: "Path where the generated script appends stderr for the command. `~` is expanded to the current user's home directory.",
 			},
+			"stderr_path_resolved": schema.StringAttribute{
+				Computed:            true,
+				MarkdownDescription: "Resolved absolute stderr log path, when `stderr_path` is set.",
+			},
 			"backend": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "Scheduler backend currently managing this schedule. New and updated schedules use `cron`; existing local `launchd` schedules are migrated to `cron` on the next update.",
+				MarkdownDescription: "Scheduler backend currently managing this schedule. This provider currently writes cron schedules.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
-			"label": schema.StringAttribute{
+			"runtime_dir": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "Legacy launchd label. This is null for cron-backed schedules.",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
-			},
-			"plist_path": schema.StringAttribute{
-				Computed:            true,
-				MarkdownDescription: "Legacy launchd plist path. This is null for cron-backed schedules.",
+				MarkdownDescription: "Generated schedule runtime directory under `./.terraform-provider-host/schedules/<id>`.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
@@ -212,8 +212,7 @@ func (r *HostScheduleResource) ModifyPlan(ctx context.Context, req resource.Modi
 	} else {
 		plan.ID = types.StringUnknown()
 		plan.Backend = types.StringUnknown()
-		plan.Label = types.StringUnknown()
-		plan.PlistPath = types.StringUnknown()
+		plan.RuntimeDir = types.StringUnknown()
 		plan.ScriptPath = types.StringUnknown()
 	}
 
@@ -231,7 +230,16 @@ func (r *HostScheduleResource) ModifyPlan(ctx context.Context, req resource.Modi
 				resp.Diagnostics.AddError("Invalid schedule", err.Error())
 				return
 			}
+			status, err := hostScheduleStatus(spec)
+			if err != nil {
+				resp.Diagnostics.AddError("Invalid schedule", err.Error())
+				return
+			}
+			hydrateHostScheduleComputedState(&plan, status)
 		} else if err := validateHostScheduleConfig(spec); err != nil {
+			resp.Diagnostics.AddError("Invalid schedule", err.Error())
+			return
+		} else if err := hydrateHostSchedulePathComputedState(&plan, spec); err != nil {
 			resp.Diagnostics.AddError("Invalid schedule", err.Error())
 			return
 		}
@@ -395,9 +403,38 @@ func hydrateHostScheduleComputedState(model *HostScheduleResourceModel, status H
 	model.User = types.StringValue(status.User)
 	model.Scope = types.StringValue(status.Scope)
 	model.Backend = types.StringValue(status.Backend)
-	model.Label = types.StringNull()
-	model.PlistPath = types.StringNull()
+	model.RuntimeDir = types.StringValue(status.RuntimeDir)
 	model.ScriptPath = types.StringValue(status.ScriptPath)
+	model.WorkingDirectoryResolved = optionalStringStateValue(status.WorkingDirectoryResolved)
+	model.StdoutPathResolved = optionalStringStateValue(status.StdoutPathResolved)
+	model.StderrPathResolved = optionalStringStateValue(status.StderrPathResolved)
+}
+
+func hydrateHostSchedulePathComputedState(model *HostScheduleResourceModel, spec HostScheduleSpec) error {
+	workingDirectoryResolved, err := resolveOptionalHostSchedulePath(spec.WorkingDirectory)
+	if err != nil {
+		return fmt.Errorf("invalid working_directory: %w", err)
+	}
+	stdoutPathResolved, err := resolveOptionalHostSchedulePath(spec.StdoutPath)
+	if err != nil {
+		return fmt.Errorf("invalid stdout_path: %w", err)
+	}
+	stderrPathResolved, err := resolveOptionalHostSchedulePath(spec.StderrPath)
+	if err != nil {
+		return fmt.Errorf("invalid stderr_path: %w", err)
+	}
+
+	model.WorkingDirectoryResolved = optionalStringStateValue(workingDirectoryResolved)
+	model.StdoutPathResolved = optionalStringStateValue(stdoutPathResolved)
+	model.StderrPathResolved = optionalStringStateValue(stderrPathResolved)
+	return nil
+}
+
+func optionalStringStateValue(value string) types.String {
+	if value == "" {
+		return types.StringNull()
+	}
+	return types.StringValue(value)
 }
 
 func hostScheduleSpecFromModel(ctx context.Context, model HostScheduleResourceModel) (HostScheduleSpec, diag.Diagnostics) {
@@ -436,9 +473,6 @@ func hostScheduleSpecFromModel(ctx context.Context, model HostScheduleResourceMo
 	if !model.Enabled.IsNull() && !model.Enabled.IsUnknown() {
 		spec.Enabled = model.Enabled.ValueBool()
 	}
-	if !model.RunAtLoad.IsNull() && !model.RunAtLoad.IsUnknown() {
-		spec.RunAtLoad = model.RunAtLoad.ValueBool()
-	}
 	if !model.WorkingDirectory.IsNull() && !model.WorkingDirectory.IsUnknown() {
 		spec.WorkingDirectory = model.WorkingDirectory.ValueString()
 	}
@@ -468,8 +502,7 @@ func scheduleResourceConfigReady(model HostScheduleResourceModel) bool {
 	if model.Shell.IsNull() || model.Shell.IsUnknown() ||
 		model.User.IsNull() || model.User.IsUnknown() ||
 		model.Scope.IsNull() || model.Scope.IsUnknown() ||
-		model.Enabled.IsNull() || model.Enabled.IsUnknown() ||
-		model.RunAtLoad.IsNull() || model.RunAtLoad.IsUnknown() {
+		model.Enabled.IsNull() || model.Enabled.IsUnknown() {
 		return false
 	}
 	if model.Schedule.IsUnknown() || model.Every.IsUnknown() ||

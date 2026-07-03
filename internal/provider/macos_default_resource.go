@@ -5,15 +5,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
 	"os/exec"
+	"reflect"
 	"strconv"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -40,16 +44,19 @@ type MacOSDefaultResource struct {
 
 type MacOSDefaultResourceModel struct {
 	ID              types.String  `tfsdk:"id"`
-	Domain          types.String  `tfsdk:"domain"`
+	Domain          types.Object  `tfsdk:"domain"`
+	DomainResolved  types.String  `tfsdk:"domain_resolved"`
 	Key             types.String  `tfsdk:"key"`
 	CurrentHost     types.Bool    `tfsdk:"current_host"`
-	Bool            types.Bool    `tfsdk:"bool"`
-	Int             types.Int64   `tfsdk:"int"`
-	Float           types.Float64 `tfsdk:"float"`
-	String          types.String  `tfsdk:"string"`
-	StringList      types.List    `tfsdk:"string_list"`
+	Value           types.Dynamic `tfsdk:"value"`
 	DeleteOnDestroy types.Bool    `tfsdk:"delete_on_destroy"`
 	Restart         types.List    `tfsdk:"restart"`
+}
+
+type MacOSSettingDomainModel struct {
+	Apple  types.String `tfsdk:"apple"`
+	Global types.Bool   `tfsdk:"global"`
+	Raw    types.String `tfsdk:"raw"`
 }
 
 type macOSDefaultSpec struct {
@@ -99,12 +106,12 @@ func NewMacOSDefaultResource() resource.Resource {
 }
 
 func (r *MacOSDefaultResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
-	resp.TypeName = req.ProviderTypeName + "_macos_default"
+	resp.TypeName = req.ProviderTypeName + "_mac_setting"
 }
 
 func (r *MacOSDefaultResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manages one macOS `defaults` key with a typed value.",
+		MarkdownDescription: "Manages one macOS setting backed by a `defaults` key.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,
@@ -113,12 +120,17 @@ func (r *MacOSDefaultResource) Schema(ctx context.Context, req resource.SchemaRe
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
-			"domain": schema.StringAttribute{
+			"domain": schema.SingleNestedAttribute{
 				Required:            true,
-				MarkdownDescription: "Defaults domain, such as `com.apple.dock`, `NSGlobalDomain`, or `com.apple.universalaccess`.",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+				MarkdownDescription: "macOS defaults domain selector. Set exactly one of `apple`, `global`, or `raw`.",
+				Attributes:          macOSSettingDomainSchemaAttributes(),
+				PlanModifiers: []planmodifier.Object{
+					objectplanmodifier.RequiresReplace(),
 				},
+			},
+			"domain_resolved": schema.StringAttribute{
+				Computed:            true,
+				MarkdownDescription: "Resolved macOS defaults domain, such as `com.apple.dock` or `NSGlobalDomain`.",
 			},
 			"key": schema.StringAttribute{
 				Required:            true,
@@ -136,32 +148,15 @@ func (r *MacOSDefaultResource) Schema(ctx context.Context, req resource.SchemaRe
 					boolplanmodifier.RequiresReplace(),
 				},
 			},
-			"bool": schema.BoolAttribute{
-				Optional:            true,
-				MarkdownDescription: "Boolean value. Exactly one of `bool`, `int`, `float`, `string`, or `string_list` must be set.",
-			},
-			"int": schema.Int64Attribute{
-				Optional:            true,
-				MarkdownDescription: "Integer value. Exactly one of `bool`, `int`, `float`, `string`, or `string_list` must be set.",
-			},
-			"float": schema.Float64Attribute{
-				Optional:            true,
-				MarkdownDescription: "Floating-point value. Exactly one of `bool`, `int`, `float`, `string`, or `string_list` must be set.",
-			},
-			"string": schema.StringAttribute{
-				Optional:            true,
-				MarkdownDescription: "String value. Exactly one of `bool`, `int`, `float`, `string`, or `string_list` must be set.",
-			},
-			"string_list": schema.ListAttribute{
-				ElementType:         types.StringType,
-				Optional:            true,
-				MarkdownDescription: "String array value. Exactly one of `bool`, `int`, `float`, `string`, or `string_list` must be set.",
+			"value": schema.DynamicAttribute{
+				Required:            true,
+				MarkdownDescription: "Setting value. Supported values are bool, number, string, and a list or tuple of strings. Whole numbers are written as integer defaults values; fractional numbers are written as float defaults values.",
 			},
 			"delete_on_destroy": schema.BoolAttribute{
 				Optional:            true,
 				Computed:            true,
 				Default:             booldefault.StaticBool(false),
-				MarkdownDescription: "Delete the managed defaults key on destroy. Defaults to false, leaving the current host setting in place.",
+				MarkdownDescription: "Delete the managed defaults key on destroy. Defaults to false, leaving the current macOS setting in place.",
 			},
 			"restart": schema.ListAttribute{
 				ElementType:         types.StringType,
@@ -172,6 +167,167 @@ func (r *MacOSDefaultResource) Schema(ctx context.Context, req resource.SchemaRe
 	}
 }
 
+func macOSSettingDomainSchemaAttributes() map[string]schema.Attribute {
+	return map[string]schema.Attribute{
+		"apple": schema.StringAttribute{
+			Optional:            true,
+			MarkdownDescription: "Apple defaults domain suffix without the `com.apple.` prefix, such as `dock`, `screencapture`, or `AppleMultitouchTrackpad`.",
+		},
+		"global": schema.BoolAttribute{
+			Optional:            true,
+			MarkdownDescription: "Use `NSGlobalDomain` when true.",
+		},
+		"raw": schema.StringAttribute{
+			Optional:            true,
+			MarkdownDescription: "Full raw defaults domain for non-Apple domains or domains that should not be expanded.",
+		},
+	}
+}
+
+func macOSSettingDomainAttributeTypes() map[string]attr.Type {
+	return map[string]attr.Type{
+		"apple":  types.StringType,
+		"global": types.BoolType,
+		"raw":    types.StringType,
+	}
+}
+
+func macOSSettingDomainObjectFromResolved(domain string) (types.Object, error) {
+	values := map[string]attr.Value{
+		"apple":  types.StringNull(),
+		"global": types.BoolNull(),
+		"raw":    types.StringNull(),
+	}
+	switch {
+	case domain == "NSGlobalDomain":
+		values["global"] = types.BoolValue(true)
+	case strings.HasPrefix(domain, "com.apple."):
+		values["apple"] = types.StringValue(strings.TrimPrefix(domain, "com.apple."))
+	default:
+		values["raw"] = types.StringValue(domain)
+	}
+
+	object, diags := types.ObjectValue(macOSSettingDomainAttributeTypes(), values)
+	if diags.HasError() {
+		return types.Object{}, diagnosticsError(diags)
+	}
+	return object, nil
+}
+
+func macOSSettingDomainObjectWithDefaults(value types.Object, diags *diag.Diagnostics) types.Object {
+	values := map[string]attr.Value{
+		"apple":  types.StringNull(),
+		"global": types.BoolNull(),
+		"raw":    types.StringNull(),
+	}
+	for name, attrValue := range value.Attributes() {
+		if _, ok := values[name]; !ok {
+			diags.AddError("Invalid macOS setting domain", "Unknown domain attribute "+name+".")
+			continue
+		}
+		values[name] = attrValue
+	}
+
+	object, objectDiags := types.ObjectValue(macOSSettingDomainAttributeTypes(), values)
+	diags.Append(objectDiags...)
+	if objectDiags.HasError() {
+		return types.ObjectNull(macOSSettingDomainAttributeTypes())
+	}
+	return object
+}
+
+func macOSSettingDomainFromObject(ctx context.Context, value types.Object) (string, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	if value.IsNull() {
+		diags.AddError("Invalid macOS setting domain", "domain must not be null")
+		return "", diags
+	}
+	if value.IsUnknown() {
+		diags.AddError("Invalid macOS setting domain", "domain must be known")
+		return "", diags
+	}
+
+	value = macOSSettingDomainObjectWithDefaults(value, &diags)
+	if diags.HasError() {
+		return "", diags
+	}
+
+	var model MacOSSettingDomainModel
+	diags.Append(value.As(ctx, &model, basetypesObjectAsOptions())...)
+	if diags.HasError() {
+		return "", diags
+	}
+
+	values := []struct {
+		name  string
+		value string
+	}{
+		{name: "apple", value: model.Apple.ValueString()},
+		{name: "raw", value: model.Raw.ValueString()},
+	}
+
+	var kind string
+	var raw string
+	for _, candidate := range values {
+		trimmed := strings.TrimSpace(candidate.value)
+		if trimmed == "" || candidate.name == "apple" && (model.Apple.IsNull() || model.Apple.IsUnknown()) || candidate.name == "raw" && (model.Raw.IsNull() || model.Raw.IsUnknown()) {
+			continue
+		}
+		if kind != "" {
+			diags.AddError("Invalid macOS setting domain", "Set exactly one of domain.apple, domain.global, or domain.raw.")
+			return "", diags
+		}
+		kind = candidate.name
+		raw = trimmed
+	}
+	if !model.Global.IsNull() && !model.Global.IsUnknown() && model.Global.ValueBool() {
+		if kind != "" {
+			diags.AddError("Invalid macOS setting domain", "Set exactly one of domain.apple, domain.global, or domain.raw.")
+			return "", diags
+		}
+		kind = "global"
+		raw = "true"
+	}
+	if kind == "" {
+		diags.AddError("Invalid macOS setting domain", "Set exactly one of domain.apple, domain.global, or domain.raw.")
+		return "", diags
+	}
+
+	var domain string
+	switch kind {
+	case "apple":
+		domain = macOSSettingAppleDomain(raw)
+	case "global":
+		domain = "NSGlobalDomain"
+	case "raw":
+		domain = raw
+	}
+	if err := validateMacOSSettingDomain(domain); err != nil {
+		diags.AddError("Invalid macOS setting domain", err.Error())
+		return "", diags
+	}
+	return domain, diags
+}
+
+func macOSSettingAppleDomain(value string) string {
+	suffix := strings.TrimSpace(value)
+	if strings.HasPrefix(suffix, "com.apple.") {
+		return suffix
+	}
+	return "com.apple." + suffix
+}
+
+func validateMacOSSettingDomain(domain string) error {
+	domain = strings.TrimSpace(domain)
+	if domain == "" {
+		return fmt.Errorf("domain must be non-empty")
+	}
+	if strings.ContainsAny(domain, "\x00\r\n") {
+		return fmt.Errorf("domain must not contain control characters")
+	}
+	return nil
+}
+
 func (r *MacOSDefaultResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	if req.ProviderData == nil {
 		return
@@ -180,7 +336,7 @@ func (r *MacOSDefaultResource) Configure(ctx context.Context, req resource.Confi
 	switch data := req.ProviderData.(type) {
 	case HostProviderData:
 		if data.MacOSDefaultsManager == nil {
-			resp.Diagnostics.AddError("macOS defaults unavailable", "`host_macos_default` requires the macOS `defaults` command.")
+			resp.Diagnostics.AddError("macOS settings unavailable", "`host_mac_setting` requires the macOS `defaults` command.")
 			return
 		}
 		r.manager = data.MacOSDefaultsManager
@@ -224,7 +380,7 @@ func (r *MacOSDefaultResource) Create(ctx context.Context, req resource.CreateRe
 
 	state, err := r.syncDefault(ctx, plan)
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to sync macOS default", err.Error())
+		resp.Diagnostics.AddError("Failed to sync macOS setting", err.Error())
 		return
 	}
 
@@ -240,7 +396,7 @@ func (r *MacOSDefaultResource) Read(ctx context.Context, req resource.ReadReques
 
 	next, exists, err := r.readDefault(ctx, state)
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to read macOS default", err.Error())
+		resp.Diagnostics.AddError("Failed to read macOS setting", err.Error())
 		return
 	}
 	if !exists {
@@ -260,7 +416,7 @@ func (r *MacOSDefaultResource) Update(ctx context.Context, req resource.UpdateRe
 
 	state, err := r.syncDefault(ctx, plan)
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to sync macOS default", err.Error())
+		resp.Diagnostics.AddError("Failed to sync macOS setting", err.Error())
 		return
 	}
 
@@ -282,11 +438,11 @@ func (r *MacOSDefaultResource) Delete(ctx context.Context, req resource.DeleteRe
 
 	if spec.DeleteOnDestroy {
 		if r.manager == nil {
-			resp.Diagnostics.AddError("macOS defaults unavailable", "`host_macos_default` requires the macOS `defaults` command.")
+			resp.Diagnostics.AddError("macOS settings unavailable", "`host_mac_setting` requires the macOS `defaults` command.")
 			return
 		}
 		if err := r.manager.DeleteDefault(ctx, spec); err != nil {
-			resp.Diagnostics.AddError("Failed to delete macOS default", err.Error())
+			resp.Diagnostics.AddError("Failed to delete macOS setting", err.Error())
 			return
 		}
 		if err := r.manager.RestartProcesses(ctx, spec.Restart); err != nil {
@@ -298,7 +454,7 @@ func (r *MacOSDefaultResource) Delete(ctx context.Context, req resource.DeleteRe
 func (r *MacOSDefaultResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	state, err := r.importDefaultState(ctx, req.ID)
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to import macOS default", err.Error())
+		resp.Diagnostics.AddError("Failed to import macOS setting", err.Error())
 		return
 	}
 
@@ -323,9 +479,14 @@ func (r *MacOSDefaultResource) importDefaultState(ctx context.Context, importID 
 		return MacOSDefaultResourceModel{}, fmt.Errorf("no value exists for %q", importID)
 	}
 
+	domainObject, err := macOSSettingDomainObjectFromResolved(spec.Domain)
+	if err != nil {
+		return MacOSDefaultResourceModel{}, err
+	}
 	state := MacOSDefaultResourceModel{
 		ID:              types.StringValue(spec.ID),
-		Domain:          types.StringValue(spec.Domain),
+		Domain:          domainObject,
+		DomainResolved:  types.StringValue(spec.Domain),
 		Key:             types.StringValue(spec.Key),
 		CurrentHost:     types.BoolValue(spec.CurrentHost),
 		DeleteOnDestroy: types.BoolValue(false),
@@ -484,34 +645,38 @@ func runMacOSCommand(ctx context.Context, command string, args ...string) ([]byt
 }
 
 func macOSDefaultPlanReady(model MacOSDefaultResourceModel) bool {
-	return !model.Domain.IsNull() && !model.Domain.IsUnknown() &&
+	return macOSSettingDomainReady(model.Domain) &&
 		!model.Key.IsNull() && !model.Key.IsUnknown() &&
 		!model.CurrentHost.IsNull() && !model.CurrentHost.IsUnknown() &&
 		!model.DeleteOnDestroy.IsNull() && !model.DeleteOnDestroy.IsUnknown() &&
-		!model.Bool.IsUnknown() &&
-		!model.Int.IsUnknown() &&
-		!model.Float.IsUnknown() &&
-		!model.String.IsUnknown() &&
-		!model.StringList.IsUnknown() &&
+		!model.Value.IsUnknown() &&
+		!model.Value.IsUnderlyingValueUnknown() &&
 		!model.Restart.IsUnknown()
+}
+
+func macOSSettingDomainReady(value types.Object) bool {
+	if value.IsNull() || value.IsUnknown() {
+		return false
+	}
+	for _, attrValue := range value.Attributes() {
+		if attrValue.IsUnknown() {
+			return false
+		}
+	}
+	return true
 }
 
 func macOSDefaultSpecFromModel(ctx context.Context, model MacOSDefaultResourceModel) (macOSDefaultSpec, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
-	domain := strings.TrimSpace(model.Domain.ValueString())
+	domain, domainDiags := macOSSettingDomainFromObject(ctx, model.Domain)
+	diags.Append(domainDiags...)
 	key := strings.TrimSpace(model.Key.ValueString())
-	if domain == "" {
-		diags.AddError("Invalid macOS default", "domain must be non-empty")
-	}
 	if key == "" {
-		diags.AddError("Invalid macOS default", "key must be non-empty")
-	}
-	if strings.ContainsAny(domain, "\x00\r\n") {
-		diags.AddError("Invalid macOS default", "domain must not contain control characters")
+		diags.AddError("Invalid macOS setting", "key must be non-empty")
 	}
 	if strings.ContainsAny(key, "\x00\r\n") {
-		diags.AddError("Invalid macOS default", "key must not contain control characters")
+		diags.AddError("Invalid macOS setting", "key must not contain control characters")
 	}
 
 	value, valueDiags := macOSDefaultValueFromModel(ctx, model)
@@ -538,61 +703,160 @@ func macOSDefaultSpecFromModel(ctx context.Context, model MacOSDefaultResourceMo
 }
 
 func macOSDefaultValueFromModel(ctx context.Context, model MacOSDefaultResourceModel) (macOSDefaultValue, diag.Diagnostics) {
+	return macOSDefaultValueFromDynamic(ctx, model.Value)
+}
+
+func macOSDefaultValueFromDynamic(ctx context.Context, value types.Dynamic) (macOSDefaultValue, diag.Diagnostics) {
 	var diags diag.Diagnostics
-	var values []macOSDefaultValue
 
-	if !model.Bool.IsNull() {
-		values = append(values, macOSDefaultValue{Type: macOSDefaultValueBool, Bool: model.Bool.ValueBool()})
-	}
-	if !model.Int.IsNull() {
-		values = append(values, macOSDefaultValue{Type: macOSDefaultValueInt, Int: model.Int.ValueInt64()})
-	}
-	if !model.Float.IsNull() {
-		values = append(values, macOSDefaultValue{Type: macOSDefaultValueFloat, Float: model.Float.ValueFloat64()})
-	}
-	if !model.String.IsNull() {
-		values = append(values, macOSDefaultValue{Type: macOSDefaultValueString, String: model.String.ValueString()})
-	}
-	if !model.StringList.IsNull() {
-		var elements []string
-		diags.Append(model.StringList.ElementsAs(ctx, &elements, false)...)
-		values = append(values, macOSDefaultValue{Type: macOSDefaultValueStringList, StringList: elements})
-	}
-
-	if len(values) != 1 {
-		diags.AddError("Invalid macOS default value", "Exactly one of bool, int, float, string, or string_list must be set.")
+	if value.IsNull() || value.IsUnknown() || value.IsUnderlyingValueNull() || value.IsUnderlyingValueUnknown() {
+		diags.AddError("Invalid macOS setting value", "value must be a known non-null bool, number, string, or list of strings.")
 		return macOSDefaultValue{}, diags
 	}
-	return values[0], diags
+
+	switch underlying := value.UnderlyingValue().(type) {
+	case types.Bool:
+		if underlying.IsNull() || underlying.IsUnknown() {
+			diags.AddError("Invalid macOS setting value", "value must be a known non-null bool.")
+			return macOSDefaultValue{}, diags
+		}
+		return macOSDefaultValue{Type: macOSDefaultValueBool, Bool: underlying.ValueBool()}, diags
+	case types.Number:
+		parsed, err := macOSDefaultValueFromNumber(underlying)
+		if err != nil {
+			diags.AddError("Invalid macOS setting value", err.Error())
+			return macOSDefaultValue{}, diags
+		}
+		return parsed, diags
+	case types.Int64:
+		if underlying.IsNull() || underlying.IsUnknown() {
+			diags.AddError("Invalid macOS setting value", "value must be a known non-null number.")
+			return macOSDefaultValue{}, diags
+		}
+		return macOSDefaultValue{Type: macOSDefaultValueInt, Int: underlying.ValueInt64()}, diags
+	case types.Float64:
+		if underlying.IsNull() || underlying.IsUnknown() {
+			diags.AddError("Invalid macOS setting value", "value must be a known non-null number.")
+			return macOSDefaultValue{}, diags
+		}
+		return macOSDefaultValue{Type: macOSDefaultValueFloat, Float: underlying.ValueFloat64()}, diags
+	case types.String:
+		if underlying.IsNull() || underlying.IsUnknown() {
+			diags.AddError("Invalid macOS setting value", "value must be a known non-null string.")
+			return macOSDefaultValue{}, diags
+		}
+		return macOSDefaultValue{Type: macOSDefaultValueString, String: underlying.ValueString()}, diags
+	case types.List:
+		elements, err := macOSDefaultStringSliceFromElements(underlying.Elements())
+		if err != nil {
+			diags.AddError("Invalid macOS setting value", err.Error())
+			return macOSDefaultValue{}, diags
+		}
+		return macOSDefaultValue{Type: macOSDefaultValueStringList, StringList: elements}, diags
+	case types.Tuple:
+		elements, err := macOSDefaultStringSliceFromElements(underlying.Elements())
+		if err != nil {
+			diags.AddError("Invalid macOS setting value", err.Error())
+			return macOSDefaultValue{}, diags
+		}
+		return macOSDefaultValue{Type: macOSDefaultValueStringList, StringList: elements}, diags
+	default:
+		diags.AddError(
+			"Invalid macOS setting value",
+			fmt.Sprintf("value has unsupported type %T; supported values are bool, number, string, and a list or tuple of strings.", underlying),
+		)
+		return macOSDefaultValue{}, diags
+	}
 }
 
 func macOSDefaultModelWithValue(ctx context.Context, model MacOSDefaultResourceModel, value macOSDefaultValue) (MacOSDefaultResourceModel, error) {
-	model.ID = types.StringValue(macOSDefaultID(model.Domain.ValueString(), model.Key.ValueString(), model.CurrentHost.ValueBool()))
-	model.Bool = types.BoolNull()
-	model.Int = types.Int64Null()
-	model.Float = types.Float64Null()
-	model.String = types.StringNull()
-	model.StringList = types.ListNull(types.StringType)
+	domain, diags := macOSSettingDomainFromObject(ctx, model.Domain)
+	if diags.HasError() {
+		return model, diagnosticsError(diags)
+	}
+	model.ID = types.StringValue(macOSDefaultID(domain, model.Key.ValueString(), model.CurrentHost.ValueBool()))
+	model.DomainResolved = types.StringValue(domain)
 
+	if !model.Value.IsNull() && !model.Value.IsUnknown() && !model.Value.IsUnderlyingValueNull() && !model.Value.IsUnderlyingValueUnknown() {
+		configured, valueDiags := macOSDefaultValueFromDynamic(ctx, model.Value)
+		if !valueDiags.HasError() && macOSDefaultValuesEqual(configured, value) {
+			return model, nil
+		}
+	}
+
+	dynamic, err := macOSDefaultDynamicValue(ctx, value)
+	if err != nil {
+		return model, err
+	}
+	model.Value = dynamic
+	return model, nil
+}
+
+func macOSDefaultValueFromNumber(value types.Number) (macOSDefaultValue, error) {
+	if value.IsNull() || value.IsUnknown() {
+		return macOSDefaultValue{}, fmt.Errorf("value must be a known non-null number")
+	}
+
+	number := value.ValueBigFloat()
+	if number == nil {
+		return macOSDefaultValue{}, fmt.Errorf("value must be a known non-null number")
+	}
+	if integer, accuracy := new(big.Float).Copy(number).Int64(); accuracy == big.Exact {
+		return macOSDefaultValue{Type: macOSDefaultValueInt, Int: integer}, nil
+	}
+	float, _ := number.Float64()
+	return macOSDefaultValue{Type: macOSDefaultValueFloat, Float: float}, nil
+}
+
+func macOSDefaultStringSliceFromElements(elements []attr.Value) ([]string, error) {
+	result := make([]string, 0, len(elements))
+	for i, element := range elements {
+		stringValue, ok := element.(types.String)
+		if !ok {
+			return nil, fmt.Errorf("string list element %d has unsupported type %T", i, element)
+		}
+		if stringValue.IsNull() || stringValue.IsUnknown() {
+			return nil, fmt.Errorf("string list element %d must be known and non-null", i)
+		}
+		result = append(result, stringValue.ValueString())
+	}
+	return result, nil
+}
+
+func macOSDefaultDynamicValue(ctx context.Context, value macOSDefaultValue) (types.Dynamic, error) {
 	switch value.Type {
 	case macOSDefaultValueBool:
-		model.Bool = types.BoolValue(value.Bool)
+		return types.DynamicValue(types.BoolValue(value.Bool)), nil
 	case macOSDefaultValueInt:
-		model.Int = types.Int64Value(value.Int)
+		return types.DynamicValue(types.NumberValue(new(big.Float).SetInt64(value.Int))), nil
 	case macOSDefaultValueFloat:
-		model.Float = types.Float64Value(value.Float)
+		return types.DynamicValue(types.NumberValue(big.NewFloat(value.Float))), nil
 	case macOSDefaultValueString:
-		model.String = types.StringValue(value.String)
+		return types.DynamicValue(types.StringValue(value.String)), nil
 	case macOSDefaultValueStringList:
-		list, diags := types.ListValueFrom(ctx, types.StringType, value.StringList)
-		if diags.HasError() {
-			return model, diagnosticsError(diags)
+		elementTypes := make([]attr.Type, 0, len(value.StringList))
+		elements := make([]attr.Value, 0, len(value.StringList))
+		for _, element := range value.StringList {
+			elementTypes = append(elementTypes, types.StringType)
+			elements = append(elements, types.StringValue(element))
 		}
-		model.StringList = list
+		tuple, diags := types.TupleValue(elementTypes, elements)
+		if diags.HasError() {
+			return types.Dynamic{}, diagnosticsError(diags)
+		}
+		return types.DynamicValue(tuple), nil
 	default:
-		return model, fmt.Errorf("unsupported macOS default value type %q", value.Type)
+		return types.Dynamic{}, fmt.Errorf("unsupported macOS default value type %q", value.Type)
 	}
-	return model, nil
+}
+
+func macOSDefaultValuesEqual(a macOSDefaultValue, b macOSDefaultValue) bool {
+	return a.Type == b.Type &&
+		a.Bool == b.Bool &&
+		a.Int == b.Int &&
+		a.Float == b.Float &&
+		a.String == b.String &&
+		reflect.DeepEqual(a.StringList, b.StringList)
 }
 
 func macOSDefaultImportSpec(importID string) (macOSDefaultSpec, error) {

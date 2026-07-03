@@ -17,14 +17,13 @@ Manages one Terraform-owned content block inside a named `host_file` block.
 
 ### Required
 
+- `block` (Attributes) Target file block reference, usually `host_file.<name>.blocks.<block>`. (see [below for nested schema](#nestedatt--block))
 - `content` (String) Content to place inside the target file block.
 
 ### Optional
 
 - `after` (List of String) IDs of sibling `host_file_block` resources that this block must be rendered after.
 - `before` (List of String) IDs of sibling `host_file_block` resources that this block must be rendered before.
-- `block` (Attributes) Target file block reference, usually `host_file.<name>.blocks.<block>`. (see [below for nested schema](#nestedatt--block))
-- `file_block` (Attributes) Legacy target file block reference. Prefer `block`. (see [below for nested schema](#nestedatt--file_block))
 
 ### Read-Only
 
@@ -38,11 +37,6 @@ Required:
 - `name` (String) Target file block name.
 - `path` (String) Path to the host file that contains the target block.
 
+Optional:
 
-<a id="nestedatt--file_block"></a>
-### Nested Schema for `file_block`
-
-Required:
-
-- `name` (String) Target file block name.
-- `path` (String) Path to the host file that contains the target block.
+- `path_resolved` (String) Resolved absolute path to the host file that contains the target block.

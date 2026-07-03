@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -15,39 +16,53 @@ import (
 )
 
 var (
-	_ resource.Resource               = &MacOSDefaultsResource{}
-	_ resource.ResourceWithConfigure  = &MacOSDefaultsResource{}
-	_ resource.ResourceWithModifyPlan = &MacOSDefaultsResource{}
+	_ resource.Resource                = &MacOSDefaultsResource{}
+	_ resource.ResourceWithConfigure   = &MacOSDefaultsResource{}
+	_ resource.ResourceWithImportState = &MacOSDefaultsResource{}
+	_ resource.ResourceWithModifyPlan  = &MacOSDefaultsResource{}
 )
 
-const macOSDefaultsResourceID = "macos_defaults"
+const macOSSettingsResourceID = "mac_settings"
 
 type MacOSDefaultsResource struct {
 	manager MacOSDefaultsManager
 }
 
 type MacOSDefaultsResourceModel struct {
-	ID       types.String `tfsdk:"id"`
-	Defaults types.Map    `tfsdk:"defaults"`
+	ID       types.String  `tfsdk:"id"`
+	Settings types.Dynamic `tfsdk:"settings"`
+	Groups   types.Dynamic `tfsdk:"groups"`
 }
 
 type MacOSDefaultsDefaultModel struct {
-	Domain          types.String  `tfsdk:"domain"`
+	Domain          types.Object  `tfsdk:"domain"`
+	DomainResolved  types.String  `tfsdk:"domain_resolved"`
 	Key             types.String  `tfsdk:"key"`
 	CurrentHost     types.Bool    `tfsdk:"current_host"`
-	Bool            types.Bool    `tfsdk:"bool"`
-	Int             types.Int64   `tfsdk:"int"`
-	Float           types.Float64 `tfsdk:"float"`
-	String          types.String  `tfsdk:"string"`
-	StringList      types.List    `tfsdk:"string_list"`
+	Value           types.Dynamic `tfsdk:"value"`
 	DeleteOnDestroy types.Bool    `tfsdk:"delete_on_destroy"`
 	Restart         types.List    `tfsdk:"restart"`
 }
 
+type MacOSSettingsGroupModel struct {
+	Domain          types.Object  `tfsdk:"domain"`
+	CurrentHost     types.Bool    `tfsdk:"current_host"`
+	DeleteOnDestroy types.Bool    `tfsdk:"delete_on_destroy"`
+	Restart         types.List    `tfsdk:"restart"`
+	Settings        types.Dynamic `tfsdk:"settings"`
+}
+
+type MacOSSettingsGroupSettingModel struct {
+	Key   types.String  `tfsdk:"key"`
+	Value types.Dynamic `tfsdk:"value"`
+}
+
 type macOSDefaultsNamedSpec struct {
-	Name  string
-	Model MacOSDefaultsDefaultModel
-	Spec  macOSDefaultSpec
+	Name       string
+	GroupName  string
+	Model      MacOSDefaultsDefaultModel
+	GroupModel MacOSSettingsGroupModel
+	Spec       macOSDefaultSpec
 }
 
 func NewMacOSDefaultsResource() resource.Resource {
@@ -55,69 +70,27 @@ func NewMacOSDefaultsResource() resource.Resource {
 }
 
 func (r *MacOSDefaultsResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
-	resp.TypeName = req.ProviderTypeName + "_macos_defaults"
+	resp.TypeName = req.ProviderTypeName + "_mac_settings"
 }
 
 func (r *MacOSDefaultsResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manages multiple macOS `defaults` keys as one grouped Terraform resource.",
+		MarkdownDescription: "Manages multiple macOS settings backed by `defaults` keys as one grouped Terraform resource.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "Resource identifier, always `macos_defaults`.",
+				MarkdownDescription: "Resource identifier, always `mac_settings`.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
-			"defaults": schema.MapNestedAttribute{
-				Required:            true,
-				MarkdownDescription: "Named macOS defaults to manage. Map keys are Terraform-local names; each object is identified on macOS by `domain`, `key`, and `current_host`.",
-				NestedObject: schema.NestedAttributeObject{
-					Attributes: map[string]schema.Attribute{
-						"domain": schema.StringAttribute{
-							Required:            true,
-							MarkdownDescription: "Defaults domain, such as `com.apple.dock`, `NSGlobalDomain`, or `com.apple.universalaccess`.",
-						},
-						"key": schema.StringAttribute{
-							Required:            true,
-							MarkdownDescription: "Defaults key to manage inside the domain.",
-						},
-						"current_host": schema.BoolAttribute{
-							Optional:            true,
-							MarkdownDescription: "Use `defaults -currentHost` for host-specific preferences.",
-						},
-						"bool": schema.BoolAttribute{
-							Optional:            true,
-							MarkdownDescription: "Boolean value. Exactly one of `bool`, `int`, `float`, `string`, or `string_list` must be set.",
-						},
-						"int": schema.Int64Attribute{
-							Optional:            true,
-							MarkdownDescription: "Integer value. Exactly one of `bool`, `int`, `float`, `string`, or `string_list` must be set.",
-						},
-						"float": schema.Float64Attribute{
-							Optional:            true,
-							MarkdownDescription: "Floating-point value. Exactly one of `bool`, `int`, `float`, `string`, or `string_list` must be set.",
-						},
-						"string": schema.StringAttribute{
-							Optional:            true,
-							MarkdownDescription: "String value. Exactly one of `bool`, `int`, `float`, `string`, or `string_list` must be set.",
-						},
-						"string_list": schema.ListAttribute{
-							ElementType:         types.StringType,
-							Optional:            true,
-							MarkdownDescription: "String array value. Exactly one of `bool`, `int`, `float`, `string`, or `string_list` must be set.",
-						},
-						"delete_on_destroy": schema.BoolAttribute{
-							Optional:            true,
-							MarkdownDescription: "Delete this defaults key on destroy. Defaults to false, leaving the current host setting in place.",
-						},
-						"restart": schema.ListAttribute{
-							ElementType:         types.StringType,
-							Optional:            true,
-							MarkdownDescription: "Process names to restart with `killall` after writes or deletes, such as `Dock`, `Finder`, or `SystemUIServer`. Omit to use provider defaults for known domains; set `[]` to disable restarts.",
-						},
-					},
-				},
+			"settings": schema.DynamicAttribute{
+				Optional:            true,
+				MarkdownDescription: "Named macOS settings to manage. Each map value is an object with `domain`, `key`, and `value`, plus optional `current_host`, `delete_on_destroy`, and `restart`.",
+			},
+			"groups": schema.DynamicAttribute{
+				Optional:            true,
+				MarkdownDescription: "Named groups of macOS settings that share `domain`, `current_host`, `delete_on_destroy`, and `restart`. Each group has `domain` and `settings`; each nested setting only needs `key` and `value`.",
 			},
 		},
 	}
@@ -131,7 +104,7 @@ func (r *MacOSDefaultsResource) Configure(ctx context.Context, req resource.Conf
 	switch data := req.ProviderData.(type) {
 	case HostProviderData:
 		if data.MacOSDefaultsManager == nil {
-			resp.Diagnostics.AddError("macOS defaults unavailable", "`host_macos_defaults` requires the macOS `defaults` command.")
+			resp.Diagnostics.AddError("macOS settings unavailable", "`host_mac_settings` requires the macOS `defaults` command.")
 			return
 		}
 		r.manager = data.MacOSDefaultsManager
@@ -164,7 +137,7 @@ func (r *MacOSDefaultsResource) ModifyPlan(ctx context.Context, req resource.Mod
 		}
 	}
 
-	plan.ID = types.StringValue(macOSDefaultsResourceID)
+	plan.ID = types.StringValue(macOSSettingsResourceID)
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
@@ -177,7 +150,7 @@ func (r *MacOSDefaultsResource) Create(ctx context.Context, req resource.CreateR
 
 	state, err := r.syncDefaults(ctx, plan)
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to sync macOS defaults", err.Error())
+		resp.Diagnostics.AddError("Failed to sync macOS settings", err.Error())
 		return
 	}
 
@@ -193,7 +166,7 @@ func (r *MacOSDefaultsResource) Read(ctx context.Context, req resource.ReadReque
 
 	next, err := r.readDefaults(ctx, state)
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to read macOS defaults", err.Error())
+		resp.Diagnostics.AddError("Failed to read macOS settings", err.Error())
 		return
 	}
 
@@ -211,7 +184,7 @@ func (r *MacOSDefaultsResource) Update(ctx context.Context, req resource.UpdateR
 
 	next, err := r.updateDefaults(ctx, state, plan)
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to sync macOS defaults", err.Error())
+		resp.Diagnostics.AddError("Failed to sync macOS settings", err.Error())
 		return
 	}
 
@@ -232,7 +205,7 @@ func (r *MacOSDefaultsResource) Delete(ctx context.Context, req resource.DeleteR
 	}
 
 	if r.manager == nil {
-		resp.Diagnostics.AddError("macOS defaults unavailable", "`host_macos_defaults` requires the macOS `defaults` command.")
+		resp.Diagnostics.AddError("macOS settings unavailable", "`host_mac_settings` requires the macOS `defaults` command.")
 		return
 	}
 
@@ -242,7 +215,7 @@ func (r *MacOSDefaultsResource) Delete(ctx context.Context, req resource.DeleteR
 			continue
 		}
 		if err := r.manager.DeleteDefault(ctx, spec.Spec); err != nil {
-			resp.Diagnostics.AddError("Failed to delete macOS default", err.Error())
+			resp.Diagnostics.AddError("Failed to delete macOS setting", err.Error())
 			return
 		}
 		restartProcesses = append(restartProcesses, spec.Spec.Restart...)
@@ -251,6 +224,40 @@ func (r *MacOSDefaultsResource) Delete(ctx context.Context, req resource.DeleteR
 	if err := r.manager.RestartProcesses(ctx, uniqueStrings(restartProcesses)); err != nil {
 		resp.Diagnostics.AddError("Failed to restart macOS processes", err.Error())
 	}
+}
+
+func (r *MacOSDefaultsResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	state, err := r.importDefaultsState(ctx, req.ID)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to import macOS settings", err.Error())
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+func (r *MacOSDefaultsResource) importDefaultsState(ctx context.Context, importID string) (MacOSDefaultsResourceModel, error) {
+	if r.manager == nil {
+		return MacOSDefaultsResourceModel{}, fmt.Errorf("macOS defaults manager unavailable")
+	}
+
+	specs, err := macOSDefaultsImportSpecs(importID)
+	if err != nil {
+		return MacOSDefaultsResourceModel{}, err
+	}
+
+	for i := range specs {
+		value, exists, err := r.manager.ReadDefault(ctx, specs[i].Spec)
+		if err != nil {
+			return MacOSDefaultsResourceModel{}, err
+		}
+		if !exists {
+			return MacOSDefaultsResourceModel{}, fmt.Errorf("no value exists for %q", specs[i].Spec.ID)
+		}
+		specs[i].Spec.Value = value
+	}
+
+	return macOSDefaultsModelFromSpecs(ctx, specs)
 }
 
 func (r *MacOSDefaultsResource) syncDefaults(ctx context.Context, model MacOSDefaultsResourceModel) (MacOSDefaultsResourceModel, error) {
@@ -345,21 +352,42 @@ func (r *MacOSDefaultsResource) readDefaults(ctx context.Context, model MacOSDef
 }
 
 func macOSDefaultsPlanReady(model MacOSDefaultsResourceModel) bool {
-	if model.Defaults.IsNull() || model.Defaults.IsUnknown() {
+	if !macOSSettingsDynamicReady(model.Settings) {
 		return false
 	}
-	for _, value := range model.Defaults.Elements() {
-		if value.IsUnknown() {
-			return false
-		}
-		object, ok := value.(types.Object)
-		if !ok {
+	if !macOSSettingsDynamicReady(model.Groups) {
+		return false
+	}
+	return true
+}
+
+func macOSSettingsDynamicReady(value types.Dynamic) bool {
+	if value.IsUnknown() {
+		return false
+	}
+	if value.IsNull() {
+		return true
+	}
+	return !value.IsUnderlyingValueUnknown() && macOSSettingsValueReady(value.UnderlyingValue())
+}
+
+func macOSSettingsValueReady(value attr.Value) bool {
+	if value.IsUnknown() {
+		return false
+	}
+	if dynamic, ok := value.(types.Dynamic); ok {
+		return !dynamic.IsUnderlyingValueUnknown()
+	}
+	object, ok := value.(types.Object)
+	if !ok {
+		return true
+	}
+	for attrName, attrValue := range object.Attributes() {
+		if attrName == "domain_resolved" {
 			continue
 		}
-		for _, attrValue := range object.Attributes() {
-			if attrValue.IsUnknown() {
-				return false
-			}
+		if !macOSSettingsValueReady(attrValue) {
+			return false
 		}
 	}
 	return true
@@ -367,40 +395,63 @@ func macOSDefaultsPlanReady(model MacOSDefaultsResourceModel) bool {
 
 func macOSDefaultsSpecsFromModel(ctx context.Context, model MacOSDefaultsResourceModel) ([]macOSDefaultsNamedSpec, diag.Diagnostics) {
 	var diags diag.Diagnostics
-	if model.Defaults.IsNull() {
-		diags.AddError("Invalid macOS defaults", "defaults must not be null")
+	if model.Settings.IsNull() && model.Groups.IsNull() {
+		diags.AddError("Invalid macOS settings", "Set at least one of settings or groups.")
 		return nil, diags
 	}
-	if model.Defaults.IsUnknown() {
-		diags.AddError("Invalid macOS defaults", "defaults must be known")
+	if model.Settings.IsUnknown() || model.Groups.IsUnknown() {
+		diags.AddError("Invalid macOS settings", "settings and groups must be known")
 		return nil, diags
 	}
 
-	var defaults map[string]MacOSDefaultsDefaultModel
-	diags.Append(model.Defaults.ElementsAs(ctx, &defaults, false)...)
+	specs := macOSDefaultsFlatSpecsFromModel(ctx, model, &diags)
+	specs = append(specs, macOSDefaultsGroupedSpecsFromModel(ctx, model, &diags)...)
 	if diags.HasError() {
 		return nil, diags
 	}
 
-	names := make([]string, 0, len(defaults))
-	for name := range defaults {
+	seenIDs := make(map[string]string, len(specs))
+	for _, spec := range specs {
+		displayName := macOSDefaultsSpecDisplayName(spec)
+		if previousName, ok := seenIDs[spec.Spec.ID]; ok {
+			diags.AddError(
+				"Duplicate macOS setting",
+				fmt.Sprintf("%s and %s both manage %q.", previousName, displayName, spec.Spec.ID),
+			)
+			continue
+		}
+		seenIDs[spec.Spec.ID] = displayName
+	}
+	return specs, diags
+}
+
+func macOSDefaultsFlatSpecsFromModel(ctx context.Context, model MacOSDefaultsResourceModel, diags *diag.Diagnostics) []macOSDefaultsNamedSpec {
+	if model.Settings.IsNull() {
+		return nil
+	}
+	settings := macOSSettingsElementsFromDynamic(model.Settings, "settings", diags)
+	if diags.HasError() {
+		return nil
+	}
+
+	names := make([]string, 0, len(settings))
+	for name := range settings {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
-	seenIDs := make(map[string]string, len(defaults))
-	specs := make([]macOSDefaultsNamedSpec, 0, len(defaults))
+	specs := make([]macOSDefaultsNamedSpec, 0, len(settings))
 	for _, name := range names {
-		item := defaults[name]
+		item := macOSDefaultsDefaultModelFromValue(ctx, settings[name], "settings."+name, diags)
+		if diags.HasError() {
+			continue
+		}
 		spec, specDiags := macOSDefaultSpecFromModel(ctx, MacOSDefaultResourceModel{
 			Domain:          item.Domain,
+			DomainResolved:  item.DomainResolved,
 			Key:             item.Key,
 			CurrentHost:     item.CurrentHost,
-			Bool:            item.Bool,
-			Int:             item.Int,
-			Float:           item.Float,
-			String:          item.String,
-			StringList:      item.StringList,
+			Value:           item.Value,
 			DeleteOnDestroy: item.DeleteOnDestroy,
 			Restart:         item.Restart,
 		})
@@ -409,67 +460,585 @@ func macOSDefaultsSpecsFromModel(ctx context.Context, model MacOSDefaultsResourc
 			continue
 		}
 
-		if previousName, ok := seenIDs[spec.ID]; ok {
-			diags.AddError(
-				"Duplicate macOS default",
-				fmt.Sprintf("defaults.%s and defaults.%s both manage %q.", previousName, name, spec.ID),
-			)
-			continue
-		}
-		seenIDs[spec.ID] = name
 		specs = append(specs, macOSDefaultsNamedSpec{
 			Name:  name,
 			Model: item,
 			Spec:  spec,
 		})
 	}
-	return specs, diags
+	return specs
+}
+
+func macOSDefaultsGroupedSpecsFromModel(ctx context.Context, model MacOSDefaultsResourceModel, diags *diag.Diagnostics) []macOSDefaultsNamedSpec {
+	if model.Groups.IsNull() {
+		return nil
+	}
+	groups := macOSSettingsElementsFromDynamic(model.Groups, "groups", diags)
+	if diags.HasError() {
+		return nil
+	}
+
+	groupNames := make([]string, 0, len(groups))
+	for name := range groups {
+		groupNames = append(groupNames, name)
+	}
+	sort.Strings(groupNames)
+
+	var specs []macOSDefaultsNamedSpec
+	for _, groupName := range groupNames {
+		group := macOSSettingsGroupModelFromValue(ctx, groups[groupName], "groups."+groupName, diags)
+		if diags.HasError() {
+			continue
+		}
+		if group.Settings.IsNull() {
+			diags.AddError("Invalid macOS settings group", fmt.Sprintf("groups.%s.settings must not be null.", groupName))
+			continue
+		}
+
+		settings := macOSSettingsElementsFromDynamic(group.Settings, "groups."+groupName+".settings", diags)
+		if diags.HasError() {
+			continue
+		}
+
+		names := make([]string, 0, len(settings))
+		for name := range settings {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+
+		for _, name := range names {
+			item := macOSSettingsGroupSettingModelFromValue(settings[name], "groups."+groupName+".settings."+name, diags)
+			if diags.HasError() {
+				continue
+			}
+			defaultModel := MacOSDefaultsDefaultModel{
+				Domain:          group.Domain,
+				Key:             item.Key,
+				CurrentHost:     group.CurrentHost,
+				Value:           item.Value,
+				DeleteOnDestroy: group.DeleteOnDestroy,
+				Restart:         group.Restart,
+			}
+			spec, specDiags := macOSDefaultSpecFromModel(ctx, MacOSDefaultResourceModel{
+				Domain:          defaultModel.Domain,
+				Key:             defaultModel.Key,
+				CurrentHost:     defaultModel.CurrentHost,
+				Value:           defaultModel.Value,
+				DeleteOnDestroy: defaultModel.DeleteOnDestroy,
+				Restart:         defaultModel.Restart,
+			})
+			diags.Append(specDiags...)
+			if specDiags.HasError() {
+				continue
+			}
+
+			specs = append(specs, macOSDefaultsNamedSpec{
+				Name:       name,
+				GroupName:  groupName,
+				Model:      defaultModel,
+				GroupModel: group,
+				Spec:       spec,
+			})
+		}
+	}
+	return specs
+}
+
+func macOSDefaultsSpecDisplayName(spec macOSDefaultsNamedSpec) string {
+	if spec.GroupName == "" {
+		return "settings." + spec.Name
+	}
+	return "groups." + spec.GroupName + ".settings." + spec.Name
+}
+
+func macOSSettingsElementsFromDynamic(value types.Dynamic, name string, diags *diag.Diagnostics) map[string]attr.Value {
+	if value.IsNull() {
+		return nil
+	}
+	if value.IsUnknown() || value.IsUnderlyingValueUnknown() {
+		diags.AddError("Invalid macOS settings", name+" must be known.")
+		return nil
+	}
+	if value.IsUnderlyingValueNull() {
+		return nil
+	}
+	return macOSSettingsElementsFromValue(value.UnderlyingValue(), name, diags)
+}
+
+func macOSSettingsElementsFromValue(value attr.Value, name string, diags *diag.Diagnostics) map[string]attr.Value {
+	value = macOSSettingsUnwrapDynamic(value)
+	switch typed := value.(type) {
+	case types.Object:
+		if typed.IsNull() {
+			return nil
+		}
+		if typed.IsUnknown() {
+			diags.AddError("Invalid macOS settings", name+" must be known.")
+			return nil
+		}
+		return typed.Attributes()
+	case types.Map:
+		if typed.IsNull() {
+			return nil
+		}
+		if typed.IsUnknown() {
+			diags.AddError("Invalid macOS settings", name+" must be known.")
+			return nil
+		}
+		return typed.Elements()
+	default:
+		diags.AddError("Invalid macOS settings", fmt.Sprintf("%s must be an object or map, got %T.", name, value))
+		return nil
+	}
+}
+
+func macOSDefaultsDefaultModelFromValue(ctx context.Context, value attr.Value, name string, diags *diag.Diagnostics) MacOSDefaultsDefaultModel {
+	attrs := macOSSettingsObjectAttrs(value, name, diags)
+	if diags.HasError() {
+		return MacOSDefaultsDefaultModel{}
+	}
+
+	return MacOSDefaultsDefaultModel{
+		Domain:          macOSSettingsDomainAttr(attrs, "domain", name, diags),
+		Key:             macOSSettingsStringAttr(attrs, "key", name, true, diags),
+		CurrentHost:     macOSSettingsBoolAttr(attrs, "current_host", name, false, diags),
+		Value:           macOSSettingsValueAttr(attrs, "value", name, diags),
+		DeleteOnDestroy: macOSSettingsBoolAttr(attrs, "delete_on_destroy", name, false, diags),
+		Restart:         macOSSettingsStringListAttr(ctx, attrs, "restart", name, false, diags),
+	}
+}
+
+func macOSSettingsGroupModelFromValue(ctx context.Context, value attr.Value, name string, diags *diag.Diagnostics) MacOSSettingsGroupModel {
+	attrs := macOSSettingsObjectAttrs(value, name, diags)
+	if diags.HasError() {
+		return MacOSSettingsGroupModel{}
+	}
+
+	return MacOSSettingsGroupModel{
+		Domain:          macOSSettingsDomainAttr(attrs, "domain", name, diags),
+		CurrentHost:     macOSSettingsBoolAttr(attrs, "current_host", name, false, diags),
+		DeleteOnDestroy: macOSSettingsBoolAttr(attrs, "delete_on_destroy", name, false, diags),
+		Restart:         macOSSettingsStringListAttr(ctx, attrs, "restart", name, false, diags),
+		Settings:        macOSSettingsValueAttr(attrs, "settings", name, diags),
+	}
+}
+
+func macOSSettingsGroupSettingModelFromValue(value attr.Value, name string, diags *diag.Diagnostics) MacOSSettingsGroupSettingModel {
+	attrs := macOSSettingsObjectAttrs(value, name, diags)
+	if diags.HasError() {
+		return MacOSSettingsGroupSettingModel{}
+	}
+
+	return MacOSSettingsGroupSettingModel{
+		Key:   macOSSettingsStringAttr(attrs, "key", name, true, diags),
+		Value: macOSSettingsValueAttr(attrs, "value", name, diags),
+	}
+}
+
+func macOSSettingsObjectAttrs(value attr.Value, name string, diags *diag.Diagnostics) map[string]attr.Value {
+	value = macOSSettingsUnwrapDynamic(value)
+	object, ok := value.(types.Object)
+	if !ok {
+		diags.AddError("Invalid macOS setting", fmt.Sprintf("%s must be an object, got %T.", name, value))
+		return nil
+	}
+	if object.IsNull() || object.IsUnknown() {
+		diags.AddError("Invalid macOS setting", name+" must be a known non-null object.")
+		return nil
+	}
+	return object.Attributes()
+}
+
+func macOSSettingsDomainAttr(attrs map[string]attr.Value, attrName string, objectName string, diags *diag.Diagnostics) types.Object {
+	raw, ok := attrs[attrName]
+	if !ok {
+		diags.AddError("Invalid macOS setting", objectName+"."+attrName+" is required.")
+		return types.ObjectNull(macOSSettingDomainAttributeTypes())
+	}
+	value := macOSSettingsUnwrapDynamic(raw)
+	object, ok := value.(types.Object)
+	if !ok || object.IsNull() || object.IsUnknown() {
+		diags.AddError("Invalid macOS setting", objectName+"."+attrName+" must be a known non-null object.")
+		return types.ObjectNull(macOSSettingDomainAttributeTypes())
+	}
+	return macOSSettingDomainObjectWithDefaults(object, diags)
+}
+
+func macOSSettingsStringAttr(attrs map[string]attr.Value, attrName string, objectName string, required bool, diags *diag.Diagnostics) types.String {
+	raw, ok := attrs[attrName]
+	if !ok {
+		if required {
+			diags.AddError("Invalid macOS setting", objectName+"."+attrName+" is required.")
+		}
+		return types.StringNull()
+	}
+	value := macOSSettingsUnwrapDynamic(raw)
+	stringValue, ok := value.(types.String)
+	if !ok || stringValue.IsUnknown() {
+		diags.AddError("Invalid macOS setting", objectName+"."+attrName+" must be a known string.")
+		return types.StringNull()
+	}
+	if required && stringValue.IsNull() {
+		diags.AddError("Invalid macOS setting", objectName+"."+attrName+" must not be null.")
+	}
+	return stringValue
+}
+
+func macOSSettingsBoolAttr(attrs map[string]attr.Value, attrName string, objectName string, required bool, diags *diag.Diagnostics) types.Bool {
+	raw, ok := attrs[attrName]
+	if !ok {
+		if required {
+			diags.AddError("Invalid macOS setting", objectName+"."+attrName+" is required.")
+		}
+		return types.BoolNull()
+	}
+	value := macOSSettingsUnwrapDynamic(raw)
+	boolValue, ok := value.(types.Bool)
+	if !ok || boolValue.IsUnknown() {
+		diags.AddError("Invalid macOS setting", objectName+"."+attrName+" must be a known bool.")
+		return types.BoolNull()
+	}
+	if required && boolValue.IsNull() {
+		diags.AddError("Invalid macOS setting", objectName+"."+attrName+" must not be null.")
+	}
+	return boolValue
+}
+
+func macOSSettingsValueAttr(attrs map[string]attr.Value, attrName string, objectName string, diags *diag.Diagnostics) types.Dynamic {
+	raw, ok := attrs[attrName]
+	if !ok {
+		diags.AddError("Invalid macOS setting", objectName+"."+attrName+" is required.")
+		return types.DynamicNull()
+	}
+	value := macOSSettingsUnwrapDynamic(raw)
+	if value.IsNull() || value.IsUnknown() {
+		diags.AddError("Invalid macOS setting", objectName+"."+attrName+" must be known and non-null.")
+		return types.DynamicNull()
+	}
+	return types.DynamicValue(value)
+}
+
+func macOSSettingsStringListAttr(ctx context.Context, attrs map[string]attr.Value, attrName string, objectName string, required bool, diags *diag.Diagnostics) types.List {
+	raw, ok := attrs[attrName]
+	if !ok {
+		if required {
+			diags.AddError("Invalid macOS setting", objectName+"."+attrName+" is required.")
+		}
+		return types.ListNull(types.StringType)
+	}
+	value := macOSSettingsUnwrapDynamic(raw)
+	if value.IsNull() {
+		return types.ListNull(types.StringType)
+	}
+	if value.IsUnknown() {
+		diags.AddError("Invalid macOS setting", objectName+"."+attrName+" must be known.")
+		return types.ListNull(types.StringType)
+	}
+
+	var elements []string
+	var err error
+	switch typed := value.(type) {
+	case types.List:
+		elements, err = macOSDefaultStringSliceFromElements(typed.Elements())
+	case types.Tuple:
+		elements, err = macOSDefaultStringSliceFromElements(typed.Elements())
+	default:
+		diags.AddError("Invalid macOS setting", fmt.Sprintf("%s.%s must be a list of strings, got %T.", objectName, attrName, value))
+		return types.ListNull(types.StringType)
+	}
+	if err != nil {
+		diags.AddError("Invalid macOS setting", objectName+"."+attrName+": "+err.Error())
+		return types.ListNull(types.StringType)
+	}
+
+	list, listDiags := types.ListValueFrom(ctx, types.StringType, elements)
+	diags.Append(listDiags...)
+	if listDiags.HasError() {
+		return types.ListNull(types.StringType)
+	}
+	return list
+}
+
+func macOSSettingsUnwrapDynamic(value attr.Value) attr.Value {
+	for {
+		dynamic, ok := value.(types.Dynamic)
+		if !ok || dynamic.IsNull() || dynamic.IsUnknown() || dynamic.IsUnderlyingValueNull() || dynamic.IsUnderlyingValueUnknown() {
+			return value
+		}
+		value = dynamic.UnderlyingValue()
+	}
+}
+
+func macOSDefaultsImportSpecs(importID string) ([]macOSDefaultsNamedSpec, error) {
+	raw := strings.TrimSpace(importID)
+	if raw == "" {
+		return nil, fmt.Errorf("import ID must be non-empty")
+	}
+
+	parts := strings.Split(raw, ",")
+	specs := make([]macOSDefaultsNamedSpec, 0, len(parts))
+	seenNames := make(map[string]struct{}, len(parts))
+	seenIDs := make(map[string]string, len(parts))
+	groupScopes := make(map[string]string, len(parts))
+	for _, part := range parts {
+		entry := strings.TrimSpace(part)
+		name, defaultID, ok := strings.Cut(entry, "=")
+		if !ok {
+			return nil, fmt.Errorf("expected import entry %q to be in the form `<map_key>=<default_id>`", entry)
+		}
+
+		name = strings.TrimSpace(name)
+		defaultID = strings.TrimSpace(defaultID)
+		if name == "" {
+			return nil, fmt.Errorf("import map key must be non-empty")
+		}
+		if strings.ContainsAny(name, "\x00\r\n,=") {
+			return nil, fmt.Errorf("import map key %q must not contain control characters, comma, or equals", name)
+		}
+		if _, ok := seenNames[name]; ok {
+			return nil, fmt.Errorf("duplicate import map key %q", name)
+		}
+		seenNames[name] = struct{}{}
+
+		spec, err := macOSDefaultImportSpec(defaultID)
+		if err != nil {
+			return nil, err
+		}
+		if previousName, ok := seenIDs[spec.ID]; ok {
+			return nil, fmt.Errorf("settings.%s and settings.%s both import %q", previousName, name, spec.ID)
+		}
+		seenIDs[spec.ID] = name
+		domainObject, err := macOSSettingDomainObjectFromResolved(spec.Domain)
+		if err != nil {
+			return nil, err
+		}
+
+		groupName, settingName, grouped := strings.Cut(name, ".")
+		if grouped {
+			groupName = strings.TrimSpace(groupName)
+			settingName = strings.TrimSpace(settingName)
+			if groupName == "" || settingName == "" {
+				return nil, fmt.Errorf("import map key %q must use non-empty group and setting names", name)
+			}
+			groupScope := macOSDefaultID(spec.Domain, "", spec.CurrentHost)
+			if previousScope, ok := groupScopes[groupName]; ok && previousScope != groupScope {
+				return nil, fmt.Errorf("group import key %q uses a different domain or scope than other entries in group %q", name, groupName)
+			}
+			groupScopes[groupName] = groupScope
+		}
+
+		currentHostValue := types.BoolNull()
+		if spec.CurrentHost {
+			currentHostValue = types.BoolValue(true)
+		}
+
+		namedSpec := macOSDefaultsNamedSpec{
+			Name: name,
+			Model: MacOSDefaultsDefaultModel{
+				Domain:          domainObject,
+				DomainResolved:  types.StringValue(spec.Domain),
+				Key:             types.StringValue(spec.Key),
+				CurrentHost:     currentHostValue,
+				DeleteOnDestroy: types.BoolNull(),
+				Restart:         types.ListNull(types.StringType),
+			},
+			Spec: spec,
+		}
+		if grouped {
+			namedSpec.Name = settingName
+			namedSpec.GroupName = groupName
+			namedSpec.GroupModel = MacOSSettingsGroupModel{
+				Domain:          domainObject,
+				CurrentHost:     currentHostValue,
+				DeleteOnDestroy: types.BoolNull(),
+				Restart:         types.ListNull(types.StringType),
+			}
+		}
+
+		specs = append(specs, namedSpec)
+	}
+
+	return specs, nil
 }
 
 func macOSDefaultsModelFromSpecs(ctx context.Context, specs []macOSDefaultsNamedSpec) (MacOSDefaultsResourceModel, error) {
-	var diags diag.Diagnostics
-	elements := make(map[string]attr.Value, len(specs))
+	settingsElements := make(map[string]attr.Value, len(specs))
+	groupSpecs := make(map[string][]macOSDefaultsNamedSpec)
 	for _, spec := range specs {
 		model, err := macOSDefaultsDefaultModelWithValue(ctx, spec.Model, spec.Spec.Value)
 		if err != nil {
 			return MacOSDefaultsResourceModel{}, err
 		}
-		objectValue, objectDiags := types.ObjectValue(macOSDefaultsDefaultAttributeTypes(), map[string]attr.Value{
-			"domain":            model.Domain,
-			"key":               model.Key,
-			"current_host":      model.CurrentHost,
-			"bool":              model.Bool,
-			"int":               model.Int,
-			"float":             model.Float,
-			"string":            model.String,
-			"string_list":       model.StringList,
-			"delete_on_destroy": model.DeleteOnDestroy,
-			"restart":           model.Restart,
-		})
-		diags.Append(objectDiags...)
-		if diags.HasError() {
-			return MacOSDefaultsResourceModel{}, diagnosticsError(diags)
+		spec.Model = model
+		if spec.GroupName != "" {
+			groupSpecs[spec.GroupName] = append(groupSpecs[spec.GroupName], spec)
+			continue
 		}
-		elements[spec.Name] = objectValue
+		objectValue, err := macOSDefaultsDefaultObjectValue(ctx, model)
+		if err != nil {
+			return MacOSDefaultsResourceModel{}, err
+		}
+		settingsElements[spec.Name] = objectValue
 	}
 
-	defaults, mapDiags := types.MapValue(macOSDefaultsDefaultObjectType(), elements)
-	diags.Append(mapDiags...)
-	if diags.HasError() {
-		return MacOSDefaultsResourceModel{}, diagnosticsError(diags)
+	settings := types.DynamicNull()
+	if len(settingsElements) > 0 {
+		settingsValue, err := macOSSettingsDynamicObject(ctx, settingsElements)
+		if err != nil {
+			return MacOSDefaultsResourceModel{}, err
+		}
+		settings = settingsValue
+	}
+
+	groups, err := macOSSettingsGroupsModelFromSpecs(ctx, groupSpecs)
+	if err != nil {
+		return MacOSDefaultsResourceModel{}, err
 	}
 
 	return MacOSDefaultsResourceModel{
-		ID:       types.StringValue(macOSDefaultsResourceID),
-		Defaults: defaults,
+		ID:       types.StringValue(macOSSettingsResourceID),
+		Settings: settings,
+		Groups:   groups,
 	}, nil
+}
+
+func macOSDefaultsDefaultObjectValue(ctx context.Context, model MacOSDefaultsDefaultModel) (types.Object, error) {
+	attrs := map[string]attr.Value{
+		"domain": macOSSettingsCompactObject(ctx, model.Domain),
+		"key":    model.Key,
+		"value":  macOSSettingsDynamicUnderlying(model.Value),
+	}
+	macOSSettingsSetOptionalAttr(attrs, "current_host", model.CurrentHost)
+	macOSSettingsSetOptionalAttr(attrs, "delete_on_destroy", model.DeleteOnDestroy)
+	macOSSettingsSetOptionalAttr(attrs, "restart", model.Restart)
+	return macOSSettingsObjectValue(ctx, attrs)
+}
+
+func macOSSettingsGroupsModelFromSpecs(ctx context.Context, groups map[string][]macOSDefaultsNamedSpec) (types.Dynamic, error) {
+	if len(groups) == 0 {
+		return types.DynamicNull(), nil
+	}
+
+	groupElements := make(map[string]attr.Value, len(groups))
+	for groupName, specs := range groups {
+		if len(specs) == 0 {
+			continue
+		}
+		groupModel := specs[0].GroupModel
+		settingElements := make(map[string]attr.Value, len(specs))
+		for _, spec := range specs {
+			settingModel := MacOSSettingsGroupSettingModel{
+				Key:   spec.Model.Key,
+				Value: spec.Model.Value,
+			}
+			settingValue, err := macOSSettingsGroupSettingObjectValue(ctx, settingModel)
+			if err != nil {
+				return types.Dynamic{}, err
+			}
+			settingElements[spec.Name] = settingValue
+		}
+
+		settings, err := macOSSettingsDynamicObject(ctx, settingElements)
+		if err != nil {
+			return types.Dynamic{}, err
+		}
+		groupModel.Settings = settings
+		groupValue, err := macOSSettingsGroupObjectValue(ctx, groupModel)
+		if err != nil {
+			return types.Dynamic{}, err
+		}
+		groupElements[groupName] = groupValue
+	}
+
+	groupsValue, err := macOSSettingsDynamicObject(ctx, groupElements)
+	if err != nil {
+		return types.Dynamic{}, err
+	}
+	return groupsValue, nil
+}
+
+func macOSSettingsGroupObjectValue(ctx context.Context, model MacOSSettingsGroupModel) (types.Object, error) {
+	attrs := map[string]attr.Value{
+		"domain":   macOSSettingsCompactObject(ctx, model.Domain),
+		"settings": macOSSettingsDynamicUnderlying(model.Settings),
+	}
+	macOSSettingsSetOptionalAttr(attrs, "current_host", model.CurrentHost)
+	macOSSettingsSetOptionalAttr(attrs, "delete_on_destroy", model.DeleteOnDestroy)
+	macOSSettingsSetOptionalAttr(attrs, "restart", model.Restart)
+	return macOSSettingsObjectValue(ctx, attrs)
+}
+
+func macOSSettingsGroupSettingObjectValue(ctx context.Context, model MacOSSettingsGroupSettingModel) (types.Object, error) {
+	return macOSSettingsObjectValue(ctx, map[string]attr.Value{
+		"key":   model.Key,
+		"value": macOSSettingsDynamicUnderlying(model.Value),
+	})
+}
+
+func macOSSettingsDynamicObject(ctx context.Context, elements map[string]attr.Value) (types.Dynamic, error) {
+	object, err := macOSSettingsObjectValue(ctx, elements)
+	if err != nil {
+		return types.Dynamic{}, err
+	}
+	return types.DynamicValue(object), nil
+}
+
+func macOSSettingsObjectValue(ctx context.Context, attrs map[string]attr.Value) (types.Object, error) {
+	attrTypes := make(map[string]attr.Type, len(attrs))
+	for name, value := range attrs {
+		attrTypes[name] = value.Type(ctx)
+	}
+	objectValue, diags := types.ObjectValue(attrTypes, attrs)
+	if diags.HasError() {
+		return types.Object{}, diagnosticsError(diags)
+	}
+	return objectValue, nil
+}
+
+func macOSSettingsDynamicUnderlying(value types.Dynamic) attr.Value {
+	if value.IsNull() || value.IsUnknown() || value.IsUnderlyingValueNull() || value.IsUnderlyingValueUnknown() {
+		return value
+	}
+	return value.UnderlyingValue()
+}
+
+func macOSSettingsCompactObject(ctx context.Context, value types.Object) types.Object {
+	if value.IsNull() || value.IsUnknown() {
+		return value
+	}
+
+	attrs := make(map[string]attr.Value)
+	for name, attrValue := range value.Attributes() {
+		if attrValue.IsNull() || attrValue.IsUnknown() {
+			continue
+		}
+		attrs[name] = attrValue
+	}
+	if len(attrs) == 0 {
+		return value
+	}
+
+	object, err := macOSSettingsObjectValue(ctx, attrs)
+	if err != nil {
+		return value
+	}
+	return object
+}
+
+func macOSSettingsSetOptionalAttr(attrs map[string]attr.Value, name string, value attr.Value) {
+	if value.IsNull() || value.IsUnknown() {
+		return
+	}
+	attrs[name] = value
 }
 
 func macOSDefaultsDefaultModelWithValue(ctx context.Context, model MacOSDefaultsDefaultModel, value macOSDefaultValue) (MacOSDefaultsDefaultModel, error) {
 	resourceModel := MacOSDefaultResourceModel{
 		Domain:          model.Domain,
+		DomainResolved:  model.DomainResolved,
 		Key:             model.Key,
 		CurrentHost:     model.CurrentHost,
+		Value:           model.Value,
 		DeleteOnDestroy: model.DeleteOnDestroy,
 		Restart:         model.Restart,
 	}
@@ -478,33 +1047,9 @@ func macOSDefaultsDefaultModelWithValue(ctx context.Context, model MacOSDefaults
 		return model, err
 	}
 
-	model.Bool = resourceModel.Bool
-	model.Int = resourceModel.Int
-	model.Float = resourceModel.Float
-	model.String = resourceModel.String
-	model.StringList = resourceModel.StringList
+	model.DomainResolved = resourceModel.DomainResolved
+	model.Value = resourceModel.Value
 	return model, nil
-}
-
-func macOSDefaultsDefaultAttributeTypes() map[string]attr.Type {
-	return map[string]attr.Type{
-		"domain":            types.StringType,
-		"key":               types.StringType,
-		"current_host":      types.BoolType,
-		"bool":              types.BoolType,
-		"int":               types.Int64Type,
-		"float":             types.Float64Type,
-		"string":            types.StringType,
-		"string_list":       types.ListType{ElemType: types.StringType},
-		"delete_on_destroy": types.BoolType,
-		"restart":           types.ListType{ElemType: types.StringType},
-	}
-}
-
-func macOSDefaultsDefaultObjectType() types.ObjectType {
-	return types.ObjectType{
-		AttrTypes: macOSDefaultsDefaultAttributeTypes(),
-	}
 }
 
 func uniqueStrings(values []string) []string {

@@ -16,9 +16,8 @@ import (
 )
 
 var (
-	_ resource.Resource                 = &HostFileResource{}
-	_ resource.ResourceWithModifyPlan   = &HostFileResource{}
-	_ resource.ResourceWithUpgradeState = &HostFileResource{}
+	_ resource.Resource               = &HostFileResource{}
+	_ resource.ResourceWithModifyPlan = &HostFileResource{}
 )
 
 type HostFileResource struct {
@@ -27,66 +26,17 @@ type HostFileResource struct {
 type HostFileResourceModel struct {
 	ID              types.String `tfsdk:"id"`
 	Path            types.String `tfsdk:"path"`
+	PathResolved    types.String `tfsdk:"path_resolved"`
 	Content         types.String `tfsdk:"content"`
 	RenderedContent types.String `tfsdk:"rendered_content"`
 	Block           types.List   `tfsdk:"block"`
 	Blocks          types.Map    `tfsdk:"blocks"`
-}
-
-type hostFileResourceModelV2 struct {
-	ID              types.String `tfsdk:"id"`
-	Path            types.String `tfsdk:"path"`
-	Render          types.String `tfsdk:"render"`
-	Content         types.String `tfsdk:"content"`
-	RenderedContent types.String `tfsdk:"rendered_content"`
-	Block           types.List   `tfsdk:"block"`
-	Blocks          types.Map    `tfsdk:"blocks"`
-}
-
-type hostFileResourceModelV1 struct {
-	ID              types.String `tfsdk:"id"`
-	Path            types.String `tfsdk:"path"`
-	Render          types.String `tfsdk:"render"`
-	Content         types.String `tfsdk:"content"`
-	RenderedContent types.String `tfsdk:"rendered_content"`
-	Block           types.List   `tfsdk:"block"`
-}
-
-type hostFileResourceModelV0 struct {
-	ID              types.String `tfsdk:"id"`
-	Path            types.String `tfsdk:"path"`
-	Render          types.String `tfsdk:"render"`
-	Content         types.String `tfsdk:"content"`
-	RenderedContent types.String `tfsdk:"rendered_content"`
-	Block           types.Map    `tfsdk:"block"`
-	Section         types.List   `tfsdk:"section"`
 }
 
 type HostFileBlockReferenceModel struct {
-	Name types.String `tfsdk:"name"`
-	Path types.String `tfsdk:"path"`
-}
-
-type hostFileBlockSectionModelV0 struct {
-	Name     types.String `tfsdk:"name"`
-	Path     types.String `tfsdk:"path"`
-	Render   types.String `tfsdk:"render"`
-	Priority types.Int64  `tfsdk:"priority"`
-	Content  types.String `tfsdk:"content"`
-}
-
-type hostFileSectionModelV0 struct {
-	Name     types.String `tfsdk:"name"`
-	Priority types.Int64  `tfsdk:"priority"`
-	Content  types.String `tfsdk:"content"`
-}
-
-type hostFileBlockModelV1 struct {
-	Name     types.String `tfsdk:"name"`
-	Before   types.List   `tfsdk:"before"`
-	After    types.List   `tfsdk:"after"`
-	Priority types.Int64  `tfsdk:"priority"`
-	Content  types.String `tfsdk:"content"`
+	Name         types.String `tfsdk:"name"`
+	Path         types.String `tfsdk:"path"`
+	PathResolved types.String `tfsdk:"path_resolved"`
 }
 
 type HostFileBlockModel struct {
@@ -131,6 +81,10 @@ func (r *HostFileResource) Schema(ctx context.Context, req resource.SchemaReques
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
+			"path_resolved": schema.StringAttribute{
+				Computed:            true,
+				MarkdownDescription: "Resolved absolute host file path.",
+			},
 			"content": schema.StringAttribute{
 				Optional:            true,
 				MarkdownDescription: "Full file content to manage without Terraform block markers. Mutually exclusive with `block`.",
@@ -151,6 +105,10 @@ func (r *HostFileResource) Schema(ctx context.Context, req resource.SchemaReques
 						"path": schema.StringAttribute{
 							Computed:            true,
 							MarkdownDescription: "Path to the host file that contains this block.",
+						},
+						"path_resolved": schema.StringAttribute{
+							Computed:            true,
+							MarkdownDescription: "Resolved absolute host file path that contains this block.",
 						},
 					},
 				},
@@ -186,306 +144,6 @@ func (r *HostFileResource) Schema(ctx context.Context, req resource.SchemaReques
 	}
 }
 
-func (r *HostFileResource) UpgradeState(ctx context.Context) map[int64]resource.StateUpgrader {
-	return map[int64]resource.StateUpgrader{
-		0: {
-			PriorSchema: hostFileResourceV0Schema(),
-			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
-				var prior hostFileResourceModelV0
-				resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
-				if resp.Diagnostics.HasError() {
-					return
-				}
-
-				block, diags := upgradeHostFileBlockList(ctx, prior)
-				resp.Diagnostics.Append(diags...)
-				if resp.Diagnostics.HasError() {
-					return
-				}
-
-				upgraded := HostFileResourceModel{
-					ID:              prior.ID,
-					Path:            prior.Path,
-					Content:         prior.Content,
-					RenderedContent: prior.RenderedContent,
-					Block:           block,
-				}
-				if !prior.Path.IsNull() && !prior.Path.IsUnknown() {
-					specs, specDiags := hostFileBlockSpecs(ctx, block)
-					resp.Diagnostics.Append(specDiags...)
-					upgraded.Blocks = hostFileBlockReferenceMapValue(prior.Path.ValueString(), specs, &resp.Diagnostics)
-				}
-				if resp.Diagnostics.HasError() {
-					return
-				}
-
-				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
-			},
-		},
-		1: {
-			PriorSchema: hostFileResourceV1Schema(),
-			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
-				var prior hostFileResourceModelV1
-				resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
-				if resp.Diagnostics.HasError() {
-					return
-				}
-
-				specs, specDiags := hostFileBlockSpecsV1(ctx, prior.Block)
-				resp.Diagnostics.Append(specDiags...)
-				if resp.Diagnostics.HasError() {
-					return
-				}
-
-				block := hostFileBlockListValue(ctx, specs, &resp.Diagnostics)
-				upgraded := HostFileResourceModel{
-					ID:              prior.ID,
-					Path:            prior.Path,
-					Content:         prior.Content,
-					RenderedContent: prior.RenderedContent,
-					Block:           block,
-				}
-				if !prior.Path.IsNull() && !prior.Path.IsUnknown() {
-					upgraded.Blocks = hostFileBlockReferenceMapValue(prior.Path.ValueString(), specs, &resp.Diagnostics)
-				}
-				if resp.Diagnostics.HasError() {
-					return
-				}
-
-				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
-			},
-		},
-		2: {
-			PriorSchema: hostFileResourceV2Schema(),
-			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
-				var prior hostFileResourceModelV2
-				resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
-				if resp.Diagnostics.HasError() {
-					return
-				}
-
-				specs, specDiags := hostFileBlockSpecs(ctx, prior.Block)
-				resp.Diagnostics.Append(specDiags...)
-				if resp.Diagnostics.HasError() {
-					return
-				}
-
-				upgraded := HostFileResourceModel{
-					ID:              prior.ID,
-					Path:            prior.Path,
-					Content:         prior.Content,
-					RenderedContent: prior.RenderedContent,
-					Block:           prior.Block,
-				}
-				if !prior.Path.IsNull() && !prior.Path.IsUnknown() {
-					upgraded.Blocks = hostFileBlockReferenceMapValue(prior.Path.ValueString(), specs, &resp.Diagnostics)
-				}
-				if resp.Diagnostics.HasError() {
-					return
-				}
-
-				resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
-			},
-		},
-	}
-}
-
-func hostFileResourceV0Schema() *schema.Schema {
-	return &schema.Schema{
-		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Computed: true,
-			},
-			"path": schema.StringAttribute{
-				Required: true,
-			},
-			"render": schema.StringAttribute{
-				Optional: true,
-				Computed: true,
-			},
-			"content": schema.StringAttribute{
-				Optional: true,
-			},
-			"rendered_content": schema.StringAttribute{
-				Computed: true,
-			},
-			"block": schema.MapNestedAttribute{
-				Optional: true,
-				Computed: true,
-				NestedObject: schema.NestedAttributeObject{
-					Attributes: map[string]schema.Attribute{
-						"name": schema.StringAttribute{
-							Computed: true,
-						},
-						"path": schema.StringAttribute{
-							Computed: true,
-						},
-						"render": schema.StringAttribute{
-							Computed: true,
-						},
-						"priority": schema.Int64Attribute{
-							Optional: true,
-							Computed: true,
-						},
-						"content": schema.StringAttribute{
-							Optional: true,
-						},
-					},
-				},
-			},
-		},
-		Blocks: map[string]schema.Block{
-			"section": schema.ListNestedBlock{
-				NestedObject: schema.NestedBlockObject{
-					Attributes: map[string]schema.Attribute{
-						"name": schema.StringAttribute{
-							Required: true,
-						},
-						"priority": schema.Int64Attribute{
-							Optional: true,
-						},
-						"content": schema.StringAttribute{
-							Optional: true,
-						},
-					},
-				},
-			},
-		},
-	}
-}
-
-func hostFileResourceV1Schema() *schema.Schema {
-	return &schema.Schema{
-		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Computed: true,
-			},
-			"path": schema.StringAttribute{
-				Required: true,
-			},
-			"render": schema.StringAttribute{
-				Optional: true,
-				Computed: true,
-			},
-			"content": schema.StringAttribute{
-				Optional: true,
-			},
-			"rendered_content": schema.StringAttribute{
-				Computed: true,
-			},
-		},
-		Blocks: map[string]schema.Block{
-			"block": schema.ListNestedBlock{
-				NestedObject: schema.NestedBlockObject{
-					Attributes: map[string]schema.Attribute{
-						"name": schema.StringAttribute{
-							Required: true,
-						},
-						"before": schema.ListAttribute{
-							ElementType: types.StringType,
-							Optional:    true,
-						},
-						"after": schema.ListAttribute{
-							ElementType: types.StringType,
-							Optional:    true,
-						},
-						"priority": schema.Int64Attribute{
-							Optional: true,
-						},
-						"content": schema.StringAttribute{
-							Optional: true,
-						},
-					},
-				},
-			},
-		},
-	}
-}
-
-func hostFileResourceV2Schema() *schema.Schema {
-	return &schema.Schema{
-		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Computed: true,
-			},
-			"path": schema.StringAttribute{
-				Required: true,
-			},
-			"render": schema.StringAttribute{
-				Optional: true,
-				Computed: true,
-			},
-			"content": schema.StringAttribute{
-				Optional: true,
-			},
-			"rendered_content": schema.StringAttribute{
-				Computed: true,
-			},
-			"blocks": schema.MapNestedAttribute{
-				Computed: true,
-				NestedObject: schema.NestedAttributeObject{
-					Attributes: map[string]schema.Attribute{
-						"name": schema.StringAttribute{
-							Computed: true,
-						},
-						"path": schema.StringAttribute{
-							Computed: true,
-						},
-						"render": schema.StringAttribute{
-							Computed: true,
-						},
-					},
-				},
-			},
-		},
-		Blocks: map[string]schema.Block{
-			"block": schema.ListNestedBlock{
-				NestedObject: schema.NestedBlockObject{
-					Attributes: map[string]schema.Attribute{
-						"name": schema.StringAttribute{
-							Required: true,
-						},
-						"before": schema.ListAttribute{
-							ElementType: types.StringType,
-							Optional:    true,
-						},
-						"after": schema.ListAttribute{
-							ElementType: types.StringType,
-							Optional:    true,
-						},
-						"content": schema.StringAttribute{
-							Optional: true,
-						},
-					},
-				},
-			},
-		},
-	}
-}
-
-func upgradeHostFileBlockList(ctx context.Context, prior hostFileResourceModelV0) (types.List, diag.Diagnostics) {
-	var diags diag.Diagnostics
-	var specs []hostFileBlockSpec
-
-	if hostFileHasConfiguredSectionsV0(prior.Section) {
-		var sectionDiags diag.Diagnostics
-		specs, sectionDiags = hostFileSectionSpecsV0(ctx, prior.Section)
-		diags.Append(sectionDiags...)
-	} else {
-		var blockDiags diag.Diagnostics
-		specs, blockDiags = hostFileBlockSpecsV0(ctx, prior.Block)
-		diags.Append(blockDiags...)
-	}
-	if diags.HasError() {
-		return types.ListUnknown(hostFileBlockObjectType()), diags
-	}
-	if len(specs) == 0 {
-		return types.ListNull(hostFileBlockObjectType()), diags
-	}
-
-	return hostFileBlockListValue(ctx, specs, &diags), diags
-}
-
 func (r *HostFileResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
 	if req.Plan.Raw.IsNull() {
 		return
@@ -502,10 +160,12 @@ func (r *HostFileResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 	if plan.Path.IsNull() || plan.Path.IsUnknown() {
 		return
 	}
-	if _, err := expandHostPath(plan.Path.ValueString()); err != nil {
+	resolvedPath, err := expandHostPath(plan.Path.ValueString())
+	if err != nil {
 		resp.Diagnostics.AddError("Invalid host file path", err.Error())
 		return
 	}
+	plan.PathResolved = types.StringValue(resolvedPath)
 	if hostFileUsesFullContent(config) {
 		if hostFileHasConfiguredBlocks(config.Block) {
 			resp.Diagnostics.AddError("Invalid host file configuration", "`content` is mutually exclusive with `block`.")
@@ -530,7 +190,7 @@ func (r *HostFileResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 	}
 
 	plan.ID = types.StringValue(plan.Path.ValueString())
-	plan.Blocks = hostFileBlockReferenceMapValue(plan.Path.ValueString(), blockSpecs, &resp.Diagnostics)
+	plan.Blocks = hostFileBlockReferenceMapValue(plan.Path.ValueString(), resolvedPath, blockSpecs, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -560,6 +220,10 @@ func (r *HostFileResource) Create(ctx context.Context, req resource.CreateReques
 		}
 
 		plan.ID = types.StringValue(plan.Path.ValueString())
+		plan.PathResolved = hostFilePathResolvedValue(plan.Path.ValueString(), &resp.Diagnostics)
+		if resp.Diagnostics.HasError() {
+			return
+		}
 		plan.Blocks = types.MapNull(hostFileBlockReferenceObjectType())
 		plan.RenderedContent = types.StringValue(canonicalHostFileContent(plan.Content.ValueString()))
 		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
@@ -580,7 +244,12 @@ func (r *HostFileResource) Create(ctx context.Context, req resource.CreateReques
 	}
 
 	plan.ID = types.StringValue(plan.Path.ValueString())
-	plan.Blocks = hostFileBlockReferenceMapValue(plan.Path.ValueString(), blockSpecs, &resp.Diagnostics)
+	resolvedPath := hostFilePathResolvedValue(plan.Path.ValueString(), &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	plan.PathResolved = resolvedPath
+	plan.Blocks = hostFileBlockReferenceMapValue(plan.Path.ValueString(), resolvedPath.ValueString(), blockSpecs, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -620,6 +289,10 @@ func (r *HostFileResource) Read(ctx context.Context, req resource.ReadRequest, r
 			state.Content = types.StringValue(trimRenderedManagedBlockBody(content))
 		}
 		state.ID = types.StringValue(state.Path.ValueString())
+		state.PathResolved = hostFilePathResolvedValue(state.Path.ValueString(), &resp.Diagnostics)
+		if resp.Diagnostics.HasError() {
+			return
+		}
 		state.Blocks = types.MapNull(hostFileBlockReferenceObjectType())
 		state.RenderedContent = types.StringValue(content)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
@@ -647,7 +320,12 @@ func (r *HostFileResource) Read(ctx context.Context, req resource.ReadRequest, r
 	}
 
 	state.ID = types.StringValue(state.Path.ValueString())
-	state.Blocks = hostFileBlockReferenceMapValue(state.Path.ValueString(), blockSpecs, &resp.Diagnostics)
+	resolvedPath := hostFilePathResolvedValue(state.Path.ValueString(), &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	state.PathResolved = resolvedPath
+	state.Blocks = hostFileBlockReferenceMapValue(state.Path.ValueString(), resolvedPath.ValueString(), blockSpecs, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -677,6 +355,10 @@ func (r *HostFileResource) Update(ctx context.Context, req resource.UpdateReques
 		}
 
 		plan.ID = types.StringValue(plan.Path.ValueString())
+		plan.PathResolved = hostFilePathResolvedValue(plan.Path.ValueString(), &resp.Diagnostics)
+		if resp.Diagnostics.HasError() {
+			return
+		}
 		plan.Blocks = types.MapNull(hostFileBlockReferenceObjectType())
 		plan.RenderedContent = types.StringValue(canonicalHostFileContent(plan.Content.ValueString()))
 		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
@@ -697,7 +379,12 @@ func (r *HostFileResource) Update(ctx context.Context, req resource.UpdateReques
 	}
 
 	plan.ID = types.StringValue(plan.Path.ValueString())
-	plan.Blocks = hostFileBlockReferenceMapValue(plan.Path.ValueString(), blockSpecs, &resp.Diagnostics)
+	resolvedPath := hostFilePathResolvedValue(plan.Path.ValueString(), &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	plan.PathResolved = resolvedPath
+	plan.Blocks = hostFileBlockReferenceMapValue(plan.Path.ValueString(), resolvedPath.ValueString(), blockSpecs, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -770,121 +457,6 @@ func hostFileBlockSpecs(ctx context.Context, blocks types.List) ([]hostFileBlock
 			Order:  i,
 			Before: before,
 			After:  after,
-		}
-		if !element.Content.IsNull() && !element.Content.IsUnknown() {
-			content := strings.TrimSpace(element.Content.ValueString())
-			spec.Content = &content
-		}
-		specs = append(specs, spec)
-	}
-
-	return specs, diags
-}
-
-func hostFileBlockSpecsV1(ctx context.Context, blocks types.List) ([]hostFileBlockSpec, diag.Diagnostics) {
-	var diags diag.Diagnostics
-	if blocks.IsNull() {
-		return nil, diags
-	}
-	if blocks.IsUnknown() {
-		diags.AddError("Invalid host file block list", "block list is unknown")
-		return nil, diags
-	}
-
-	var elements []hostFileBlockModelV1
-	diags.Append(blocks.ElementsAs(ctx, &elements, false)...)
-	if diags.HasError() {
-		return nil, diags
-	}
-
-	specs := make([]hostFileBlockSpec, 0, len(elements))
-	for i, element := range elements {
-		if element.Name.IsNull() || element.Name.IsUnknown() {
-			diags.AddError("Invalid host file block", "block name must be known")
-			return nil, diags
-		}
-
-		before, beforeDiags := stringListValue(ctx, element.Before, "host file block before")
-		diags.Append(beforeDiags...)
-		after, afterDiags := stringListValue(ctx, element.After, "host file block after")
-		diags.Append(afterDiags...)
-		if diags.HasError() {
-			return nil, diags
-		}
-
-		spec := hostFileBlockSpec{
-			Name:   element.Name.ValueString(),
-			Order:  i,
-			Before: before,
-			After:  after,
-		}
-		if !element.Content.IsNull() && !element.Content.IsUnknown() {
-			content := strings.TrimSpace(element.Content.ValueString())
-			spec.Content = &content
-		}
-		specs = append(specs, spec)
-	}
-
-	return specs, diags
-}
-
-func hostFileBlockSpecsV0(ctx context.Context, blocks types.Map) ([]hostFileBlockSpec, diag.Diagnostics) {
-	var diags diag.Diagnostics
-	if blocks.IsNull() {
-		return nil, diags
-	}
-	if blocks.IsUnknown() {
-		diags.AddError("Invalid host file block map", "block map is unknown")
-		return nil, diags
-	}
-
-	var elements map[string]hostFileBlockSectionModelV0
-	diags.Append(blocks.ElementsAs(ctx, &elements, false)...)
-	if diags.HasError() {
-		return nil, diags
-	}
-
-	specs := make([]hostFileBlockSpec, 0, len(elements))
-	for name, element := range elements {
-		spec := hostFileBlockSpec{
-			Name: name,
-		}
-		if !element.Content.IsNull() && !element.Content.IsUnknown() {
-			content := strings.TrimSpace(element.Content.ValueString())
-			spec.Content = &content
-		}
-		specs = append(specs, spec)
-	}
-
-	return specs, diags
-}
-
-func hostFileSectionSpecsV0(ctx context.Context, sections types.List) ([]hostFileBlockSpec, diag.Diagnostics) {
-	var diags diag.Diagnostics
-	if sections.IsNull() {
-		return nil, diags
-	}
-	if sections.IsUnknown() {
-		diags.AddError("Invalid host file section list", "section list is unknown")
-		return nil, diags
-	}
-
-	var elements []hostFileSectionModelV0
-	diags.Append(sections.ElementsAs(ctx, &elements, false)...)
-	if diags.HasError() {
-		return nil, diags
-	}
-
-	specs := make([]hostFileBlockSpec, 0, len(elements))
-	for i, element := range elements {
-		if element.Name.IsNull() || element.Name.IsUnknown() {
-			diags.AddError("Invalid host file section", "section name must be known")
-			return nil, diags
-		}
-
-		spec := hostFileBlockSpec{
-			Name:  element.Name.ValueString(),
-			Order: i,
 		}
 		if !element.Content.IsNull() && !element.Content.IsUnknown() {
 			content := strings.TrimSpace(element.Content.ValueString())
@@ -1051,14 +623,15 @@ func hostFileBlockObjectType() types.ObjectType {
 	}
 }
 
-func hostFileBlockReferenceMapValue(path string, specs []hostFileBlockSpec, diags *diag.Diagnostics) types.Map {
+func hostFileBlockReferenceMapValue(path string, pathResolved string, specs []hostFileBlockSpec, diags *diag.Diagnostics) types.Map {
 	elements := make(map[string]attr.Value, len(specs))
 	for _, spec := range sortedHostFileBlockSpecs(specs) {
 		objectValue, objectDiags := types.ObjectValue(
 			hostFileBlockReferenceAttributeTypes(),
 			map[string]attr.Value{
-				"name": types.StringValue(spec.Name),
-				"path": types.StringValue(path),
+				"name":          types.StringValue(spec.Name),
+				"path":          types.StringValue(path),
+				"path_resolved": types.StringValue(pathResolved),
 			},
 		)
 		diags.Append(objectDiags...)
@@ -1080,8 +653,9 @@ func hostFileBlockReferenceMapValue(path string, specs []hostFileBlockSpec, diag
 
 func hostFileBlockReferenceAttributeTypes() map[string]attr.Type {
 	return map[string]attr.Type{
-		"name": types.StringType,
-		"path": types.StringType,
+		"name":          types.StringType,
+		"path":          types.StringType,
+		"path_resolved": types.StringType,
 	}
 }
 
@@ -1108,8 +682,13 @@ func hostFileHasConfiguredBlocks(blocks types.List) bool {
 	return !blocks.IsNull() && !blocks.IsUnknown() && len(blocks.Elements()) > 0
 }
 
-func hostFileHasConfiguredSectionsV0(sections types.List) bool {
-	return !sections.IsNull() && !sections.IsUnknown() && len(sections.Elements()) > 0
+func hostFilePathResolvedValue(path string, diags *diag.Diagnostics) types.String {
+	resolved, err := expandHostPath(path)
+	if err != nil {
+		diags.AddError("Invalid host file path", err.Error())
+		return types.StringUnknown()
+	}
+	return types.StringValue(resolved)
 }
 
 func stringListValue(ctx context.Context, value types.List, label string) ([]string, diag.Diagnostics) {
