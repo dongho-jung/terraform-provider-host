@@ -97,7 +97,7 @@ func (r *HostGroupResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 		if resp.Diagnostics.HasError() || state.Name.IsNull() || state.Name.IsUnknown() {
 			return
 		}
-		r.addPrivilegeWarning(&resp.Diagnostics, "remove", state.Name.ValueString())
+		r.addPrivilegeWarning(&resp.Diagnostics)
 		return
 	}
 
@@ -115,7 +115,7 @@ func (r *HostGroupResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 
 	plan.ID = types.StringValue(name)
 	if hostGroupPlanRequiresMutationWarning(ctx, req.State, plan, &resp.Diagnostics) {
-		r.addPrivilegeWarning(&resp.Diagnostics, "manage", name)
+		r.addPrivilegeWarning(&resp.Diagnostics)
 	}
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
@@ -224,7 +224,7 @@ func (r *HostGroupResource) refreshState(ctx context.Context, model HostGroupRes
 	return model, true, nil
 }
 
-func (r *HostGroupResource) addPrivilegeWarning(diags *diag.Diagnostics, action string, name string) {
+func (r *HostGroupResource) addPrivilegeWarning(diags *diag.Diagnostics) {
 	if r.manager == nil || !r.manager.NeedsPrivilegeEscalation() {
 		return
 	}

@@ -146,7 +146,7 @@ func (r *HostUserResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 		if resp.Diagnostics.HasError() || state.Username.IsNull() || state.Username.IsUnknown() {
 			return
 		}
-		r.addPrivilegeWarning(&resp.Diagnostics, "remove", state.Username.ValueString())
+		r.addPrivilegeWarning(&resp.Diagnostics)
 		return
 	}
 
@@ -174,7 +174,7 @@ func (r *HostUserResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 		return
 	}
 	if requiresMutationWarning {
-		r.addPrivilegeWarning(&resp.Diagnostics, "manage", spec.Username)
+		r.addPrivilegeWarning(&resp.Diagnostics)
 	}
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
@@ -241,7 +241,7 @@ func (r *HostUserResource) Update(ctx context.Context, req resource.UpdateReques
 
 	spec, diags := hostUserSpecFromModel(ctx, plan)
 	resp.Diagnostics.Append(diags...)
-	previousGroups, groupDiags := hostUserGroupsFromSet(ctx, state.Groups, "groups")
+	previousGroups, groupDiags := hostUserGroupsFromSet(ctx, state.Groups)
 	resp.Diagnostics.Append(groupDiags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -312,7 +312,7 @@ func (r *HostUserResource) refreshState(ctx context.Context, model HostUserResou
 		model.RemoveHomeOnDestroy = types.BoolValue(false)
 	}
 
-	managedGroups, diags := hostUserGroupsFromSet(ctx, model.Groups, "groups")
+	managedGroups, diags := hostUserGroupsFromSet(ctx, model.Groups)
 	if diags.HasError() {
 		return model, false, fmt.Errorf("read managed groups from state")
 	}
@@ -326,7 +326,7 @@ func (r *HostUserResource) refreshState(ctx context.Context, model HostUserResou
 	return model, true, nil
 }
 
-func (r *HostUserResource) addPrivilegeWarning(diags *diag.Diagnostics, action string, username string) {
+func (r *HostUserResource) addPrivilegeWarning(diags *diag.Diagnostics) {
 	if r.manager == nil || !r.manager.NeedsPrivilegeEscalation() {
 		return
 	}
@@ -355,9 +355,9 @@ func hostUserPlanRequiresMutationWarning(ctx context.Context, stateData tfsdk.St
 		return true, diags
 	}
 
-	planGroups, planGroupDiags := hostUserGroupsFromSet(ctx, plan.Groups, "groups")
+	planGroups, planGroupDiags := hostUserGroupsFromSet(ctx, plan.Groups)
 	diags.Append(planGroupDiags...)
-	stateGroups, stateGroupDiags := hostUserGroupsFromSet(ctx, state.Groups, "groups")
+	stateGroups, stateGroupDiags := hostUserGroupsFromSet(ctx, state.Groups)
 	diags.Append(stateGroupDiags...)
 	if diags.HasError() {
 		return false, diags
@@ -401,7 +401,7 @@ func hostUserPlanReady(model HostUserResourceModel) bool {
 func hostUserSpecFromModel(ctx context.Context, model HostUserResourceModel) (HostUserSpec, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
-	groups, groupDiags := hostUserGroupsFromSet(ctx, model.Groups, "groups")
+	groups, groupDiags := hostUserGroupsFromSet(ctx, model.Groups)
 	diags.Append(groupDiags...)
 	if diags.HasError() {
 		return HostUserSpec{}, diags
@@ -429,13 +429,13 @@ func hostUserSpecFromModel(ctx context.Context, model HostUserResourceModel) (Ho
 	return spec, diags
 }
 
-func hostUserGroupsFromSet(ctx context.Context, value types.Set, label string) ([]string, diag.Diagnostics) {
+func hostUserGroupsFromSet(ctx context.Context, value types.Set) ([]string, diag.Diagnostics) {
 	var diags diag.Diagnostics
 	if value.IsNull() {
 		return nil, diags
 	}
 	if value.IsUnknown() {
-		diags.AddError("Invalid "+label, label+" set is unknown")
+		diags.AddError("Invalid groups", "groups set is unknown")
 		return nil, diags
 	}
 

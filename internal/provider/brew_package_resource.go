@@ -443,7 +443,7 @@ func (r *BrewPackageResource) syncPackage(ctx context.Context, model BrewPackage
 	}
 
 	if status.Pinned && shouldUpgradeBrewPackage(model.Version.ValueString(), status) {
-		return fmt.Errorf("Homebrew package %q is pinned; run `brew unpin %s` before applying", name, name)
+		return fmt.Errorf("homebrew package %q is pinned; run `brew unpin %s` before applying", name, name)
 	}
 
 	wasInstalled := status.Installed

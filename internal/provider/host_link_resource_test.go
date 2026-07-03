@@ -8,14 +8,8 @@ import (
 
 func TestResolveHostLinkSourceRelativeToWorkingDirectory(t *testing.T) {
 	workingDir := t.TempDir()
-	previousDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %s", err)
-	}
-	if err := os.Chdir(workingDir); err != nil {
-		t.Fatalf("chdir: %s", err)
-	}
-	defer os.Chdir(previousDir)
+	t.Chdir(workingDir)
+
 	resolvedWorkingDir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd after chdir: %s", err)

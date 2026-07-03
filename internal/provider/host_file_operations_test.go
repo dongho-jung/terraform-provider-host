@@ -127,7 +127,7 @@ func TestExtractManagedBlockBodyPreservesConfiguredTrailingNewline(t *testing.T)
 		t.Fatalf("unexpected error: %s", err)
 	}
 
-	body, _, ok, err := extractManagedBlockBody(content, "functions", "id-foo")
+	body, ok, err := extractManagedBlockBody(content, "functions", "id-foo")
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
@@ -160,7 +160,7 @@ func TestUpsertManagedBlockSortsByContent(t *testing.T) {
 	a := strings.Index(content, "alias a=a")
 	z := strings.Index(content, "alias z=z")
 
-	if !(a < z) {
+	if a >= z {
 		t.Fatalf("expected content order:\n%s", content)
 	}
 }
@@ -185,7 +185,7 @@ func TestUpsertManagedBlockSortsByAfterReferences(t *testing.T) {
 
 	z := strings.Index(content, "alias z=z")
 	a := strings.Index(content, "alias a=a")
-	if !(z < a) {
+	if z >= a {
 		t.Fatalf("expected after reference to override lexical content order:\n%s", content)
 	}
 	if !strings.Contains(content, managedBlockAfterMarker([]string{"id-z"})) {
@@ -221,7 +221,7 @@ func TestParseManagedBlockLinesSkipsLegacyPriorityMarker(t *testing.T) {
 func TestReconcileHostFileBlocksSetsInlineContentAndPreservesManagedBlocks(t *testing.T) {
 	t.Parallel()
 
-	initial := testHostFileBlockSpecsWithContent("options", "setopt autocd\n")
+	initial := testOptionsHostFileBlockSpecs("setopt autocd\n")
 	content, err := reconcileHostFileBlocks("", initial)
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
@@ -232,7 +232,7 @@ func TestReconcileHostFileBlocksSetsInlineContentAndPreservesManagedBlocks(t *te
 		t.Fatalf("unexpected error: %s", err)
 	}
 
-	updated := testHostFileBlockSpecsWithContent("options", "setopt autocd\nsetopt hist_ignore_all_dups\n")
+	updated := testOptionsHostFileBlockSpecs("setopt autocd\nsetopt hist_ignore_all_dups\n")
 	got, err := reconcileHostFileBlocks(content, updated)
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
@@ -279,7 +279,7 @@ func TestReadHostFileBlockSpecsRefreshesInlineContent(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), ".zshrc")
-	content, err := reconcileHostFileBlocks("", testHostFileBlockSpecsWithContent("options", "setopt autocd\n"))
+	content, err := reconcileHostFileBlocks("", testOptionsHostFileBlockSpecs("setopt autocd\n"))
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
@@ -292,7 +292,7 @@ func TestReadHostFileBlockSpecsRefreshesInlineContent(t *testing.T) {
 		t.Fatalf("write fixture: %s", err)
 	}
 
-	specs, exists, err := readHostFileBlockSpecs(path, testHostFileBlockSpecsWithContent("options", "setopt autocd\n"))
+	specs, exists, err := readHostFileBlockSpecs(path, testOptionsHostFileBlockSpecs("setopt autocd\n"))
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
@@ -413,7 +413,7 @@ func TestCleanHostFileManagedBlockUpdateAndDelete(t *testing.T) {
 		t.Fatalf("remove bar: %s", err)
 	}
 
-	body, _, ok, err := readCleanManagedBlockBody(path, "alias", "id-foo")
+	body, ok, err := readCleanManagedBlockBody(path, "alias", "id-foo")
 	if err != nil {
 		t.Fatalf("read foo: %s", err)
 	}
@@ -469,10 +469,10 @@ func testHostFileBlockSpecs(names ...string) []hostFileBlockSpec {
 	return specs
 }
 
-func testHostFileBlockSpecsWithContent(name string, content string) []hostFileBlockSpec {
+func testOptionsHostFileBlockSpecs(content string) []hostFileBlockSpec {
 	return []hostFileBlockSpec{
 		{
-			Name:    name,
+			Name:    "options",
 			Content: &content,
 		},
 	}

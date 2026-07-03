@@ -524,7 +524,7 @@ func macOSDefaultSpecFromModel(ctx context.Context, model MacOSDefaultResourceMo
 
 	currentHost := model.CurrentHost.ValueBool()
 	if model.Restart.IsNull() {
-		restart = defaultMacOSDefaultRestartProcesses(domain, key)
+		restart = defaultMacOSDefaultRestartProcesses(domain)
 	}
 	return macOSDefaultSpec{
 		ID:              macOSDefaultID(domain, key, currentHost),
@@ -625,7 +625,7 @@ func macOSDefaultImportSpec(importID string) (macOSDefaultSpec, error) {
 		Key:             key,
 		CurrentHost:     currentHost,
 		DeleteOnDestroy: false,
-		Restart:         defaultMacOSDefaultRestartProcesses(domain, key),
+		Restart:         defaultMacOSDefaultRestartProcesses(domain),
 	}, nil
 }
 
@@ -637,7 +637,7 @@ func macOSDefaultID(domain string, key string, currentHost bool) string {
 	return scope + ":" + domain + ":" + key
 }
 
-func defaultMacOSDefaultRestartProcesses(domain string, key string) []string {
+func defaultMacOSDefaultRestartProcesses(domain string) []string {
 	switch {
 	case domain == "com.apple.dock":
 		return []string{"Dock"}

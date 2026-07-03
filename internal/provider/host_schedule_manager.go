@@ -197,7 +197,7 @@ func (m *CLICronScheduleManager) ReadSchedule(ctx context.Context, spec HostSche
 
 	cronInstalled := false
 	if m.resolveCrontabPath() {
-		lines, _, err := m.readCrontab(ctx, spec.User)
+		lines, err := m.readCrontab(ctx, spec.User)
 		if err != nil {
 			return HostScheduleStatus{}, false, err
 		}
@@ -381,7 +381,7 @@ func (m *CLICronScheduleManager) syncCronEntry(ctx context.Context, spec HostSch
 		return err
 	}
 
-	lines, _, err := m.readCrontab(ctx, spec.User)
+	lines, err := m.readCrontab(ctx, spec.User)
 	if err != nil {
 		return err
 	}
@@ -407,7 +407,7 @@ func (m *CLICronScheduleManager) removeCronEntry(ctx context.Context, spec HostS
 		return nil
 	}
 
-	lines, _, err := m.readCrontab(ctx, spec.User)
+	lines, err := m.readCrontab(ctx, spec.User)
 	if err != nil {
 		return err
 	}
@@ -453,8 +453,8 @@ func (m *CLICronScheduleManager) resolveCrontabPath() bool {
 }
 
 func startCrondService(ctx context.Context) error {
-	systemctlPath, err := exec.LookPath("systemctl")
-	if err != nil {
+	systemctlPath, _ := exec.LookPath("systemctl")
+	if systemctlPath == "" {
 		return nil
 	}
 
@@ -468,14 +468,14 @@ func startCrondService(ctx context.Context) error {
 	return nil
 }
 
-func (m *CLICronScheduleManager) readCrontab(ctx context.Context, targetUser string) ([]string, bool, error) {
+func (m *CLICronScheduleManager) readCrontab(ctx context.Context, targetUser string) ([]string, error) {
 	if !m.resolveCrontabPath() {
-		return nil, false, fmt.Errorf("crontab executable not found in PATH")
+		return nil, fmt.Errorf("crontab executable not found in PATH")
 	}
 
 	cmd, display, err := m.crontabCommand(ctx, targetUser, "-l")
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -485,12 +485,12 @@ func (m *CLICronScheduleManager) readCrontab(ctx context.Context, targetUser str
 	if err := cmd.Run(); err != nil {
 		output := strings.ToLower(strings.TrimSpace(stderr.String() + "\n" + stdout.String()))
 		if strings.Contains(output, hostScheduleCronNoCrontabToken) {
-			return nil, false, nil
+			return nil, nil
 		}
-		return nil, false, fmt.Errorf("%s failed: %w\n%s", display, err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("%s failed: %w\n%s", display, err, strings.TrimSpace(stderr.String()))
 	}
 
-	return splitCronLines(stdout.String()), true, nil
+	return splitCronLines(stdout.String()), nil
 }
 
 func (m *CLICronScheduleManager) writeCrontab(ctx context.Context, targetUser string, lines []string) error {
@@ -809,18 +809,18 @@ func validateCronExpression(expression string) error {
 
 	validators := []struct {
 		label           string
-		min             int
-		max             int
+		minimum         int
+		maximum         int
 		normalizeSunday bool
 	}{
-		{label: "minute", min: 0, max: 59},
-		{label: "hour", min: 0, max: 23},
-		{label: "day-of-month", min: 1, max: 31},
-		{label: "month", min: 1, max: 12},
-		{label: "day-of-week", min: 0, max: 7, normalizeSunday: true},
+		{label: "minute", minimum: 0, maximum: 59},
+		{label: "hour", minimum: 0, maximum: 23},
+		{label: "day-of-month", minimum: 1, maximum: 31},
+		{label: "month", minimum: 1, maximum: 12},
+		{label: "day-of-week", minimum: 0, maximum: 7, normalizeSunday: true},
 	}
 	for i, validator := range validators {
-		if err := validateCronNumberField(fields[i], validator.min, validator.max, validator.normalizeSunday); err != nil {
+		if err := validateCronNumberField(fields[i], validator.minimum, validator.maximum, validator.normalizeSunday); err != nil {
 			return fmt.Errorf("invalid %s field: %w", validator.label, err)
 		}
 	}
@@ -828,14 +828,14 @@ func validateCronExpression(expression string) error {
 	return nil
 }
 
-func validateCronNumberField(field string, min int, max int, normalizeSunday bool) error {
+func validateCronNumberField(field string, minimum int, maximum int, normalizeSunday bool) error {
 	field = strings.TrimSpace(field)
 	if field == "" {
 		return fmt.Errorf("field is empty")
 	}
 
 	for _, part := range strings.Split(field, ",") {
-		if err := validateCronNumberPart(strings.TrimSpace(part), min, max, normalizeSunday); err != nil {
+		if err := validateCronNumberPart(strings.TrimSpace(part), minimum, maximum, normalizeSunday); err != nil {
 			return err
 		}
 	}
@@ -843,7 +843,7 @@ func validateCronNumberField(field string, min int, max int, normalizeSunday boo
 	return nil
 }
 
-func validateCronNumberPart(part string, min int, max int, normalizeSunday bool) error {
+func validateCronNumberPart(part string, minimum int, maximum int, normalizeSunday bool) error {
 	if part == "" {
 		return fmt.Errorf("empty list item")
 	}
@@ -857,8 +857,8 @@ func validateCronNumberPart(part string, min int, max int, normalizeSunday bool)
 		}
 	}
 
-	start := min
-	end := max
+	start := minimum
+	end := maximum
 	if rangePart != "*" {
 		if before, after, ok := strings.Cut(rangePart, "-"); ok {
 			parsedStart, err := strconv.Atoi(before)
@@ -884,8 +884,8 @@ func validateCronNumberPart(part string, min int, max int, normalizeSunday bool)
 	if start > end {
 		return fmt.Errorf("range start %d is greater than end %d", start, end)
 	}
-	if start < min || end > max {
-		return fmt.Errorf("value range %d-%d is outside %d-%d", start, end, min, max)
+	if start < minimum || end > maximum {
+		return fmt.Errorf("value range %d-%d is outside %d-%d", start, end, minimum, maximum)
 	}
 	if normalizeSunday && start == 7 && end == 7 {
 		return nil

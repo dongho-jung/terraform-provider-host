@@ -96,120 +96,6 @@ func (f *lockedHostFile) close() {
 	_ = f.lockFile.Close()
 }
 
-func syncHostFileBlocks(path string, specs []hostFileBlockSpec) error {
-	if err := validateHostFileBlockSpecs(specs); err != nil {
-		return err
-	}
-
-	content, err := readHostFile(path)
-	if err != nil {
-		return err
-	}
-
-	next, err := reconcileHostFileBlocks(content, specs)
-	if err != nil {
-		return err
-	}
-
-	return writeHostFile(path, next)
-}
-
-func deleteHostFileBlocks(path string, names []string) error {
-	if err := validateHostFileBlockNames(names); err != nil {
-		return err
-	}
-
-	content, err := readHostFileIfExists(path)
-	if err != nil {
-		return err
-	}
-	if content == "" {
-		return nil
-	}
-
-	next, err := removeHostFileBlocks(content, names)
-	if err != nil {
-		return err
-	}
-
-	return writeHostFile(path, next)
-}
-
-func upsertHostFileManagedBlock(path string, fileBlockName string, blockID string, content string) error {
-	return upsertHostFileManagedBlockWithOrder(path, fileBlockName, blockID, nil, nil, content)
-}
-
-func upsertHostFileManagedBlockWithOrder(path string, fileBlockName string, blockID string, before []string, after []string, content string) error {
-	if err := validateHostFileBlockName(fileBlockName); err != nil {
-		return err
-	}
-	if err := validateHostFileManagedBlockID(blockID); err != nil {
-		return err
-	}
-
-	fileContent, err := readHostFile(path)
-	if err != nil {
-		return err
-	}
-
-	withFileBlock, err := ensureHostFileBlock(fileContent, fileBlockName)
-	if err != nil {
-		return err
-	}
-
-	next, err := upsertManagedBlockWithOrder(withFileBlock, fileBlockName, blockID, before, after, content)
-	if err != nil {
-		return err
-	}
-
-	return writeHostFile(path, next)
-}
-
-func removeHostFileManagedBlock(path string, fileBlockName string, blockID string) error {
-	if err := validateHostFileBlockName(fileBlockName); err != nil {
-		return err
-	}
-	if err := validateHostFileManagedBlockID(blockID); err != nil {
-		return err
-	}
-
-	fileContent, err := readHostFileIfExists(path)
-	if err != nil {
-		return err
-	}
-	if fileContent == "" {
-		return nil
-	}
-
-	next, err := removeManagedBlock(fileContent, fileBlockName, blockID)
-	if err != nil {
-		return err
-	}
-
-	return writeHostFile(path, next)
-}
-
-func readManagedBlockBody(path string, fileBlockName string, blockID string) (string, int64, bool, error) {
-	block, ok, err := readManagedBlock(path, fileBlockName, blockID)
-	if err != nil || !ok {
-		return "", 0, ok, err
-	}
-
-	return block.body, 0, true, nil
-}
-
-func readManagedBlock(path string, fileBlockName string, blockID string) (hostFileManagedBlock, bool, error) {
-	fileContent, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return hostFileManagedBlock{}, false, nil
-	}
-	if err != nil {
-		return hostFileManagedBlock{}, false, fmt.Errorf("read %q: %w", path, err)
-	}
-
-	return extractManagedBlock(string(fileContent), fileBlockName, blockID)
-}
-
 func readHostFileBlockSpecs(path string, specs []hostFileBlockSpec) ([]hostFileBlockSpec, bool, error) {
 	content, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -251,29 +137,6 @@ func readHostFileBlockSpecs(path string, specs []hostFileBlockSpec) ([]hostFileB
 	}
 
 	return next, true, nil
-}
-
-func hostFileHasBlocks(path string, names []string) (bool, error) {
-	content, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("read %q: %w", path, err)
-	}
-
-	for _, name := range names {
-		if err := validateHostFileBlockName(name); err != nil {
-			return false, err
-		}
-		if _, _, ok, err := findFileBlockRange(splitHostFileLines(string(content)), name); err != nil {
-			return false, err
-		} else if !ok {
-			return false, nil
-		}
-	}
-
-	return true, nil
 }
 
 func readHostFile(path string) (string, error) {
@@ -505,13 +368,13 @@ func removeCleanHostFileManagedBlock(path string, fileBlockName string, blockID 
 	return writeCleanHostFileStateAndContent(path, state)
 }
 
-func readCleanManagedBlockBody(path string, fileBlockName string, blockID string) (string, int64, bool, error) {
+func readCleanManagedBlockBody(path string, fileBlockName string, blockID string) (string, bool, error) {
 	block, ok, err := readCleanManagedBlock(path, fileBlockName, blockID)
 	if err != nil || !ok {
-		return "", 0, ok, err
+		return "", ok, err
 	}
 
-	return block.body, 0, true, nil
+	return block.body, true, nil
 }
 
 func readCleanManagedBlock(path string, fileBlockName string, blockID string) (hostFileManagedBlock, bool, error) {
@@ -876,40 +739,6 @@ func filterHostFileBlocks(content string, desired map[string]struct{}) (string, 
 	return strings.Join(next, ""), nil
 }
 
-func removeHostFileBlocks(content string, names []string) (string, error) {
-	remove := make(map[string]struct{}, len(names))
-	for _, name := range names {
-		remove[name] = struct{}{}
-	}
-
-	lines := splitHostFileLines(content)
-	if len(lines) == 0 {
-		return "", nil
-	}
-
-	next := make([]string, 0, len(lines))
-	for i := 0; i < len(lines); {
-		name, ok := parseFileBlockBegin(lineBody(lines[i]))
-		if !ok {
-			next = append(next, lines[i])
-			i++
-			continue
-		}
-
-		end := findMarkerLine(lines, i+1, fileBlockEndMarker(name))
-		if end == -1 {
-			return "", fmt.Errorf("managed file block %q is missing its end marker", name)
-		}
-
-		if _, drop := remove[name]; !drop {
-			next = append(next, lines[i:end+1]...)
-		}
-		i = end + 1
-	}
-
-	return strings.Join(next, ""), nil
-}
-
 func appendHostFileBlock(content string, name string) string {
 	var builder strings.Builder
 	builder.WriteString(content)
@@ -1032,13 +861,13 @@ func removeManagedBlock(content string, fileBlockName string, blockID string) (s
 	return strings.Join(lines, ""), nil
 }
 
-func extractManagedBlockBody(content string, fileBlockName string, blockID string) (string, int64, bool, error) {
+func extractManagedBlockBody(content string, fileBlockName string, blockID string) (string, bool, error) {
 	block, ok, err := extractManagedBlock(content, fileBlockName, blockID)
 	if err != nil || !ok {
-		return "", 0, ok, err
+		return "", ok, err
 	}
 
-	return block.body, 0, true, nil
+	return block.body, true, nil
 }
 
 func extractManagedBlock(content string, fileBlockName string, blockID string) (hostFileManagedBlock, bool, error) {

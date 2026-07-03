@@ -308,7 +308,7 @@ func (r *HostFileBlockResource) Create(ctx context.Context, req resource.CreateR
 	}
 	plan.ID = types.StringValue(blockID)
 
-	target, targetDiags := hostFileBlockTargetFromModel(ctx, plan)
+	target, targetDiags := hostFileBlockTargetFromModel(plan)
 	resp.Diagnostics.Append(targetDiags...)
 	before, beforeDiags := stringListValue(ctx, plan.Before, "host file block before")
 	resp.Diagnostics.Append(beforeDiags...)
@@ -339,7 +339,7 @@ func (r *HostFileBlockResource) Read(ctx context.Context, req resource.ReadReque
 		resp.Diagnostics.AddError("Invalid host file block ID", err.Error())
 		return
 	}
-	target, targetDiags := hostFileBlockTargetFromModel(ctx, state)
+	target, targetDiags := hostFileBlockTargetFromModel(state)
 	resp.Diagnostics.Append(targetDiags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -396,9 +396,9 @@ func (r *HostFileBlockResource) Update(ctx context.Context, req resource.UpdateR
 	}
 	plan.ID = types.StringValue(blockID)
 
-	planTarget, planTargetDiags := hostFileBlockTargetFromModel(ctx, plan)
+	planTarget, planTargetDiags := hostFileBlockTargetFromModel(plan)
 	resp.Diagnostics.Append(planTargetDiags...)
-	stateTarget, stateTargetDiags := hostFileBlockTargetFromModel(ctx, state)
+	stateTarget, stateTargetDiags := hostFileBlockTargetFromModel(state)
 	resp.Diagnostics.Append(stateTargetDiags...)
 	before, beforeDiags := stringListValue(ctx, plan.Before, "host file block before")
 	resp.Diagnostics.Append(beforeDiags...)
@@ -438,7 +438,7 @@ func (r *HostFileBlockResource) Delete(ctx context.Context, req resource.DeleteR
 		resp.Diagnostics.AddError("Invalid host file block ID", err.Error())
 		return
 	}
-	target, targetDiags := hostFileBlockTargetFromModel(ctx, state)
+	target, targetDiags := hostFileBlockTargetFromModel(state)
 	resp.Diagnostics.Append(targetDiags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -467,7 +467,7 @@ func validateHostFileBlockReference(ref HostFileBlockReferenceModel) error {
 	return nil
 }
 
-func hostFileBlockTargetFromModel(ctx context.Context, model HostFileBlockResourceModel) (hostFileBlockTarget, diag.Diagnostics) {
+func hostFileBlockTargetFromModel(model HostFileBlockResourceModel) (hostFileBlockTarget, diag.Diagnostics) {
 	var diags diag.Diagnostics
 	hasNewTarget := model.Block != nil && (isKnownNonEmptyString(model.Block.Path) || isKnownNonEmptyString(model.Block.Name))
 	hasLegacyTarget := model.FileBlock != nil && (isKnownNonEmptyString(model.FileBlock.Path) || isKnownNonEmptyString(model.FileBlock.Name))

@@ -240,7 +240,7 @@ func (r *DNFPackageResource) ModifyPlan(ctx context.Context, req resource.Modify
 			return
 		}
 
-		r.addPrivilegeWarning(&resp.Diagnostics, "remove", state.Name.ValueString())
+		r.addPrivilegeWarning(&resp.Diagnostics)
 		return
 	}
 
@@ -268,12 +268,12 @@ func (r *DNFPackageResource) ModifyPlan(ctx context.Context, req resource.Modify
 	hydrateVersionState(&plan, status)
 	if !status.Installed {
 		plan.InstalledVersion = types.StringUnknown()
-		r.addPrivilegeWarning(&resp.Diagnostics, "install", plan.Name.ValueString())
+		r.addPrivilegeWarning(&resp.Diagnostics)
 	} else if shouldUpgradeToLatest(plan.Version.ValueString(), status) {
 		plan.InstalledVersion = types.StringValue(status.UpgradeVersion)
-		r.addPrivilegeWarning(&resp.Diagnostics, "upgrade", plan.Name.ValueString())
+		r.addPrivilegeWarning(&resp.Diagnostics)
 	} else if !status.ReasonUser {
-		r.addPrivilegeWarning(&resp.Diagnostics, "mark as user-installed", plan.Name.ValueString())
+		r.addPrivilegeWarning(&resp.Diagnostics)
 	}
 
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
@@ -372,7 +372,7 @@ func (r *DNFPackageResource) Delete(ctx context.Context, req resource.DeleteRequ
 	}
 }
 
-func (r *DNFPackageResource) addPrivilegeWarning(diags *diag.Diagnostics, action string, name string) {
+func (r *DNFPackageResource) addPrivilegeWarning(diags *diag.Diagnostics) {
 	reporter, ok := r.manager.(privilegeEscalationReporter)
 	if !ok || !reporter.NeedsPrivilegeEscalation() {
 		return

@@ -288,7 +288,7 @@ func (m *CLIBrewPackageManager) ensureCaskSudoLease(ctx context.Context, reason 
 		return nil
 	}
 	if m.sudoPath == "" {
-		return fmt.Errorf("Homebrew cask command may require sudo, but sudo was not found in PATH")
+		return fmt.Errorf("homebrew cask command may require sudo, but sudo was not found in PATH")
 	}
 
 	brewSudoLease.mu.Lock()
