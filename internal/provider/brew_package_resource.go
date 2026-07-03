@@ -34,6 +34,7 @@ type BrewPackageResourceModel struct {
 	Tap              types.String `tfsdk:"tap"`
 	PackageType      types.String `tfsdk:"package_type"`
 	Version          types.String `tfsdk:"version"`
+	IgnoreVersion    types.Bool   `tfsdk:"ignore_version"`
 	Autoremove       types.Bool   `tfsdk:"autoremove"`
 	Zap              types.Bool   `tfsdk:"zap"`
 	InstalledVersion types.String `tfsdk:"installed_version"`
@@ -87,7 +88,13 @@ func (r *BrewPackageResource) Schema(ctx context.Context, req resource.SchemaReq
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString(versionLatest),
-				MarkdownDescription: "Package version policy. Only `latest` is currently supported.",
+				MarkdownDescription: "Package version policy. Use `latest` to track the latest Homebrew candidate when `ignore_version` is false, or an exact installed version string to reject drift when Homebrew cannot provide that version.",
+			},
+			"ignore_version": schema.BoolAttribute{
+				Optional:            true,
+				Computed:            true,
+				Default:             booldefault.StaticBool(true),
+				MarkdownDescription: "Ignore available version updates for `version = \"latest\"`. When true, the resource manages package presence without planning upgrades for new candidate versions. Exact `version` values are still enforced.",
 			},
 			"autoremove": schema.BoolAttribute{
 				Optional:            true,
@@ -110,7 +117,7 @@ func (r *BrewPackageResource) Schema(ctx context.Context, req resource.SchemaReq
 			},
 			"candidate_version": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "Latest Homebrew package version known to Homebrew.",
+				MarkdownDescription: "Latest Homebrew package version known to Homebrew. Null when `ignore_version` is true and `version` is `latest`.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
@@ -194,7 +201,11 @@ func (r *BrewPackageResource) ModifyPlan(ctx context.Context, req resource.Modif
 		if !tapInstalled {
 			plan.ID = types.StringValue(brewPackageID(plan.PackageType.ValueString(), packageName))
 			plan.InstalledVersion = types.StringUnknown()
-			plan.CandidateVersion = types.StringUnknown()
+			if brewPackageIgnoresVersion(plan) {
+				plan.CandidateVersion = types.StringNull()
+			} else {
+				plan.CandidateVersion = types.StringUnknown()
+			}
 			plan.Pinned = types.BoolUnknown()
 			r.addCaskPrivilegeWarning(&resp.Diagnostics, plan)
 			resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
@@ -211,8 +222,18 @@ func (r *BrewPackageResource) ModifyPlan(ctx context.Context, req resource.Modif
 	hydrateBrewVersionState(&plan, status)
 	plan.ID = types.StringValue(brewPackageID(plan.PackageType.ValueString(), packageName))
 	plan.Pinned = types.BoolValue(status.Pinned)
+	if brewPackageIgnoresVersion(plan) {
+		plan.CandidateVersion = types.StringNull()
+	}
 
-	if status.Pinned && shouldUpgradeBrewPackage(plan.Version.ValueString(), status) {
+	if !brewPackageIgnoresVersion(plan) {
+		if err := validateBrewVersionAvailability(plan.Version.ValueString(), status); err != nil {
+			resp.Diagnostics.AddError("Unsupported Homebrew package version", err.Error())
+			return
+		}
+	}
+
+	if !brewPackageIgnoresVersion(plan) && status.Pinned && shouldUpgradeBrewPackage(plan.Version.ValueString(), status) {
 		resp.Diagnostics.AddError(
 			"Homebrew package is pinned",
 			fmt.Sprintf("Homebrew package %q is pinned and cannot be upgraded by `brew upgrade`. Run `brew unpin %s` before applying.", plan.Name.ValueString(), plan.Name.ValueString()),
@@ -223,7 +244,10 @@ func (r *BrewPackageResource) ModifyPlan(ctx context.Context, req resource.Modif
 	if !status.Installed {
 		r.addCaskPrivilegeWarning(&resp.Diagnostics, plan)
 		markBrewVersionStateUnknown(&plan)
-	} else if shouldUpgradeBrewPackage(plan.Version.ValueString(), status) {
+		if brewPackageIgnoresVersion(plan) {
+			plan.CandidateVersion = types.StringNull()
+		}
+	} else if !brewPackageIgnoresVersion(plan) && shouldUpgradeBrewPackage(plan.Version.ValueString(), status) {
 		r.addCaskPrivilegeWarning(&resp.Diagnostics, plan)
 		markBrewVersionStateUnknown(&plan)
 	}
@@ -393,6 +417,9 @@ func (r *BrewPackageResource) refreshState(ctx context.Context, model BrewPackag
 	if model.Version.IsNull() || model.Version.IsUnknown() {
 		model.Version = types.StringValue(versionLatest)
 	}
+	if model.IgnoreVersion.IsNull() || model.IgnoreVersion.IsUnknown() {
+		model.IgnoreVersion = types.BoolValue(true)
+	}
 	if model.Autoremove.IsNull() || model.Autoremove.IsUnknown() {
 		model.Autoremove = types.BoolValue(true)
 	}
@@ -401,6 +428,9 @@ func (r *BrewPackageResource) refreshState(ctx context.Context, model BrewPackag
 	}
 	model.Pinned = types.BoolValue(status.Pinned)
 	hydrateBrewVersionState(&model, status)
+	if brewPackageIgnoresVersion(model) {
+		model.CandidateVersion = types.StringNull()
+	}
 
 	return model, status.Installed, nil
 }
@@ -426,8 +456,13 @@ func (r *BrewPackageResource) syncPackage(ctx context.Context, model BrewPackage
 		return err
 	}
 
-	if status.Pinned && shouldUpgradeBrewPackage(model.Version.ValueString(), status) {
+	if !brewPackageIgnoresVersion(model) && status.Pinned && shouldUpgradeBrewPackage(model.Version.ValueString(), status) {
 		return fmt.Errorf("homebrew package %q is pinned; run `brew unpin %s` before applying", name, name)
+	}
+	if !brewPackageIgnoresVersion(model) {
+		if err := validateBrewVersionAvailability(model.Version.ValueString(), status); err != nil {
+			return err
+		}
 	}
 
 	wasInstalled := status.Installed
@@ -435,7 +470,7 @@ func (r *BrewPackageResource) syncPackage(ctx context.Context, model BrewPackage
 		if err := r.manager.InstallPackage(ctx, name, packageType); err != nil {
 			return err
 		}
-	} else if shouldUpgradeBrewPackage(model.Version.ValueString(), status) {
+	} else if !brewPackageIgnoresVersion(model) && shouldUpgradeBrewPackage(model.Version.ValueString(), status) {
 		if err := r.manager.UpgradePackage(ctx, name, packageType); err != nil {
 			return err
 		}
@@ -447,7 +482,14 @@ func (r *BrewPackageResource) syncPackage(ctx context.Context, model BrewPackage
 		}
 	}
 
-	return nil
+	status, err = r.manager.PackageStatus(ctx, name, packageType)
+	if err != nil {
+		return err
+	}
+	if brewPackageIgnoresVersion(model) {
+		return nil
+	}
+	return validateBrewInstalledVersion(model.Version.ValueString(), status)
 }
 
 func hydrateBrewVersionState(model *BrewPackageResourceModel, status BrewPackageStatus) {
@@ -469,12 +511,26 @@ func markBrewVersionStateUnknown(model *BrewPackageResourceModel) {
 	model.CandidateVersion = types.StringUnknown()
 }
 
+func brewPackageIgnoresVersion(model BrewPackageResourceModel) bool {
+	if !model.Version.IsNull() && !model.Version.IsUnknown() {
+		version := model.Version.ValueString()
+		if version != "" && version != versionLatest {
+			return false
+		}
+	}
+
+	return model.IgnoreVersion.IsNull() || model.IgnoreVersion.IsUnknown() || model.IgnoreVersion.ValueBool()
+}
+
 func shouldUpgradeBrewPackage(version string, status BrewPackageStatus) bool {
-	return version == versionLatest &&
-		status.Installed &&
-		status.InstalledVersion != "" &&
-		status.UpgradeVersion != "" &&
-		status.InstalledVersion != status.UpgradeVersion
+	if !status.Installed || status.InstalledVersion == "" || status.UpgradeVersion == "" || status.InstalledVersion == status.UpgradeVersion {
+		return false
+	}
+	if version == versionLatest {
+		return true
+	}
+
+	return version != "" && version == status.UpgradeVersion
 }
 
 func validateBrewResourcePlan(model BrewPackageResourceModel) error {
@@ -492,8 +548,53 @@ func validateBrewResourcePlan(model BrewPackageResourceModel) error {
 	if err := validateBrewPackageType(model.PackageType.ValueString()); err != nil {
 		return err
 	}
-	if err := validateVersionPolicy(model.Version.ValueString()); err != nil {
+	if err := validateBrewVersionPolicy(model.Version.ValueString()); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+func validateBrewVersionPolicy(version string) error {
+	if strings.TrimSpace(version) != version || version == "" {
+		return fmt.Errorf("version must be non-empty and must not contain leading or trailing whitespace")
+	}
+	if strings.ContainsAny(version, "\r\n") {
+		return fmt.Errorf("version must not contain newlines")
+	}
+
+	return nil
+}
+
+func validateBrewVersionAvailability(version string, status BrewPackageStatus) error {
+	if version == versionLatest {
+		return nil
+	}
+	if status.Installed && status.InstalledVersion == version {
+		return nil
+	}
+	if status.UpgradeVersion == version {
+		return nil
+	}
+	if !status.Installed && status.CandidateVersion == version {
+		return nil
+	}
+	if status.CandidateVersion == "" {
+		return fmt.Errorf("homebrew did not report a candidate version for %q", status.Name)
+	}
+
+	return fmt.Errorf("requested version %q for %s %q, but Homebrew reports installed=%q candidate=%q upgrade=%q; this provider can install or upgrade only to versions Homebrew currently provides", version, status.PackageType, status.Name, status.InstalledVersion, status.CandidateVersion, status.UpgradeVersion)
+}
+
+func validateBrewInstalledVersion(version string, status BrewPackageStatus) error {
+	if version == versionLatest {
+		return nil
+	}
+	if !status.Installed {
+		return fmt.Errorf("homebrew package %q is not installed after sync", status.Name)
+	}
+	if status.InstalledVersion != version {
+		return fmt.Errorf("homebrew package %q installed version is %q, want %q", status.Name, status.InstalledVersion, version)
 	}
 
 	return nil

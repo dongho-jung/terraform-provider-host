@@ -29,10 +29,11 @@ resource "host_package_dnf" "git" {
 ### Optional
 
 - `autoremove` (Boolean) Allow DNF to remove dependencies that become unused when this package is removed.
-- `version` (String) Package version policy. Only `latest` is currently supported.
+- `ignore_version` (Boolean) Ignore available version updates. When true, the resource manages package presence and DNF install reason without planning upgrades for new candidate versions.
+- `version` (String) Package version policy. Only `latest` is currently supported. Used for upgrade planning only when `ignore_version` is false.
 
 ### Read-Only
 
-- `candidate_version` (String) DNF EVR of the latest package candidate from enabled repositories.
+- `candidate_version` (String) DNF EVR of the latest package candidate from enabled repositories. Null when `ignore_version` is true.
 - `id` (String) Resource identifier, equal to `name`.
 - `installed_version` (String) DNF EVR of the installed package.

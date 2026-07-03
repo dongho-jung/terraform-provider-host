@@ -37,6 +37,7 @@ type DNFPackageResourceModel struct {
 	ID               types.String `tfsdk:"id"`
 	Name             types.String `tfsdk:"name"`
 	Version          types.String `tfsdk:"version"`
+	IgnoreVersion    types.Bool   `tfsdk:"ignore_version"`
 	Autoremove       types.Bool   `tfsdk:"autoremove"`
 	InstalledVersion types.String `tfsdk:"installed_version"`
 	CandidateVersion types.String `tfsdk:"candidate_version"`
@@ -73,7 +74,13 @@ func (r *DNFPackageResource) Schema(ctx context.Context, req resource.SchemaRequ
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString(versionLatest),
-				MarkdownDescription: "Package version policy. Only `latest` is currently supported.",
+				MarkdownDescription: "Package version policy. Only `latest` is currently supported. Used for upgrade planning only when `ignore_version` is false.",
+			},
+			"ignore_version": schema.BoolAttribute{
+				Optional:            true,
+				Computed:            true,
+				Default:             booldefault.StaticBool(true),
+				MarkdownDescription: "Ignore available version updates. When true, the resource manages package presence and DNF install reason without planning upgrades for new candidate versions.",
 			},
 			"autoremove": schema.BoolAttribute{
 				Optional:            true,
@@ -90,7 +97,7 @@ func (r *DNFPackageResource) Schema(ctx context.Context, req resource.SchemaRequ
 			},
 			"candidate_version": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "DNF EVR of the latest package candidate from enabled repositories.",
+				MarkdownDescription: "DNF EVR of the latest package candidate from enabled repositories. Null when `ignore_version` is true.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
@@ -162,10 +169,13 @@ func (r *DNFPackageResource) ModifyPlan(ctx context.Context, req resource.Modify
 	}
 
 	hydrateVersionState(&plan, status)
+	if dnfPackageIgnoresVersion(plan) {
+		plan.CandidateVersion = types.StringNull()
+	}
 	if !status.Installed {
 		plan.InstalledVersion = types.StringUnknown()
 		r.addPrivilegeWarning(&resp.Diagnostics)
-	} else if shouldUpgradeToLatest(plan.Version.ValueString(), status) {
+	} else if !dnfPackageIgnoresVersion(plan) && shouldUpgradeToLatest(plan.Version.ValueString(), status) {
 		plan.InstalledVersion = types.StringValue(status.UpgradeVersion)
 		r.addPrivilegeWarning(&resp.Diagnostics)
 	} else if !status.ReasonUser {
@@ -293,10 +303,16 @@ func (r *DNFPackageResource) refreshState(ctx context.Context, model DNFPackageR
 	if model.Version.IsNull() || model.Version.IsUnknown() {
 		model.Version = types.StringValue(versionLatest)
 	}
+	if model.IgnoreVersion.IsNull() || model.IgnoreVersion.IsUnknown() {
+		model.IgnoreVersion = types.BoolValue(true)
+	}
 	if model.Autoremove.IsNull() || model.Autoremove.IsUnknown() {
 		model.Autoremove = types.BoolValue(true)
 	}
 	hydrateVersionState(&model, status)
+	if dnfPackageIgnoresVersion(model) {
+		model.CandidateVersion = types.StringNull()
+	}
 
 	return model, status.Installed, nil
 }
@@ -313,7 +329,7 @@ func (r *DNFPackageResource) syncPackage(ctx context.Context, model DNFPackageRe
 		if err := r.manager.InstallPackages(ctx, []string{name}); err != nil {
 			return err
 		}
-	} else if shouldUpgradeToLatest(model.Version.ValueString(), status) {
+	} else if !dnfPackageIgnoresVersion(model) && shouldUpgradeToLatest(model.Version.ValueString(), status) {
 		if err := r.manager.UpgradePackages(ctx, []string{name}); err != nil {
 			return err
 		}
@@ -326,6 +342,10 @@ func (r *DNFPackageResource) syncPackage(ctx context.Context, model DNFPackageRe
 	}
 
 	return nil
+}
+
+func dnfPackageIgnoresVersion(model DNFPackageResourceModel) bool {
+	return model.IgnoreVersion.IsNull() || model.IgnoreVersion.IsUnknown() || model.IgnoreVersion.ValueBool()
 }
 
 func hydrateVersionState(model *DNFPackageResourceModel, status PackageStatus) {

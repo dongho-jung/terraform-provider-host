@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
@@ -92,11 +93,12 @@ func TestBrewPackageResourceRefreshStateInstalledFormula(t *testing.T) {
 	}
 
 	state, installed, err := resource.refreshState(context.Background(), BrewPackageResourceModel{
-		Name:        types.StringValue("bat"),
-		PackageType: types.StringValue(brewPackageTypeFormula),
-		Version:     types.StringValue(versionLatest),
-		Autoremove:  types.BoolValue(true),
-		Zap:         types.BoolValue(false),
+		Name:          types.StringValue("bat"),
+		PackageType:   types.StringValue(brewPackageTypeFormula),
+		Version:       types.StringValue(versionLatest),
+		IgnoreVersion: types.BoolValue(false),
+		Autoremove:    types.BoolValue(true),
+		Zap:           types.BoolValue(false),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
@@ -113,6 +115,43 @@ func TestBrewPackageResourceRefreshStateInstalledFormula(t *testing.T) {
 	}
 	if state.CandidateVersion.ValueString() != "0.26.1" {
 		t.Fatalf("expected candidate version 0.26.1, got %q", state.CandidateVersion.ValueString())
+	}
+}
+
+func TestBrewPackageResourceRefreshStateDefaultsToIgnoreVersion(t *testing.T) {
+	t.Parallel()
+
+	resource := &BrewPackageResource{
+		manager: &fakeBrewPackageManager{
+			statuses: map[string]BrewPackageStatus{
+				"formula:bat": {
+					Name:             "bat",
+					PackageType:      brewPackageTypeFormula,
+					Installed:        true,
+					InstalledVersion: "0.25.0",
+					CandidateVersion: "0.26.1",
+				},
+			},
+		},
+	}
+
+	state, installed, err := resource.refreshState(context.Background(), BrewPackageResourceModel{
+		Name:        types.StringValue("bat"),
+		PackageType: types.StringValue(brewPackageTypeFormula),
+		Version:     types.StringValue(versionLatest),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	if !installed {
+		t.Fatal("expected installed formula")
+	}
+	if !state.IgnoreVersion.ValueBool() {
+		t.Fatal("expected ignore_version to default to true")
+	}
+	if !state.CandidateVersion.IsNull() {
+		t.Fatalf("expected ignored candidate version to be null, got %#v", state.CandidateVersion)
 	}
 }
 
@@ -189,15 +228,110 @@ func TestBrewPackageResourceSyncUpgradesOutdatedCask(t *testing.T) {
 	resource := &BrewPackageResource{manager: manager}
 
 	err := resource.syncPackage(context.Background(), BrewPackageResourceModel{
-		Name:        types.StringValue("docker-desktop"),
-		PackageType: types.StringValue(brewPackageTypeCask),
-		Version:     types.StringValue(versionLatest),
+		Name:          types.StringValue("docker-desktop"),
+		PackageType:   types.StringValue(brewPackageTypeCask),
+		Version:       types.StringValue(versionLatest),
+		IgnoreVersion: types.BoolValue(false),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
 
 	want := []string{"cask:docker-desktop"}
+	if !reflect.DeepEqual(manager.upgraded, want) {
+		t.Fatalf("upgraded %#v, want %#v", manager.upgraded, want)
+	}
+}
+
+func TestBrewPackageResourceSyncIgnoresOutdatedPackageByDefault(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeBrewPackageManager{
+		statuses: map[string]BrewPackageStatus{
+			"formula:bat": {
+				Name:             "bat",
+				PackageType:      brewPackageTypeFormula,
+				Installed:        true,
+				InstalledVersion: "0.25.0",
+				CandidateVersion: "0.26.1",
+				UpgradeVersion:   "0.26.1",
+			},
+		},
+	}
+	resource := &BrewPackageResource{manager: manager}
+
+	err := resource.syncPackage(context.Background(), BrewPackageResourceModel{
+		Name:        types.StringValue("bat"),
+		PackageType: types.StringValue(brewPackageTypeFormula),
+		Version:     types.StringValue(versionLatest),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	if len(manager.upgraded) != 0 {
+		t.Fatalf("expected no upgrade by default, got %#v", manager.upgraded)
+	}
+}
+
+func TestBrewPackageResourceExactVersionRejectsUnavailableVersion(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeBrewPackageManager{
+		statuses: map[string]BrewPackageStatus{
+			"formula:bat": {
+				Name:             "bat",
+				PackageType:      brewPackageTypeFormula,
+				Installed:        true,
+				InstalledVersion: "0.25.0",
+				CandidateVersion: "0.26.1",
+				UpgradeVersion:   "0.26.1",
+			},
+		},
+	}
+	resource := &BrewPackageResource{manager: manager}
+
+	err := resource.syncPackage(context.Background(), BrewPackageResourceModel{
+		Name:          types.StringValue("bat"),
+		PackageType:   types.StringValue(brewPackageTypeFormula),
+		Version:       types.StringValue("0.24.0"),
+		IgnoreVersion: types.BoolValue(false),
+	})
+	if err == nil {
+		t.Fatal("expected unavailable exact version error")
+	}
+	if !strings.Contains(err.Error(), "requested version") {
+		t.Fatalf("unexpected error: %s", err)
+	}
+}
+
+func TestBrewPackageResourceExactVersionCanUpgradeToCandidate(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeBrewPackageManager{
+		statuses: map[string]BrewPackageStatus{
+			"formula:bat": {
+				Name:             "bat",
+				PackageType:      brewPackageTypeFormula,
+				Installed:        true,
+				InstalledVersion: "0.25.0",
+				CandidateVersion: "0.26.1",
+				UpgradeVersion:   "0.26.1",
+			},
+		},
+	}
+	resource := &BrewPackageResource{manager: manager}
+
+	err := resource.syncPackage(context.Background(), BrewPackageResourceModel{
+		Name:          types.StringValue("bat"),
+		PackageType:   types.StringValue(brewPackageTypeFormula),
+		Version:       types.StringValue("0.26.1"),
+		IgnoreVersion: types.BoolValue(false),
+	})
+	if err == nil {
+		t.Fatal("expected fake manager post-upgrade version mismatch")
+	}
+
+	want := []string{"formula:bat"}
 	if !reflect.DeepEqual(manager.upgraded, want) {
 		t.Fatalf("upgraded %#v, want %#v", manager.upgraded, want)
 	}
@@ -218,6 +352,17 @@ func TestMarkBrewVersionStateUnknown(t *testing.T) {
 	}
 	if !model.CandidateVersion.IsUnknown() {
 		t.Fatalf("candidate version should be unknown, got %#v", model.CandidateVersion)
+	}
+}
+
+func TestBrewPackageIgnoresVersionKeepsExactVersionEnforced(t *testing.T) {
+	t.Parallel()
+
+	if brewPackageIgnoresVersion(BrewPackageResourceModel{
+		Version:       types.StringValue("0.26.1"),
+		IgnoreVersion: types.BoolValue(true),
+	}) {
+		t.Fatal("exact version should be enforced even when ignore_version is true")
 	}
 }
 

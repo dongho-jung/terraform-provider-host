@@ -38,14 +38,15 @@ resource "host_package_brew" "terraform" {
 ### Optional
 
 - `autoremove` (Boolean) Run `brew autoremove` after removing a formula. Ignored for casks.
+- `ignore_version` (Boolean) Ignore available version updates for `version = "latest"`. When true, the resource manages package presence without planning upgrades for new candidate versions. Exact `version` values are still enforced.
 - `package_type` (String) Homebrew package type. Supported values are `formula` and `cask`.
 - `tap` (String) Homebrew tap in `owner/repository` form. When set, the provider ensures the tap exists before reading, installing, upgrading, or removing the package.
-- `version` (String) Package version policy. Only `latest` is currently supported.
+- `version` (String) Package version policy. Use `latest` to track the latest Homebrew candidate when `ignore_version` is false, or an exact installed version string to reject drift when Homebrew cannot provide that version.
 - `zap` (Boolean) Use `brew uninstall --zap` when removing a cask. Ignored for formulae.
 
 ### Read-Only
 
-- `candidate_version` (String) Latest Homebrew package version known to Homebrew.
+- `candidate_version` (String) Latest Homebrew package version known to Homebrew. Null when `ignore_version` is true and `version` is `latest`.
 - `id` (String) Resource identifier in `<package_type>:<name>` form.
 - `installed_version` (String) Installed Homebrew package version.
 - `pinned` (Boolean) Whether Homebrew reports the package as pinned.
