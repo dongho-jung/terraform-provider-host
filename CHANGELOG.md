@@ -1,3 +1,19 @@
+## 0.7.0 (2026-07-04)
+
+BREAKING CHANGES:
+
+- Remove provider executable path override arguments such as `brew_path`, `git_path`, `swift_path`, and `osascript_path`; provider helpers are now resolved from `PATH`.
+
+FEATURES:
+
+- Add provider-level `home_dir` for leading `~` expansion in host paths.
+- Add the `host_package_brew` data source for reading Homebrew package and cask app metadata.
+
+FIXES:
+
+- Resolve host paths and runtime metadata per provider instance so provider aliases can target different users safely.
+- Compare resolved paths when deciding replacement for path-based resources, reducing noisy diffs between equivalent `~` and absolute paths.
+
 ## 0.6.0 (2026-07-04)
 
 BREAKING CHANGES:
