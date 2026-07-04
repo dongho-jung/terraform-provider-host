@@ -1,3 +1,11 @@
+## 0.5.0 (2026-07-04)
+
+FEATURES:
+
+- Add `host_ssh_key` for local SSH keypair creation/adoption without storing private key material in state.
+- Add `host_ssh_config_host` for Terraform-owned OpenSSH client `Host` blocks.
+- Add `host_mac_login_item` for macOS app Login Items.
+
 ## 0.4.0 (2026-07-03)
 
 FEATURES:

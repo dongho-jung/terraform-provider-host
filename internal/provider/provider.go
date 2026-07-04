@@ -19,15 +19,17 @@ type HostProvider struct {
 }
 
 type HostProviderModel struct {
-	RuntimeDir   types.String `tfsdk:"runtime_dir"`
-	SudoPath     types.String `tfsdk:"sudo_path"`
-	DNFPath      types.String `tfsdk:"dnf_path"`
-	BrewPath     types.String `tfsdk:"brew_path"`
-	GitPath      types.String `tfsdk:"git_path"`
-	CrontabPath  types.String `tfsdk:"crontab_path"`
-	DefaultsPath types.String `tfsdk:"defaults_path"`
-	KillallPath  types.String `tfsdk:"killall_path"`
-	SwiftPath    types.String `tfsdk:"swift_path"`
+	RuntimeDir    types.String `tfsdk:"runtime_dir"`
+	SudoPath      types.String `tfsdk:"sudo_path"`
+	DNFPath       types.String `tfsdk:"dnf_path"`
+	BrewPath      types.String `tfsdk:"brew_path"`
+	GitPath       types.String `tfsdk:"git_path"`
+	SSHKeygenPath types.String `tfsdk:"ssh_keygen_path"`
+	CrontabPath   types.String `tfsdk:"crontab_path"`
+	DefaultsPath  types.String `tfsdk:"defaults_path"`
+	KillallPath   types.String `tfsdk:"killall_path"`
+	SwiftPath     types.String `tfsdk:"swift_path"`
+	OSAScriptPath types.String `tfsdk:"osascript_path"`
 }
 
 func (p *HostProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -59,6 +61,10 @@ func (p *HostProvider) Schema(ctx context.Context, req provider.SchemaRequest, r
 				Optional:            true,
 				MarkdownDescription: "Path to the `git` executable. Defaults to resolving `git` from PATH.",
 			},
+			"ssh_keygen_path": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Path to the `ssh-keygen` executable. Defaults to resolving `ssh-keygen` from PATH.",
+			},
 			"crontab_path": schema.StringAttribute{
 				Optional:            true,
 				MarkdownDescription: "Path to the `crontab` executable. Defaults to resolving `crontab` from PATH.",
@@ -74,6 +80,10 @@ func (p *HostProvider) Schema(ctx context.Context, req provider.SchemaRequest, r
 			"swift_path": schema.StringAttribute{
 				Optional:            true,
 				MarkdownDescription: "Path to the `swift` executable used by CoreAudio helpers. Defaults to resolving `swift` from PATH.",
+			},
+			"osascript_path": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Path to the `osascript` executable used by macOS automation helpers. Defaults to resolving `osascript` from PATH.",
 			},
 		},
 	}
@@ -133,6 +143,15 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		data.GitPath = gitPath
 	}
 
+	sshKeygenPath, err := configuredExecutablePath("ssh-keygen", config.SSHKeygenPath)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid ssh_keygen_path", err.Error())
+		return
+	}
+	if sshKeygenPath != "" {
+		data.SSHKeyManager = NewCLISSHKeyManager(sshKeygenPath)
+	}
+
 	crontabPath, err := configuredExecutablePath("crontab", config.CrontabPath)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid crontab_path", err.Error())
@@ -161,6 +180,14 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 	}
 	if swiftPath != "" {
 		data.MacOSAudioManager = NewCLIMacOSAudioManager(swiftPath)
+	}
+	osascriptPath, err := configuredExecutablePath("osascript", config.OSAScriptPath)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid osascript_path", err.Error())
+		return
+	}
+	if osascriptPath != "" {
+		data.MacOSLoginItemManager = NewCLIMacOSLoginItemManager(osascriptPath)
 	}
 
 	resp.ResourceData = data
@@ -192,10 +219,13 @@ func (p *HostProvider) Resources(ctx context.Context) []func() resource.Resource
 		NewHostFileResource,
 		NewHostFileBlockResource,
 		NewHostGitRepositoryResource,
+		NewHostSSHKeyResource,
+		NewHostSSHConfigHostResource,
 		NewHostLinkResource,
 		NewMacOSDefaultResource,
 		NewMacOSDefaultsResource,
 		NewMacOSDockResource,
+		NewMacOSLoginItemResource,
 		NewMacOSAudioMultiOutputResource,
 		NewHostScheduleResource,
 		NewHostGroupResource,

@@ -18,14 +18,15 @@ The Host provider manages local machine configuration with Terraform. It is aime
 - Local packages through DNF and Homebrew
 - Directories, whole files, file blocks, and symbolic links
 - Git repositories checked out to host paths
+- SSH keypairs and OpenSSH client config host blocks
 - Local users, groups, group lookups, and CoreAudio device lookups
 - User and system cron schedules
-- macOS `defaults` keys, Dock persistent items, and CoreAudio multi-output devices
+- macOS `defaults` keys, Dock persistent items, Login Items, and CoreAudio multi-output devices
 
 ## Platform Notes
 
-Resources use tools available on the machine running Terraform, such as `dnf`, `brew`, `git`, `crontab`, `defaults`, and `killall`. Resources that mutate protected host state may prompt through `sudo` when Terraform is not already running with the required privileges.
+Resources use tools available on the machine running Terraform, such as `dnf`, `brew`, `git`, `ssh-keygen`, `crontab`, `defaults`, `killall`, and `osascript`. Resources that mutate protected host state may prompt through `sudo` when Terraform is not already running with the required privileges.
 
 By default the provider resolves these tools from PATH and stores runtime metadata under `./.terraform-provider-host` relative to the Terraform working directory. Set provider-level path overrides when Terraform runs with a constrained PATH, or set `runtime_dir` to move generated metadata such as file block state and schedule scripts.
 
-Available provider arguments are `runtime_dir`, `sudo_path`, `dnf_path`, `brew_path`, `git_path`, `crontab_path`, `defaults_path`, `killall_path`, and `swift_path`.
+Available provider arguments are `runtime_dir`, `sudo_path`, `dnf_path`, `brew_path`, `git_path`, `ssh_keygen_path`, `crontab_path`, `defaults_path`, `killall_path`, `swift_path`, and `osascript_path`.
