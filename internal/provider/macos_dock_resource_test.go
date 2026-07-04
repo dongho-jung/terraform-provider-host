@@ -96,3 +96,94 @@ func TestCLIMacOSDockManagerWriteDock(t *testing.T) {
 		t.Fatalf("folders command missing folder URL: %q", calls[1])
 	}
 }
+
+func TestMacOSDockManagedStateSortsByPriority(t *testing.T) {
+	t.Parallel()
+
+	spec, err := macOSDockSpecFromManagedState(macOSDockManagedState{
+		Apps: map[string]macOSDockManagedItemState{
+			"chrome": {
+				Path:     "/Applications/Google Chrome.app",
+				Priority: 20,
+			},
+			"settings": {
+				Path:     "/System/Applications/System Settings.app",
+				Priority: 10,
+			},
+		},
+		Folders: map[string]macOSDockManagedItemState{
+			"downloads": {
+				Path:     "/Users/dongho/Downloads",
+				Priority: 10,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("macOSDockSpecFromManagedState: %s", err)
+	}
+
+	wantApps := []string{"/System/Applications/System Settings.app", "/Applications/Google Chrome.app"}
+	if !reflect.DeepEqual(spec.Apps, wantApps) {
+		t.Fatalf("apps got %#v, want %#v", spec.Apps, wantApps)
+	}
+	wantFolders := []string{"/Users/dongho/Downloads"}
+	if !reflect.DeepEqual(spec.Folders, wantFolders) {
+		t.Fatalf("folders got %#v, want %#v", spec.Folders, wantFolders)
+	}
+}
+
+func TestMacOSDockManagedStateRejectsDuplicatePriority(t *testing.T) {
+	t.Parallel()
+
+	state := emptyMacOSDockManagedState()
+	err := upsertMacOSDockManagedStateItem(&state, macOSDockManagedItemSpec{
+		ID:       "hdi-11111111111111111111111111111111",
+		Kind:     macOSDockItemKindApp,
+		Path:     "/System/Applications/System Settings.app",
+		Priority: 10,
+	})
+	if err != nil {
+		t.Fatalf("first upsert: %s", err)
+	}
+
+	err = upsertMacOSDockManagedStateItem(&state, macOSDockManagedItemSpec{
+		ID:       "hdi-22222222222222222222222222222222",
+		Kind:     macOSDockItemKindApp,
+		Path:     "/Applications/Google Chrome.app",
+		Priority: 10,
+	})
+	if err == nil {
+		t.Fatal("expected duplicate priority error")
+	}
+	if !strings.Contains(err.Error(), "priority 10") {
+		t.Fatalf("unexpected error: %s", err)
+	}
+}
+
+func TestMacOSDockManagedStateRejectsDuplicatePath(t *testing.T) {
+	t.Parallel()
+
+	state := emptyMacOSDockManagedState()
+	err := upsertMacOSDockManagedStateItem(&state, macOSDockManagedItemSpec{
+		ID:       "hdi-11111111111111111111111111111111",
+		Kind:     macOSDockItemKindApp,
+		Path:     "/Applications/Google Chrome.app",
+		Priority: 10,
+	})
+	if err != nil {
+		t.Fatalf("first upsert: %s", err)
+	}
+
+	err = upsertMacOSDockManagedStateItem(&state, macOSDockManagedItemSpec{
+		ID:       "hdi-22222222222222222222222222222222",
+		Kind:     macOSDockItemKindApp,
+		Path:     "/Applications/Google Chrome.app",
+		Priority: 20,
+	})
+	if err == nil {
+		t.Fatal("expected duplicate path error")
+	}
+	if !strings.Contains(err.Error(), "already managed") {
+		t.Fatalf("unexpected error: %s", err)
+	}
+}

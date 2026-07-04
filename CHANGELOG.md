@@ -1,3 +1,9 @@
+## 0.9.0 (2026-07-04)
+
+FEATURES:
+
+- Add `host_mac_dock_app` and `host_mac_dock_folder` for item-level Dock management with unique priorities.
+
 ## 0.8.0 (2026-07-04)
 
 FEATURES:
