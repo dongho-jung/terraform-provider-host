@@ -18,8 +18,10 @@ data "host_package_brew" "google_chrome" {
   package_type = "cask"
 }
 
-resource "host_mac_login_item" "google_chrome" {
+resource "host_mac_dock_app" "google_chrome" {
   path = data.host_package_brew.google_chrome.app_path
+
+  priority = 20
 }
 ```
 

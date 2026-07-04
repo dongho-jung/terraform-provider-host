@@ -168,7 +168,6 @@ func (p *HostProvider) Resources(ctx context.Context) []func() resource.Resource
 		NewHostLinkResource,
 		NewMacOSDefaultResource,
 		NewMacOSDefaultsResource,
-		NewMacOSDockResource,
 		NewMacOSDockAppResource,
 		NewMacOSDockFolderResource,
 		NewMacOSLoginItemResource,

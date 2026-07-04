@@ -114,7 +114,7 @@ func (r *MacOSDefaultResource) Schema(ctx context.Context, req resource.SchemaRe
 			},
 			"domain": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Raw macOS defaults domain, such as `com.apple.dock`, `NSGlobalDomain`, or an application bundle identifier.",
+				MarkdownDescription: "Exact macOS defaults domain, such as `com.apple.dock`, `NSGlobalDomain`, or an application bundle identifier.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},

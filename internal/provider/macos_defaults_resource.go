@@ -71,11 +71,11 @@ func (r *MacOSDefaultsResource) Schema(ctx context.Context, req resource.SchemaR
 			},
 			"settings": schema.DynamicAttribute{
 				Optional:            true,
-				MarkdownDescription: "Named macOS settings to manage. Each map value is an object with raw string `domain`, `key`, and `value`, plus optional `current_host`, `delete_on_destroy`, and `restart`.",
+				MarkdownDescription: "Named macOS settings to manage. Each map value is an object with string `domain`, `key`, and `value`, plus optional `current_host`, `delete_on_destroy`, and `restart`.",
 			},
 			"groups": schema.DynamicAttribute{
 				Optional:            true,
-				MarkdownDescription: "macOS settings grouped by raw defaults domain. Each `groups` map key is the exact defaults domain, such as `com.apple.dock`, `NSGlobalDomain`, or an application bundle identifier. Each group value is a map from defaults key to setting value.",
+				MarkdownDescription: "macOS settings grouped by exact defaults domain. Each `groups` map key is the exact defaults domain, such as `com.apple.dock`, `NSGlobalDomain`, or an application bundle identifier. Each group value is a map from defaults key to setting value.",
 			},
 		},
 	}
@@ -591,34 +591,10 @@ func macOSSettingsGroupDomain(groupName string) (string, error) {
 		return "", fmt.Errorf("domain must be non-empty")
 	}
 
-	if replacement, ok := legacyMacOSSettingsGroupDomain(name); ok {
-		return "", fmt.Errorf("use raw defaults domain %q instead of legacy group selector %q", replacement, name)
-	}
 	if err := validateMacOSSettingDomain(name); err != nil {
 		return "", err
 	}
 	return name, nil
-}
-
-func legacyMacOSSettingsGroupDomain(name string) (string, bool) {
-	switch {
-	case name == "global":
-		return "NSGlobalDomain", true
-	case name == "dock":
-		return "com.apple.dock", true
-	case name == "screenshot":
-		return "com.apple.screencapture", true
-	case name == "AppleMultitouchTrackpad":
-		return "com.apple.AppleMultitouchTrackpad", true
-	case name == "driver.AppleBluetoothMultitouch.trackpad":
-		return "com.apple.driver.AppleBluetoothMultitouch.trackpad", true
-	case strings.HasPrefix(name, "menuextra."):
-		return "com.apple." + name, true
-	case strings.HasPrefix(name, "raw:"):
-		return strings.TrimSpace(strings.TrimPrefix(name, "raw:")), true
-	default:
-		return "", false
-	}
 }
 
 func macOSSettingsGroupSettingValueFromValue(value attr.Value, name string, diags *diag.Diagnostics) types.Dynamic {

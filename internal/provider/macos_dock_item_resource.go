@@ -447,7 +447,6 @@ func writeMacOSDockManagedStateAndDockForRuntime(ctx context.Context, manager Ma
 	if err != nil {
 		return err
 	}
-	spec.Restart = restart
 	if err := manager.WriteDock(ctx, spec); err != nil {
 		return err
 	}

@@ -15,10 +15,16 @@ Use this resource when you want a separate Terraform resource address for one ma
 ## Example Usage
 
 ```terraform
-resource "host_mac_setting" "dock_autohide" {
-  domain = "com.apple.dock"
-  key    = "autohide"
-  value  = true
+resource "host_mac_setting" "screenshot_style" {
+  domain = "com.apple.screencapture"
+  key    = "style"
+  value  = "selection"
+}
+
+resource "host_mac_setting" "screenshot_delay" {
+  domain = "com.apple.screencapture"
+  key    = "captureDelay"
+  value  = 5
 }
 ```
 
@@ -35,7 +41,7 @@ When `restart` is omitted, the provider applies built-in restarts for known doma
 
 ### Required
 
-- `domain` (String) Raw macOS defaults domain, such as `com.apple.dock`, `NSGlobalDomain`, or an application bundle identifier.
+- `domain` (String) Exact macOS defaults domain, such as `com.apple.dock`, `NSGlobalDomain`, or an application bundle identifier.
 - `key` (String) Defaults key to manage inside the domain.
 - `value` (Dynamic) Setting value. Supported values are bool, number, string, and a list or tuple of strings. Whole numbers are written as integer defaults values; fractional numbers are written as float defaults values.
 

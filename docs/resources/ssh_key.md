@@ -16,9 +16,9 @@ If the private key file already exists, the provider adopts it and reads the pub
 
 ```terraform
 resource "host_ssh_key" "github" {
-  path    = "~/.ssh/id_ed25519_github"
-  type    = "ed25519"
-  comment = "github"
+  path              = "~/.ssh/id_ed25519"
+  comment           = "alice@example.com"
+  delete_on_destroy = false
 }
 ```
 

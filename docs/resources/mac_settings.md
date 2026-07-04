@@ -10,7 +10,7 @@ description: |-
 
 Manages multiple macOS settings backed by `defaults` keys as one grouped Terraform resource.
 
-Use this resource when you want one compact macOS settings block. Put related preferences in `groups` when they share a domain, or use `settings` for one-off entries. Each setting maps to one macOS preference identified by a raw defaults domain, key, and scope.
+Use this resource when you want one compact macOS settings block. Put related preferences in `groups` when they share a domain, or use `settings` for one-off entries. Each setting maps to one macOS preference identified by an exact defaults domain, key, and scope.
 
 ## Example Usage
 
@@ -18,16 +18,49 @@ Use this resource when you want one compact macOS settings block. Put related pr
 resource "host_mac_settings" "settings" {
   groups = {
     "com.apple.dock" = {
-      autohide       = true
-      "show-recents" = false
+      autohide                  = true
+      "show-recents"            = false
+      "minimize-to-application" = false
+      "show-process-indicators" = true
+      "wvous-br-corner"         = 14
     }
 
     NSGlobalDomain = {
-      AppleLanguages = ["ko-KR", "en-US"]
+      "com.apple.springing.enabled"        = true
+      "com.apple.springing.delay"          = 0.5
+      "com.apple.sound.beep.flash"         = 0
+      "com.apple.keyboard.fnState"         = true
+      NSAutomaticCapitalizationEnabled     = true
+      NSAutomaticPeriodSubstitutionEnabled = true
+      NSWindowShouldDragOnGesture          = true
+      AppleMiniaturizeOnDoubleClick        = false
+      "com.apple.trackpad.forceClick"      = true
     }
 
-    "com.apple.menuextra.battery" = {
-      ShowPercent = "YES"
+    "com.apple.menuextra.clock" = {
+      IsAnalog      = true
+      ShowAMPM      = true
+      ShowDate      = 2
+      ShowDayOfWeek = false
+    }
+
+    "com.apple.screencapture" = {
+      captureDelay = 5
+      showsClicks  = true
+      style        = "selection"
+      video        = true
+    }
+
+    "com.apple.AppleMultitouchTrackpad" = {
+      Clicking                = true
+      TrackpadThreeFingerDrag = false
+      TrackpadRightClick      = true
+    }
+
+    "com.apple.driver.AppleBluetoothMultitouch.trackpad" = {
+      Clicking                = true
+      TrackpadThreeFingerDrag = false
+      TrackpadRightClick      = true
     }
   }
 }
@@ -35,9 +68,9 @@ resource "host_mac_settings" "settings" {
 
 ## Value Attributes
 
-In `groups`, the outer map key is the exact macOS defaults domain and the inner map is defaults key to value. Use raw domains such as `com.apple.dock`, `NSGlobalDomain`, `com.apple.menuextra.clock`, or an application bundle identifier. Quote keys that contain punctuation, such as `"show-recents" = false`.
+In `groups`, the outer map key is the exact macOS defaults domain and the inner map is defaults key to value. Use domains such as `com.apple.dock`, `NSGlobalDomain`, `com.apple.menuextra.clock`, or an application bundle identifier. Quote keys that contain punctuation, such as `"show-recents" = false`.
 
-Values can be bools, numbers, strings, or lists of strings. Top-level `settings` entries still include raw string `domain`, `key`, and `value`; use them when a setting needs explicit `restart`, `current_host`, or `delete_on_destroy` behavior.
+Values can be bools, numbers, strings, or lists of strings. Top-level `settings` entries include string `domain`, `key`, and `value`; use them when a setting needs explicit `restart`, `current_host`, or `delete_on_destroy` behavior.
 
 ## Restart Behavior
 
@@ -68,8 +101,8 @@ terraform import 'host_mac_settings.settings' 'com.apple.menuextra.clock/IsAnalo
 
 ### Optional
 
-- `groups` (Dynamic) macOS settings grouped by raw defaults domain. Each `groups` map key is the exact defaults domain, such as `com.apple.dock`, `NSGlobalDomain`, or an application bundle identifier. Each group value is a map from defaults key to setting value.
-- `settings` (Dynamic) Named macOS settings to manage. Each map value is an object with raw string `domain`, `key`, and `value`, plus optional `current_host`, `delete_on_destroy`, and `restart`.
+- `groups` (Dynamic) macOS settings grouped by exact defaults domain. Each `groups` map key is the exact defaults domain, such as `com.apple.dock`, `NSGlobalDomain`, or an application bundle identifier. Each group value is a map from defaults key to setting value.
+- `settings` (Dynamic) Named macOS settings to manage. Each map value is an object with string `domain`, `key`, and `value`, plus optional `current_host`, `delete_on_destroy`, and `restart`.
 
 ### Read-Only
 

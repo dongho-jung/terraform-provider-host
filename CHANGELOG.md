@@ -1,3 +1,10 @@
+## 0.10.0 (2026-07-04)
+
+BREAKING CHANGES:
+
+- Remove `host_mac_dock`; manage Dock entries with `host_mac_dock_app` and `host_mac_dock_folder`.
+- Remove macOS settings group selector special cases; `groups` now uses the supplied defaults domain as-is.
+
 ## 0.9.0 (2026-07-04)
 
 FEATURES:
@@ -34,7 +41,7 @@ FIXES:
 
 BREAKING CHANGES:
 
-- Simplify `host_mac_setting` and `host_mac_settings` to use raw macOS defaults domains only.
+- Simplify `host_mac_setting` and `host_mac_settings` to use exact macOS defaults domains only.
 - Remove macOS settings domain aliases such as `dock`, `global`, `screenshot`, and `raw:<domain>`.
 
 FEATURES:

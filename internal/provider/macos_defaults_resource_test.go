@@ -120,7 +120,7 @@ func TestMacOSDefaultsSpecsFromModelParsesGroupSettingsByMapKey(t *testing.T) {
 	}
 }
 
-func TestMacOSDefaultsSpecsFromModelParsesSpecialGroupDomains(t *testing.T) {
+func TestMacOSDefaultsSpecsFromModelParsesExactGroupDomains(t *testing.T) {
 	t.Parallel()
 
 	groups := mustMacOSSettingsGroupsMap(t, map[string]map[string]attr.Value{
@@ -148,24 +148,7 @@ func TestMacOSDefaultsSpecsFromModelParsesSpecialGroupDomains(t *testing.T) {
 		t.Fatalf("unexpected global spec: %#v", specs[0])
 	}
 	if specs[1].GroupName != "com.example.app" || specs[1].Spec.ID != "user:com.example.app:Enabled" {
-		t.Fatalf("unexpected raw spec: %#v", specs[1])
-	}
-}
-
-func TestMacOSDefaultsSpecsFromModelRejectsLegacyGroupAliases(t *testing.T) {
-	t.Parallel()
-
-	groups := mustMacOSSettingsGroupsMap(t, map[string]map[string]attr.Value{
-		"dock": {
-			"autohide": types.BoolValue(true),
-		},
-	})
-
-	_, diags := macOSDefaultsSpecsFromModel(context.Background(), MacOSDefaultsResourceModel{
-		Groups: groups,
-	})
-	if !diags.HasError() {
-		t.Fatal("expected legacy group alias diagnostics")
+		t.Fatalf("unexpected app domain spec: %#v", specs[1])
 	}
 }
 
