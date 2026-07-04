@@ -26,6 +26,7 @@ var (
 
 type MacOSLoginItemResource struct {
 	manager MacOSLoginItemManager
+	homeDir string
 }
 
 type MacOSLoginItemResourceModel struct {
@@ -57,12 +58,17 @@ type MacOSLoginItemManager interface {
 
 type CLIMacOSLoginItemManager struct {
 	osascriptPath string
+	homeDir       string
 }
 
-func NewCLIMacOSLoginItemManager(osascriptPath string) MacOSLoginItemManager {
-	return &CLIMacOSLoginItemManager{
+func NewCLIMacOSLoginItemManager(osascriptPath string, homeDirs ...string) MacOSLoginItemManager {
+	manager := &CLIMacOSLoginItemManager{
 		osascriptPath: osascriptPath,
 	}
+	if len(homeDirs) > 0 {
+		manager.homeDir = homeDirs[0]
+	}
+	return manager
 }
 
 func NewMacOSLoginItemResource() resource.Resource {
@@ -86,10 +92,7 @@ func (r *MacOSLoginItemResource) Schema(ctx context.Context, req resource.Schema
 			},
 			"path": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Application bundle path to open at login. `~` is expanded to the current user's home directory and relative paths are resolved from the Terraform working directory.",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
+				MarkdownDescription: "Application bundle path to open at login. `~` is expanded to the provider `home_dir` and relative paths are resolved from the Terraform working directory.",
 			},
 			"path_resolved": schema.StringAttribute{
 				Computed:            true,
@@ -121,6 +124,7 @@ func (r *MacOSLoginItemResource) Configure(ctx context.Context, req resource.Con
 			return
 		}
 		r.manager = data.MacOSLoginItemManager
+		r.homeDir = data.HomeDir
 	case MacOSLoginItemManager:
 		r.manager = data
 	default:
@@ -137,12 +141,16 @@ func (r *MacOSLoginItemResource) ModifyPlan(ctx context.Context, req resource.Mo
 	}
 
 	var plan MacOSLoginItemResourceModel
+	var state MacOSLoginItemResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if !req.State.Raw.IsNull() {
+		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	}
 	if resp.Diagnostics.HasError() || plan.Path.IsNull() || plan.Path.IsUnknown() || plan.Hidden.IsNull() || plan.Hidden.IsUnknown() {
 		return
 	}
 
-	spec, err := macOSLoginItemSpecFromModel(plan)
+	spec, err := macOSLoginItemSpecFromModelForHome(plan, r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid macOS Login Item", err.Error())
 		return
@@ -150,6 +158,12 @@ func (r *MacOSLoginItemResource) ModifyPlan(ctx context.Context, req resource.Mo
 
 	plan.ID = types.StringValue(plan.Path.ValueString())
 	plan.PathResolved = types.StringValue(spec.PathResolved)
+	requireReplaceIfResolvedPathChanged(req, resp, tfpath.Root("path"), state.Path, state.PathResolved, spec.PathResolved, func(value string) (string, error) {
+		return resolveMacOSLoginItemPathForHome(value, r.homeDir)
+	})
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
@@ -180,7 +194,7 @@ func (r *MacOSLoginItemResource) Read(ctx context.Context, req resource.ReadRequ
 		return
 	}
 
-	spec, err := macOSLoginItemSpecFromModel(state)
+	spec, err := macOSLoginItemSpecFromModelForHome(state, r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid macOS Login Item state", err.Error())
 		return
@@ -226,7 +240,7 @@ func (r *MacOSLoginItemResource) Delete(ctx context.Context, req resource.Delete
 		return
 	}
 
-	spec, err := macOSLoginItemSpecFromModel(state)
+	spec, err := macOSLoginItemSpecFromModelForHome(state, r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid macOS Login Item state", err.Error())
 		return
@@ -245,7 +259,7 @@ func (r *MacOSLoginItemResource) syncLoginItem(ctx context.Context, model MacOSL
 		return model, fmt.Errorf("macOS Login Items manager unavailable")
 	}
 
-	spec, err := macOSLoginItemSpecFromModel(model)
+	spec, err := macOSLoginItemSpecFromModelForHome(model, r.homeDir)
 	if err != nil {
 		return model, err
 	}
@@ -261,7 +275,7 @@ func (m *CLIMacOSLoginItemManager) LoginItemStatus(ctx context.Context, path str
 	if m.osascriptPath == "" {
 		return MacOSLoginItemStatus{}, false, fmt.Errorf("osascript command not found")
 	}
-	pathResolved, err := resolveMacOSLoginItemPath(path)
+	pathResolved, err := resolveMacOSLoginItemPathForHome(path, m.homeDir)
 	if err != nil {
 		return MacOSLoginItemStatus{}, false, err
 	}
@@ -283,7 +297,7 @@ func (m *CLIMacOSLoginItemManager) EnsureLoginItem(ctx context.Context, spec Mac
 	if m.osascriptPath == "" {
 		return MacOSLoginItemStatus{}, fmt.Errorf("osascript command not found")
 	}
-	pathResolved, err := resolveMacOSLoginItemPath(spec.PathResolved)
+	pathResolved, err := resolveMacOSLoginItemPathForHome(spec.PathResolved, m.homeDir)
 	if err != nil {
 		return MacOSLoginItemStatus{}, err
 	}
@@ -330,7 +344,7 @@ func (m *CLIMacOSLoginItemManager) DeleteLoginItem(ctx context.Context, path str
 	if m.osascriptPath == "" {
 		return fmt.Errorf("osascript command not found")
 	}
-	pathResolved, err := resolveMacOSLoginItemPath(path)
+	pathResolved, err := resolveMacOSLoginItemPathForHome(path, m.homeDir)
 	if err != nil {
 		return err
 	}
@@ -364,7 +378,7 @@ func (m *CLIMacOSLoginItemManager) readLoginItems(ctx context.Context) ([]MacOSL
 	if err != nil {
 		return nil, err
 	}
-	return parseMacOSLoginItems(string(out))
+	return parseMacOSLoginItemsForHome(string(out), m.homeDir)
 }
 
 func (m *CLIMacOSLoginItemManager) runOSAScript(ctx context.Context, scriptLines []string, args ...string) ([]byte, error) {
@@ -383,10 +397,14 @@ func (m *CLIMacOSLoginItemManager) runOSAScript(ctx context.Context, scriptLines
 }
 
 func macOSLoginItemSpecFromModel(model MacOSLoginItemResourceModel) (MacOSLoginItemSpec, error) {
+	return macOSLoginItemSpecFromModelForHome(model, "")
+}
+
+func macOSLoginItemSpecFromModelForHome(model MacOSLoginItemResourceModel, homeDir string) (MacOSLoginItemSpec, error) {
 	if model.Path.IsNull() || model.Path.IsUnknown() {
 		return MacOSLoginItemSpec{}, fmt.Errorf("path must be known")
 	}
-	pathResolved, err := resolveMacOSLoginItemPath(model.Path.ValueString())
+	pathResolved, err := resolveMacOSLoginItemPathForHome(model.Path.ValueString(), homeDir)
 	if err != nil {
 		return MacOSLoginItemSpec{}, err
 	}
@@ -414,6 +432,10 @@ func macOSLoginItemModelFromStatus(model MacOSLoginItemResourceModel, status Mac
 }
 
 func parseMacOSLoginItems(output string) ([]MacOSLoginItemStatus, error) {
+	return parseMacOSLoginItemsForHome(output, "")
+}
+
+func parseMacOSLoginItemsForHome(output string, homeDir string) ([]MacOSLoginItemStatus, error) {
 	lines := strings.Split(output, "\n")
 	items := make([]MacOSLoginItemStatus, 0, len(lines))
 	for _, line := range lines {
@@ -426,7 +448,7 @@ func parseMacOSLoginItems(output string) ([]MacOSLoginItemStatus, error) {
 		if len(parts) != 3 {
 			return nil, fmt.Errorf("cannot parse login item line %q", line)
 		}
-		pathResolved, err := resolveMacOSLoginItemPath(parts[1])
+		pathResolved, err := resolveMacOSLoginItemPathForHome(parts[1], homeDir)
 		if err != nil {
 			return nil, err
 		}
@@ -444,11 +466,11 @@ func parseMacOSLoginItems(output string) ([]MacOSLoginItemStatus, error) {
 	return items, nil
 }
 
-func resolveMacOSLoginItemPath(path string) (string, error) {
+func resolveMacOSLoginItemPathForHome(path string, homeDir string) (string, error) {
 	if strings.Contains(path, "\x00") {
 		return "", fmt.Errorf("path must not contain NUL bytes")
 	}
-	return expandHostPath(path)
+	return expandHostPathForHome(path, homeDir)
 }
 
 func ensureMacOSLoginItemPath(path string) error {

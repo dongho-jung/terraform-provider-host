@@ -22,6 +22,7 @@ import (
 
 var (
 	_ resource.Resource                = &HostSSHConfigHostResource{}
+	_ resource.ResourceWithConfigure   = &HostSSHConfigHostResource{}
 	_ resource.ResourceWithImportState = &HostSSHConfigHostResource{}
 	_ resource.ResourceWithModifyPlan  = &HostSSHConfigHostResource{}
 )
@@ -35,6 +36,7 @@ const (
 )
 
 type HostSSHConfigHostResource struct {
+	homeDir string
 }
 
 type HostSSHConfigHostResourceModel struct {
@@ -80,6 +82,19 @@ func NewHostSSHConfigHostResource() resource.Resource {
 
 func (r *HostSSHConfigHostResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_ssh_config_host"
+}
+
+func (r *HostSSHConfigHostResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+	if req.ProviderData == nil {
+		return
+	}
+
+	data, ok := req.ProviderData.(HostProviderData)
+	if !ok {
+		resp.Diagnostics.AddError("Unexpected provider data", fmt.Sprintf("Expected HostProviderData, got %T.", req.ProviderData))
+		return
+	}
+	r.homeDir = data.HomeDir
 }
 
 func (r *HostSSHConfigHostResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
@@ -174,7 +189,7 @@ func (r *HostSSHConfigHostResource) ModifyPlan(ctx context.Context, req resource
 		return
 	}
 
-	spec, diags := hostSSHConfigHostSpecFromModel(ctx, plan)
+	spec, diags := hostSSHConfigHostSpecFromModelForHome(ctx, plan, r.homeDir)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -194,7 +209,7 @@ func (r *HostSSHConfigHostResource) Create(ctx context.Context, req resource.Cre
 		return
 	}
 
-	state, err := syncHostSSHConfigHost(ctx, plan, nil)
+	state, err := syncHostSSHConfigHostForHome(ctx, plan, nil, r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to sync SSH config host", err.Error())
 		return
@@ -210,7 +225,7 @@ func (r *HostSSHConfigHostResource) Read(ctx context.Context, req resource.ReadR
 		return
 	}
 
-	spec, diags := hostSSHConfigHostSpecFromModel(ctx, state)
+	spec, diags := hostSSHConfigHostSpecFromModelForHome(ctx, state, r.homeDir)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -218,7 +233,7 @@ func (r *HostSSHConfigHostResource) Read(ctx context.Context, req resource.ReadR
 
 	var rendered string
 	var exists bool
-	if err := withLockedSSHConfig(ctx, spec.ConfigPathResolved, func(path string) error {
+	if err := withLockedSSHConfigForHome(ctx, r.homeDir, spec.ConfigPathResolved, func(path string) error {
 		var err error
 		rendered, exists, err = readHostSSHConfigManagedBlock(path, spec.ID)
 		if err != nil || exists || !spec.AdoptExisting {
@@ -251,7 +266,7 @@ func (r *HostSSHConfigHostResource) Update(ctx context.Context, req resource.Upd
 		return
 	}
 
-	next, err := syncHostSSHConfigHost(ctx, plan, &state)
+	next, err := syncHostSSHConfigHostForHome(ctx, plan, &state, r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to sync SSH config host", err.Error())
 		return
@@ -267,13 +282,13 @@ func (r *HostSSHConfigHostResource) Delete(ctx context.Context, req resource.Del
 		return
 	}
 
-	spec, diags := hostSSHConfigHostSpecFromModel(ctx, state)
+	spec, diags := hostSSHConfigHostSpecFromModelForHome(ctx, state, r.homeDir)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	if err := withLockedSSHConfig(ctx, spec.ConfigPathResolved, func(path string) error {
+	if err := withLockedSSHConfigForHome(ctx, r.homeDir, spec.ConfigPathResolved, func(path string) error {
 		return removeHostSSHConfigHostBlock(path, spec.ID, spec.Host, spec.AdoptExisting)
 	}); err != nil {
 		resp.Diagnostics.AddError("Failed to delete SSH config host", err.Error())
@@ -286,7 +301,7 @@ func (r *HostSSHConfigHostResource) ImportState(ctx context.Context, req resourc
 		resp.Diagnostics.AddError("Invalid SSH config host import ID", err.Error())
 		return
 	}
-	configPathResolved, err := resolveSSHConfigPath(configPath)
+	configPathResolved, err := resolveSSHConfigPathForHome(configPath, r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid SSH config path", err.Error())
 		return
@@ -303,19 +318,19 @@ func (r *HostSSHConfigHostResource) ImportState(ctx context.Context, req resourc
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-func syncHostSSHConfigHost(ctx context.Context, plan HostSSHConfigHostResourceModel, prior *HostSSHConfigHostResourceModel) (HostSSHConfigHostResourceModel, error) {
-	spec, diags := hostSSHConfigHostSpecFromModel(ctx, plan)
+func syncHostSSHConfigHostForHome(ctx context.Context, plan HostSSHConfigHostResourceModel, prior *HostSSHConfigHostResourceModel, homeDir string) (HostSSHConfigHostResourceModel, error) {
+	spec, diags := hostSSHConfigHostSpecFromModelForHome(ctx, plan, homeDir)
 	if diags.HasError() {
 		return plan, diagnosticsError(diags)
 	}
 
 	if prior != nil {
-		priorSpec, priorDiags := hostSSHConfigHostSpecFromModel(ctx, *prior)
+		priorSpec, priorDiags := hostSSHConfigHostSpecFromModelForHome(ctx, *prior, homeDir)
 		if priorDiags.HasError() {
 			return plan, diagnosticsError(priorDiags)
 		}
 		if priorSpec.ID != spec.ID || priorSpec.ConfigPathResolved != spec.ConfigPathResolved {
-			if err := withLockedSSHConfig(ctx, priorSpec.ConfigPathResolved, func(path string) error {
+			if err := withLockedSSHConfigForHome(ctx, homeDir, priorSpec.ConfigPathResolved, func(path string) error {
 				return removeHostSSHConfigHostBlock(path, priorSpec.ID, priorSpec.Host, priorSpec.AdoptExisting)
 			}); err != nil {
 				return plan, err
@@ -324,7 +339,7 @@ func syncHostSSHConfigHost(ctx context.Context, plan HostSSHConfigHostResourceMo
 	}
 
 	rendered := renderHostSSHConfigBlock(spec)
-	if err := withLockedSSHConfig(ctx, spec.ConfigPathResolved, func(path string) error {
+	if err := withLockedSSHConfigForHome(ctx, homeDir, spec.ConfigPathResolved, func(path string) error {
 		return upsertHostSSHConfigManagedBlock(path, spec.ID, spec.Host, rendered, spec.AdoptExisting)
 	}); err != nil {
 		return plan, err
@@ -338,13 +353,17 @@ func syncHostSSHConfigHost(ctx context.Context, plan HostSSHConfigHostResourceMo
 }
 
 func hostSSHConfigHostSpecFromModel(ctx context.Context, model HostSSHConfigHostResourceModel) (hostSSHConfigHostSpec, diag.Diagnostics) {
+	return hostSSHConfigHostSpecFromModelForHome(ctx, model, "")
+}
+
+func hostSSHConfigHostSpecFromModelForHome(ctx context.Context, model HostSSHConfigHostResourceModel, homeDir string) (hostSSHConfigHostSpec, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
 	configPath := defaultSSHConfigPath
 	if !model.ConfigPath.IsNull() && !model.ConfigPath.IsUnknown() {
 		configPath = model.ConfigPath.ValueString()
 	}
-	configPathResolved, err := resolveSSHConfigPath(configPath)
+	configPathResolved, err := resolveSSHConfigPathForHome(configPath, homeDir)
 	if err != nil {
 		diags.AddError("Invalid SSH config path", err.Error())
 		return hostSSHConfigHostSpec{}, diags
@@ -388,7 +407,7 @@ func hostSSHConfigHostSpecFromModel(ctx context.Context, model HostSSHConfigHost
 	}
 	if !model.IdentityFile.IsNull() && !model.IdentityFile.IsUnknown() {
 		spec.IdentityFile = model.IdentityFile.ValueString()
-		resolved, err := resolveSSHConfigIdentityFile(spec.IdentityFile)
+		resolved, err := resolveSSHConfigIdentityFileForHome(spec.IdentityFile, homeDir)
 		if err != nil {
 			diags.AddError("Invalid SSH config identity_file", err.Error())
 			return hostSSHConfigHostSpec{}, diags
@@ -474,8 +493,8 @@ func renderHostSSHConfigBlock(spec hostSSHConfigHostSpec) string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
-func withLockedSSHConfig(ctx context.Context, path string, fn func(path string) error) error {
-	resolvedPath, err := resolveSSHConfigPath(path)
+func withLockedSSHConfigForHome(ctx context.Context, homeDir string, path string, fn func(path string) error) error {
+	resolvedPath, err := resolveSSHConfigPathForHome(path, homeDir)
 	if err != nil {
 		return err
 	}
@@ -788,18 +807,18 @@ func hostSSHConfigHostID(configPathResolved string, host string) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-func resolveSSHConfigPath(path string) (string, error) {
+func resolveSSHConfigPathForHome(path string, homeDir string) (string, error) {
 	if strings.Contains(path, "\x00") {
 		return "", fmt.Errorf("path must not contain NUL bytes")
 	}
-	return expandHostPath(path)
+	return expandHostPathForHome(path, homeDir)
 }
 
-func resolveSSHConfigIdentityFile(path string) (string, error) {
+func resolveSSHConfigIdentityFileForHome(path string, homeDir string) (string, error) {
 	if strings.Contains(path, "\x00") {
 		return "", fmt.Errorf("identity_file must not contain NUL bytes")
 	}
-	return expandHostPath(path)
+	return expandHostPathForHome(path, homeDir)
 }
 
 func validateSSHConfigHostSpec(spec hostSSHConfigHostSpec) error {

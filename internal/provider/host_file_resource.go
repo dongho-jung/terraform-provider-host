@@ -18,11 +18,14 @@ import (
 
 var (
 	_ resource.Resource                = &HostFileResource{}
+	_ resource.ResourceWithConfigure   = &HostFileResource{}
 	_ resource.ResourceWithImportState = &HostFileResource{}
 	_ resource.ResourceWithModifyPlan  = &HostFileResource{}
 )
 
 type HostFileResource struct {
+	homeDir    string
+	runtimeDir string
 }
 
 type HostFileResourceModel struct {
@@ -64,6 +67,20 @@ func (r *HostFileResource) Metadata(ctx context.Context, req resource.MetadataRe
 	resp.TypeName = req.ProviderTypeName + "_file"
 }
 
+func (r *HostFileResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+	if req.ProviderData == nil {
+		return
+	}
+
+	data, ok := req.ProviderData.(HostProviderData)
+	if !ok {
+		resp.Diagnostics.AddError("Unexpected provider data", fmt.Sprintf("Expected HostProviderData, got %T.", req.ProviderData))
+		return
+	}
+	r.homeDir = data.HomeDir
+	r.runtimeDir = data.RuntimeDir
+}
+
 func (r *HostFileResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Version:             3,
@@ -78,10 +95,7 @@ func (r *HostFileResource) Schema(ctx context.Context, req resource.SchemaReques
 			},
 			"path": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Path to the host file. `~` is expanded to the current user's home directory when the provider reads or writes the file.",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
+				MarkdownDescription: "Path to the host file. `~` is expanded to the provider `home_dir` when the provider reads or writes the file.",
 			},
 			"path_resolved": schema.StringAttribute{
 				Computed:            true,
@@ -153,8 +167,12 @@ func (r *HostFileResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 
 	var plan HostFileResourceModel
 	var config HostFileResourceModel
+	var state HostFileResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if !req.State.Raw.IsNull() {
+		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -162,12 +180,18 @@ func (r *HostFileResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 	if plan.Path.IsNull() || plan.Path.IsUnknown() {
 		return
 	}
-	resolvedPath, err := expandHostPath(plan.Path.ValueString())
+	resolvedPath, err := expandHostPathForHome(plan.Path.ValueString(), r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid host file path", err.Error())
 		return
 	}
 	plan.PathResolved = types.StringValue(resolvedPath)
+	requireReplaceIfResolvedPathChanged(req, resp, tfpath.Root("path"), state.Path, state.PathResolved, resolvedPath, func(value string) (string, error) {
+		return expandHostPathForHome(value, r.homeDir)
+	})
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	if hostFileUsesFullContent(config) {
 		if hostFileHasConfiguredBlocks(config.Block) {
 			resp.Diagnostics.AddError("Invalid host file configuration", "`content` is mutually exclusive with `block`.")
@@ -196,7 +220,7 @@ func (r *HostFileResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	rendered, err := plannedCleanHostFileContent(plan.Path.ValueString(), blockSpecs)
+	rendered, err := plannedCleanHostFileContentForProvider(plan.Path.ValueString(), blockSpecs, r.homeDir, r.runtimeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to render host file plan", err.Error())
 		return
@@ -214,7 +238,7 @@ func (r *HostFileResource) Create(ctx context.Context, req resource.CreateReques
 	}
 
 	if hostFileUsesFullContent(plan) {
-		if err := withLockedHostFile(ctx, plan.Path.ValueString(), func(path string) error {
+		if err := withLockedHostFileForHome(ctx, r.homeDir, plan.Path.ValueString(), func(path string) error {
 			return syncHostFileContent(path, plan.Content.ValueString())
 		}); err != nil {
 			resp.Diagnostics.AddError("Failed to sync host file", err.Error())
@@ -222,7 +246,7 @@ func (r *HostFileResource) Create(ctx context.Context, req resource.CreateReques
 		}
 
 		plan.ID = types.StringValue(plan.Path.ValueString())
-		plan.PathResolved = hostFilePathResolvedValue(plan.Path.ValueString(), &resp.Diagnostics)
+		plan.PathResolved = hostFilePathResolvedValueForHome(plan.Path.ValueString(), r.homeDir, &resp.Diagnostics)
 		if resp.Diagnostics.HasError() {
 			return
 		}
@@ -238,15 +262,15 @@ func (r *HostFileResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	if err := withLockedHostFile(ctx, plan.Path.ValueString(), func(path string) error {
-		return syncCleanHostFileBlocks(path, blockSpecs)
+	if err := withLockedHostFileForHome(ctx, r.homeDir, plan.Path.ValueString(), func(path string) error {
+		return syncCleanHostFileBlocksForRuntime(path, blockSpecs, r.runtimeDir)
 	}); err != nil {
 		resp.Diagnostics.AddError("Failed to sync host file", err.Error())
 		return
 	}
 
 	plan.ID = types.StringValue(plan.Path.ValueString())
-	resolvedPath := hostFilePathResolvedValue(plan.Path.ValueString(), &resp.Diagnostics)
+	resolvedPath := hostFilePathResolvedValueForHome(plan.Path.ValueString(), r.homeDir, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -255,7 +279,7 @@ func (r *HostFileResource) Create(ctx context.Context, req resource.CreateReques
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	rendered, err := readRenderedHostFileContent(plan.Path.ValueString())
+	rendered, err := readRenderedHostFileContentForHome(plan.Path.ValueString(), r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read rendered host file", err.Error())
 		return
@@ -275,7 +299,7 @@ func (r *HostFileResource) Read(ctx context.Context, req resource.ReadRequest, r
 	if hostFileUsesFullContent(state) {
 		var exists bool
 		var content string
-		if err := withLockedHostFile(ctx, state.Path.ValueString(), func(path string) error {
+		if err := withLockedHostFileForHome(ctx, r.homeDir, state.Path.ValueString(), func(path string) error {
 			var err error
 			content, exists, err = readHostFileContent(path)
 			return err
@@ -291,7 +315,7 @@ func (r *HostFileResource) Read(ctx context.Context, req resource.ReadRequest, r
 			state.Content = types.StringValue(trimRenderedManagedBlockBody(content))
 		}
 		state.ID = types.StringValue(state.Path.ValueString())
-		state.PathResolved = hostFilePathResolvedValue(state.Path.ValueString(), &resp.Diagnostics)
+		state.PathResolved = hostFilePathResolvedValueForHome(state.Path.ValueString(), r.homeDir, &resp.Diagnostics)
 		if resp.Diagnostics.HasError() {
 			return
 		}
@@ -308,9 +332,9 @@ func (r *HostFileResource) Read(ctx context.Context, req resource.ReadRequest, r
 	}
 
 	var exists bool
-	if err := withLockedHostFile(ctx, state.Path.ValueString(), func(path string) error {
+	if err := withLockedHostFileForHome(ctx, r.homeDir, state.Path.ValueString(), func(path string) error {
 		var err error
-		blockSpecs, exists, err = readCleanHostFileBlockSpecs(path, blockSpecs)
+		blockSpecs, exists, err = readCleanHostFileBlockSpecsForRuntime(path, blockSpecs, r.runtimeDir)
 		return err
 	}); err != nil {
 		resp.Diagnostics.AddError("Failed to read host file", err.Error())
@@ -322,7 +346,7 @@ func (r *HostFileResource) Read(ctx context.Context, req resource.ReadRequest, r
 	}
 
 	state.ID = types.StringValue(state.Path.ValueString())
-	resolvedPath := hostFilePathResolvedValue(state.Path.ValueString(), &resp.Diagnostics)
+	resolvedPath := hostFilePathResolvedValueForHome(state.Path.ValueString(), r.homeDir, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -331,7 +355,7 @@ func (r *HostFileResource) Read(ctx context.Context, req resource.ReadRequest, r
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	rendered, err := readRenderedHostFileContent(state.Path.ValueString())
+	rendered, err := readRenderedHostFileContentForHome(state.Path.ValueString(), r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read rendered host file", err.Error())
 		return
@@ -349,7 +373,7 @@ func (r *HostFileResource) Update(ctx context.Context, req resource.UpdateReques
 	}
 
 	if hostFileUsesFullContent(plan) {
-		if err := withLockedHostFile(ctx, plan.Path.ValueString(), func(path string) error {
+		if err := withLockedHostFileForHome(ctx, r.homeDir, plan.Path.ValueString(), func(path string) error {
 			return syncHostFileContent(path, plan.Content.ValueString())
 		}); err != nil {
 			resp.Diagnostics.AddError("Failed to sync host file", err.Error())
@@ -357,7 +381,7 @@ func (r *HostFileResource) Update(ctx context.Context, req resource.UpdateReques
 		}
 
 		plan.ID = types.StringValue(plan.Path.ValueString())
-		plan.PathResolved = hostFilePathResolvedValue(plan.Path.ValueString(), &resp.Diagnostics)
+		plan.PathResolved = hostFilePathResolvedValueForHome(plan.Path.ValueString(), r.homeDir, &resp.Diagnostics)
 		if resp.Diagnostics.HasError() {
 			return
 		}
@@ -373,15 +397,15 @@ func (r *HostFileResource) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
-	if err := withLockedHostFile(ctx, plan.Path.ValueString(), func(path string) error {
-		return syncCleanHostFileBlocks(path, blockSpecs)
+	if err := withLockedHostFileForHome(ctx, r.homeDir, plan.Path.ValueString(), func(path string) error {
+		return syncCleanHostFileBlocksForRuntime(path, blockSpecs, r.runtimeDir)
 	}); err != nil {
 		resp.Diagnostics.AddError("Failed to sync host file", err.Error())
 		return
 	}
 
 	plan.ID = types.StringValue(plan.Path.ValueString())
-	resolvedPath := hostFilePathResolvedValue(plan.Path.ValueString(), &resp.Diagnostics)
+	resolvedPath := hostFilePathResolvedValueForHome(plan.Path.ValueString(), r.homeDir, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -390,7 +414,7 @@ func (r *HostFileResource) Update(ctx context.Context, req resource.UpdateReques
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	rendered, err := readRenderedHostFileContent(plan.Path.ValueString())
+	rendered, err := readRenderedHostFileContentForHome(plan.Path.ValueString(), r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read rendered host file", err.Error())
 		return
@@ -408,7 +432,7 @@ func (r *HostFileResource) Delete(ctx context.Context, req resource.DeleteReques
 	}
 
 	if hostFileUsesFullContent(state) {
-		if err := withLockedHostFile(ctx, state.Path.ValueString(), func(path string) error {
+		if err := withLockedHostFileForHome(ctx, r.homeDir, state.Path.ValueString(), func(path string) error {
 			return deleteHostFile(path)
 		}); err != nil {
 			resp.Diagnostics.AddError("Failed to delete host file", err.Error())
@@ -416,8 +440,8 @@ func (r *HostFileResource) Delete(ctx context.Context, req resource.DeleteReques
 		return
 	}
 
-	if err := withLockedHostFile(ctx, state.Path.ValueString(), func(path string) error {
-		return deleteCleanHostFile(path)
+	if err := withLockedHostFileForHome(ctx, r.homeDir, state.Path.ValueString(), func(path string) error {
+		return deleteCleanHostFileForRuntime(path, r.runtimeDir)
 	}); err != nil {
 		resp.Diagnostics.AddError("Failed to delete host file blocks", err.Error())
 	}
@@ -636,8 +660,8 @@ func hostFileHasConfiguredBlocks(blocks types.List) bool {
 	return !blocks.IsNull() && !blocks.IsUnknown() && len(blocks.Elements()) > 0
 }
 
-func hostFilePathResolvedValue(path string, diags *diag.Diagnostics) types.String {
-	resolved, err := expandHostPath(path)
+func hostFilePathResolvedValueForHome(path string, homeDir string, diags *diag.Diagnostics) types.String {
+	resolved, err := expandHostPathForHome(path, homeDir)
 	if err != nil {
 		diags.AddError("Invalid host file path", err.Error())
 		return types.StringUnknown()

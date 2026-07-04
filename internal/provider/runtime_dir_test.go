@@ -25,12 +25,8 @@ func TestProviderRuntimeDirUsesWorkingDirectory(t *testing.T) {
 
 func TestProviderRuntimeDirUsesOverride(t *testing.T) {
 	override := filepath.Join(t.TempDir(), "host-runtime")
-	setProviderRuntimeDir(override)
-	t.Cleanup(func() {
-		setProviderRuntimeDir("")
-	})
 
-	got, err := providerRuntimeDir()
+	got, err := providerRuntimeDirForRuntime(override)
 	if err != nil {
 		t.Fatalf("provider runtime dir: %s", err)
 	}

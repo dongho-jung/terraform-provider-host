@@ -512,36 +512,28 @@ func (r *BrewPackageResource) syncPackage(ctx context.Context, model BrewPackage
 }
 
 func hydrateBrewVersionState(model *BrewPackageResourceModel, status BrewPackageStatus) {
-	if status.InstalledVersion == "" {
-		model.InstalledVersion = types.StringNull()
-	} else {
-		model.InstalledVersion = types.StringValue(status.InstalledVersion)
-	}
-
-	if status.CandidateVersion == "" {
-		model.CandidateVersion = types.StringNull()
-	} else {
-		model.CandidateVersion = types.StringValue(status.CandidateVersion)
-	}
+	model.InstalledVersion = brewVersionValue(status.InstalledVersion)
+	model.CandidateVersion = brewVersionValue(status.CandidateVersion)
 }
 
 func hydrateBrewAppPathState(model *BrewPackageResourceModel, status BrewPackageStatus) {
+	model.AppPath, model.AppPaths = brewAppPathValues(status)
+}
+
+func brewAppPathValues(status BrewPackageStatus) (types.String, types.List) {
 	if status.PackageType != brewPackageTypeCask {
-		model.AppPath = types.StringNull()
-		model.AppPaths = types.ListValueMust(types.StringType, nil)
-		return
+		return types.StringNull(), types.ListValueMust(types.StringType, nil)
 	}
 
 	elements := make([]attr.Value, 0, len(status.AppPaths))
 	for _, appPath := range status.AppPaths {
 		elements = append(elements, types.StringValue(appPath))
 	}
-	model.AppPaths = types.ListValueMust(types.StringType, elements)
+	appPaths := types.ListValueMust(types.StringType, elements)
 	if len(status.AppPaths) == 1 {
-		model.AppPath = types.StringValue(status.AppPaths[0])
-		return
+		return types.StringValue(status.AppPaths[0]), appPaths
 	}
-	model.AppPath = types.StringNull()
+	return types.StringNull(), appPaths
 }
 
 func markBrewVersionStateUnknown(model *BrewPackageResourceModel) {

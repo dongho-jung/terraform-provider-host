@@ -6,7 +6,6 @@ import (
 
 	frameworkprovider "github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
-	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 )
 
@@ -31,26 +30,43 @@ func TestProviderMetadata(t *testing.T) {
 	}
 }
 
-func TestConfiguredExecutablePathUsesExplicitValue(t *testing.T) {
+func TestExecutablePathReturnsEmptyWhenToolIsMissing(t *testing.T) {
 	t.Parallel()
 
-	got, err := configuredExecutablePath("definitely-not-a-real-host-provider-tool", types.StringValue("/custom/tool"))
-	if err != nil {
-		t.Fatalf("unexpected error: %s", err)
-	}
-	if got != "/custom/tool" {
-		t.Fatalf("got %q, want /custom/tool", got)
+	got := executablePath("definitely-not-a-real-host-provider-tool")
+	if got != "" {
+		t.Fatalf("got %q, want empty path", got)
 	}
 }
 
-func TestConfiguredExecutablePathReturnsEmptyWhenToolIsMissing(t *testing.T) {
+func TestExpandHostPathWithConfiguredHome(t *testing.T) {
 	t.Parallel()
 
-	got, err := configuredExecutablePath("definitely-not-a-real-host-provider-tool", types.StringNull())
+	got, err := expandHostPathWithHome("~/projects", "/Users/alice")
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
-	if got != "" {
-		t.Fatalf("got %q, want empty path", got)
+	if got != "/Users/alice/projects" {
+		t.Fatalf("got %q, want /Users/alice/projects", got)
+	}
+}
+
+func TestExpandHostPathForHomeUsesCallHome(t *testing.T) {
+	t.Parallel()
+
+	first, err := expandHostPathForHome("~/projects", "/Users/alice")
+	if err != nil {
+		t.Fatalf("expand first home: %s", err)
+	}
+	second, err := expandHostPathForHome("~/projects", "/Users/bob")
+	if err != nil {
+		t.Fatalf("expand second home: %s", err)
+	}
+
+	if first != "/Users/alice/projects" {
+		t.Fatalf("first got %q, want /Users/alice/projects", first)
+	}
+	if second != "/Users/bob/projects" {
+		t.Fatalf("second got %q, want /Users/bob/projects", second)
 	}
 }

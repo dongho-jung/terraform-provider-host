@@ -38,7 +38,7 @@ terraform import host_mac_login_item.hammerspoon /Applications/Hammerspoon.app
 
 ### Required
 
-- `path` (String) Application bundle path to open at login. `~` is expanded to the current user's home directory and relative paths are resolved from the Terraform working directory.
+- `path` (String) Application bundle path to open at login. `~` is expanded to the provider `home_dir` and relative paths are resolved from the Terraform working directory.
 
 ### Optional
 

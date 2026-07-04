@@ -17,11 +17,13 @@ import (
 
 var (
 	_ resource.Resource                = &HostLinkResource{}
+	_ resource.ResourceWithConfigure   = &HostLinkResource{}
 	_ resource.ResourceWithImportState = &HostLinkResource{}
 	_ resource.ResourceWithModifyPlan  = &HostLinkResource{}
 )
 
 type HostLinkResource struct {
+	homeDir string
 }
 
 type HostLinkResourceModel struct {
@@ -40,6 +42,19 @@ func (r *HostLinkResource) Metadata(ctx context.Context, req resource.MetadataRe
 	resp.TypeName = req.ProviderTypeName + "_link"
 }
 
+func (r *HostLinkResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+	if req.ProviderData == nil {
+		return
+	}
+
+	data, ok := req.ProviderData.(HostProviderData)
+	if !ok {
+		resp.Diagnostics.AddError("Unexpected provider data", fmt.Sprintf("Expected HostProviderData, got %T.", req.ProviderData))
+		return
+	}
+	r.homeDir = data.HomeDir
+}
+
 func (r *HostLinkResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Version:             1,
@@ -54,14 +69,11 @@ func (r *HostLinkResource) Schema(ctx context.Context, req resource.SchemaReques
 			},
 			"source": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Source file or directory the symbolic link points to. Absolute paths are used as-is, `~` is expanded to the current user's home directory, and relative paths are resolved from the Terraform working directory.",
+				MarkdownDescription: "Source file or directory the symbolic link points to. Absolute paths are used as-is, `~` is expanded to the provider `home_dir`, and relative paths are resolved from the Terraform working directory.",
 			},
 			"destination": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Destination host path where the symbolic link should exist. `~` is expanded to the current user's home directory.",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
+				MarkdownDescription: "Destination host path where the symbolic link should exist. `~` is expanded to the provider `home_dir`.",
 			},
 			"source_path": schema.StringAttribute{
 				Computed:            true,
@@ -81,12 +93,16 @@ func (r *HostLinkResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 	}
 
 	var plan HostLinkResourceModel
+	var state HostLinkResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if !req.State.Raw.IsNull() {
+		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	}
 	if resp.Diagnostics.HasError() || plan.Source.IsNull() || plan.Source.IsUnknown() || plan.Destination.IsNull() || plan.Destination.IsUnknown() {
 		return
 	}
 
-	link, err := hostLinkSpecFromModel(plan)
+	link, err := hostLinkSpecFromModelForHome(plan, r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid host link", err.Error())
 		return
@@ -99,6 +115,12 @@ func (r *HostLinkResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 	plan.ID = types.StringValue(plan.Destination.ValueString())
 	plan.SourcePath = types.StringValue(link.SourcePath)
 	plan.DestinationPath = types.StringValue(link.DestinationPath)
+	requireReplaceIfResolvedPathChanged(req, resp, path.Root("destination"), state.Destination, state.DestinationPath, link.DestinationPath, func(value string) (string, error) {
+		return resolveHostLinkDestinationForHome(value, r.homeDir)
+	})
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
@@ -125,7 +147,7 @@ func (r *HostLinkResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
-	link, err := hostLinkSpecFromModel(state)
+	link, err := hostLinkSpecFromModelForHome(state, r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid host link state", err.Error())
 		return
@@ -170,7 +192,7 @@ func (r *HostLinkResource) Delete(ctx context.Context, req resource.DeleteReques
 		return
 	}
 
-	link, err := hostLinkSpecFromModel(state)
+	link, err := hostLinkSpecFromModelForHome(state, r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid host link state", err.Error())
 		return
@@ -186,7 +208,7 @@ func (r *HostLinkResource) ImportState(ctx context.Context, req resource.ImportS
 }
 
 func (r *HostLinkResource) syncLink(model HostLinkResourceModel) (HostLinkResourceModel, error) {
-	link, err := hostLinkSpecFromModel(model)
+	link, err := hostLinkSpecFromModelForHome(model, r.homeDir)
 	if err != nil {
 		return model, err
 	}
@@ -209,7 +231,7 @@ type hostLinkSpec struct {
 	SourcePath      string
 }
 
-func hostLinkSpecFromModel(model HostLinkResourceModel) (hostLinkSpec, error) {
+func hostLinkSpecFromModelForHome(model HostLinkResourceModel, homeDir string) (hostLinkSpec, error) {
 	if model.Destination.IsNull() || model.Destination.IsUnknown() {
 		return hostLinkSpec{}, fmt.Errorf("destination must be known")
 	}
@@ -217,11 +239,11 @@ func hostLinkSpecFromModel(model HostLinkResourceModel) (hostLinkSpec, error) {
 		return hostLinkSpec{}, fmt.Errorf("source must be known")
 	}
 
-	destinationPath, err := resolveHostLinkDestination(model.Destination.ValueString())
+	destinationPath, err := resolveHostLinkDestinationForHome(model.Destination.ValueString(), homeDir)
 	if err != nil {
 		return hostLinkSpec{}, fmt.Errorf("invalid destination: %w", err)
 	}
-	sourcePath, err := resolveHostLinkSource(model.Source.ValueString())
+	sourcePath, err := resolveHostLinkSourceForHome(model.Source.ValueString(), homeDir)
 	if err != nil {
 		return hostLinkSpec{}, fmt.Errorf("invalid source: %w", err)
 	}
@@ -232,7 +254,7 @@ func hostLinkSpecFromModel(model HostLinkResourceModel) (hostLinkSpec, error) {
 	}, nil
 }
 
-func resolveHostLinkDestination(value string) (string, error) {
+func resolveHostLinkDestinationForHome(value string, homeDir string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "", fmt.Errorf("destination must be non-empty")
@@ -242,7 +264,7 @@ func resolveHostLinkDestination(value string) (string, error) {
 	}
 
 	if strings.HasPrefix(value, "~") {
-		return expandHostPath(value)
+		return expandHostPathForHome(value, homeDir)
 	}
 	if filepath.IsAbs(value) {
 		return filepath.Clean(value), nil
@@ -256,6 +278,10 @@ func resolveHostLinkDestination(value string) (string, error) {
 }
 
 func resolveHostLinkSource(value string) (string, error) {
+	return resolveHostLinkSourceForHome(value, "")
+}
+
+func resolveHostLinkSourceForHome(value string, homeDir string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "", fmt.Errorf("source must be non-empty")
@@ -265,7 +291,7 @@ func resolveHostLinkSource(value string) (string, error) {
 	}
 
 	if strings.HasPrefix(value, "~") {
-		return expandHostPath(value)
+		return expandHostPathForHome(value, homeDir)
 	}
 	if filepath.IsAbs(value) {
 		return filepath.Clean(value), nil

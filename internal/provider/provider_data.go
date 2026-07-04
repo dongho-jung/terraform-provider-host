@@ -1,6 +1,8 @@
 package provider
 
 type HostProviderData struct {
+	HomeDir               string
+	RuntimeDir            string
 	PackageManager        PackageManager
 	BrewManager           BrewPackageManager
 	ScheduleManager       ScheduleManager

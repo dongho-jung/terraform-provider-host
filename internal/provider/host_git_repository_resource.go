@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	tfpath "github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
@@ -30,6 +31,7 @@ var gitSHAishPattern = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
 
 type HostGitRepositoryResource struct {
 	gitPath string
+	homeDir string
 }
 
 type HostGitRepositoryResourceModel struct {
@@ -68,6 +70,7 @@ func (r *HostGitRepositoryResource) Configure(ctx context.Context, req resource.
 			return
 		}
 		r.gitPath = data.GitPath
+		r.homeDir = data.HomeDir
 	case string:
 		r.gitPath = data
 	default:
@@ -95,10 +98,7 @@ func (r *HostGitRepositoryResource) Schema(ctx context.Context, req resource.Sch
 			},
 			"path": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Destination path for the checkout. `~` is expanded to the current user's home directory and relative paths are resolved from the Terraform working directory.",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
+				MarkdownDescription: "Destination path for the checkout. `~` is expanded to the provider `home_dir` and relative paths are resolved from the Terraform working directory.",
 			},
 			"path_resolved": schema.StringAttribute{
 				Computed:            true,
@@ -160,12 +160,16 @@ func (r *HostGitRepositoryResource) ModifyPlan(ctx context.Context, req resource
 	}
 
 	var plan HostGitRepositoryResourceModel
+	var state HostGitRepositoryResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if !req.State.Raw.IsNull() {
+		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	}
 	if resp.Diagnostics.HasError() || !hostGitRepositoryPlanReady(plan) {
 		return
 	}
 
-	spec, err := hostGitRepositorySpecFromModel(plan)
+	spec, err := hostGitRepositorySpecFromModelForHome(plan, r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid Git repository", err.Error())
 		return
@@ -173,6 +177,12 @@ func (r *HostGitRepositoryResource) ModifyPlan(ctx context.Context, req resource
 
 	plan.ID = types.StringValue(spec.Path)
 	plan.PathResolved = types.StringValue(spec.PathResolved)
+	requireReplaceIfResolvedPathChanged(req, resp, tfpath.Root("path"), state.Path, state.PathResolved, spec.PathResolved, func(value string) (string, error) {
+		return expandHostPathForHome(value, r.homeDir)
+	})
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	if spec.TrackRemote {
 		if r.gitPath == "" {
@@ -274,7 +284,7 @@ func (r *HostGitRepositoryResource) importRepositoryState(ctx context.Context, i
 	if pathValue == "" {
 		return HostGitRepositoryResourceModel{}, fmt.Errorf("import ID must be the repository path")
 	}
-	pathResolved, err := expandHostPath(pathValue)
+	pathResolved, err := expandHostPathForHome(pathValue, r.homeDir)
 	if err != nil {
 		return HostGitRepositoryResourceModel{}, err
 	}
@@ -332,7 +342,7 @@ func (r *HostGitRepositoryResource) syncRepository(ctx context.Context, model Ho
 		return model, fmt.Errorf("git executable not found in PATH")
 	}
 
-	spec, err := hostGitRepositorySpecFromModel(model)
+	spec, err := hostGitRepositorySpecFromModelForHome(model, r.homeDir)
 	if err != nil {
 		return model, err
 	}
@@ -374,7 +384,7 @@ func (r *HostGitRepositoryResource) readRepository(ctx context.Context, model Ho
 		return model, false, fmt.Errorf("git executable not found in PATH")
 	}
 
-	spec, err := hostGitRepositorySpecFromModel(model)
+	spec, err := hostGitRepositorySpecFromModelForHome(model, r.homeDir)
 	if err != nil {
 		return model, false, err
 	}
@@ -418,7 +428,7 @@ func (r *HostGitRepositoryResource) readRepository(ctx context.Context, model Ho
 }
 
 func (r *HostGitRepositoryResource) deleteRepository(ctx context.Context, model HostGitRepositoryResourceModel) error {
-	spec, err := hostGitRepositorySpecFromModel(model)
+	spec, err := hostGitRepositorySpecFromModelForHome(model, r.homeDir)
 	if err != nil {
 		return err
 	}
@@ -455,7 +465,7 @@ type hostGitRepositorySpec struct {
 	DeleteOnDestroy bool
 }
 
-func hostGitRepositorySpecFromModel(model HostGitRepositoryResourceModel) (hostGitRepositorySpec, error) {
+func hostGitRepositorySpecFromModelForHome(model HostGitRepositoryResourceModel, homeDir string) (hostGitRepositorySpec, error) {
 	if model.URL.IsNull() || model.URL.IsUnknown() {
 		return hostGitRepositorySpec{}, fmt.Errorf("url must be known")
 	}
@@ -487,7 +497,7 @@ func hostGitRepositorySpecFromModel(model HostGitRepositoryResourceModel) (hostG
 	if strings.Contains(pathValue, "\x00") {
 		return hostGitRepositorySpec{}, fmt.Errorf("path must not contain NUL bytes")
 	}
-	pathResolved, err := expandHostPath(pathValue)
+	pathResolved, err := expandHostPathForHome(pathValue, homeDir)
 	if err != nil {
 		return hostGitRepositorySpec{}, err
 	}

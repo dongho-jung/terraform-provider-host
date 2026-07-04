@@ -27,7 +27,7 @@ resource "host_git_repo" "alias_tips" {
 
 ### Required
 
-- `path` (String) Destination path for the checkout. `~` is expanded to the current user's home directory and relative paths are resolved from the Terraform working directory.
+- `path` (String) Destination path for the checkout. `~` is expanded to the provider `home_dir` and relative paths are resolved from the Terraform working directory.
 - `url` (String) Git remote URL, such as an HTTPS URL, SSH URL, or local path accepted by `git clone`.
 
 ### Optional

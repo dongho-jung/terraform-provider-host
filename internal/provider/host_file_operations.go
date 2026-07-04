@@ -47,8 +47,8 @@ type cleanHostFileManagedBlockState struct {
 	Content string   `json:"content"`
 }
 
-func withLockedHostFile(ctx context.Context, path string, fn func(path string) error) error {
-	resolvedPath, err := expandHostPath(path)
+func withLockedHostFileForHome(ctx context.Context, homeDir string, path string, fn func(path string) error) error {
+	resolvedPath, err := expandHostPathForHome(path, homeDir)
 	if err != nil {
 		return err
 	}
@@ -179,20 +179,32 @@ func deleteHostFile(path string) error {
 }
 
 func syncCleanHostFileBlocks(path string, specs []hostFileBlockSpec) error {
+	return syncCleanHostFileBlocksForRuntime(path, specs, "")
+}
+
+func syncCleanHostFileBlocksForRuntime(path string, specs []hostFileBlockSpec, runtimeDir string) error {
 	if err := validateHostFileBlockSpecs(specs); err != nil {
 		return err
 	}
 
-	state, err := plannedCleanHostFileState(path, specs)
+	state, err := plannedCleanHostFileStateForProvider(path, specs, "", runtimeDir)
 	if err != nil {
 		return err
 	}
 
-	return writeCleanHostFileStateAndContent(path, state)
+	return writeCleanHostFileStateAndContentForRuntime(path, state, runtimeDir)
 }
 
 func plannedCleanHostFileContent(path string, specs []hostFileBlockSpec) (string, error) {
-	state, err := plannedCleanHostFileState(path, specs)
+	return plannedCleanHostFileContentForHome(path, specs, "")
+}
+
+func plannedCleanHostFileContentForHome(path string, specs []hostFileBlockSpec, homeDir string) (string, error) {
+	return plannedCleanHostFileContentForProvider(path, specs, homeDir, "")
+}
+
+func plannedCleanHostFileContentForProvider(path string, specs []hostFileBlockSpec, homeDir string, runtimeDir string) (string, error) {
+	state, err := plannedCleanHostFileStateForProvider(path, specs, homeDir, runtimeDir)
 	if err != nil {
 		return "", err
 	}
@@ -200,17 +212,17 @@ func plannedCleanHostFileContent(path string, specs []hostFileBlockSpec) (string
 	return renderCleanHostFileState(state)
 }
 
-func plannedCleanHostFileState(path string, specs []hostFileBlockSpec) (cleanHostFileState, error) {
+func plannedCleanHostFileStateForProvider(path string, specs []hostFileBlockSpec, homeDir string, runtimeDir string) (cleanHostFileState, error) {
 	if err := validateHostFileBlockSpecs(specs); err != nil {
 		return cleanHostFileState{}, err
 	}
 
-	resolvedPath, err := expandHostPath(path)
+	resolvedPath, err := expandHostPathForHome(path, homeDir)
 	if err != nil {
 		return cleanHostFileState{}, err
 	}
 
-	state, err := readCleanHostFileState(resolvedPath)
+	state, err := readCleanHostFileStateForRuntime(resolvedPath, runtimeDir)
 	if err != nil {
 		return cleanHostFileState{}, err
 	}
@@ -244,8 +256,8 @@ func plannedCleanHostFileState(path string, specs []hostFileBlockSpec) (cleanHos
 	return state, nil
 }
 
-func readRenderedHostFileContent(path string) (string, error) {
-	resolvedPath, err := expandHostPath(path)
+func readRenderedHostFileContentForHome(path string, homeDir string) (string, error) {
+	resolvedPath, err := expandHostPathForHome(path, homeDir)
 	if err != nil {
 		return "", err
 	}
@@ -261,12 +273,12 @@ func readRenderedHostFileContent(path string) (string, error) {
 	return content, nil
 }
 
-func deleteCleanHostFile(path string) error {
+func deleteCleanHostFileForRuntime(path string, runtimeDir string) error {
 	if err := deleteHostFile(path); err != nil {
 		return err
 	}
 
-	statePath, err := cleanHostFileStatePath(path)
+	statePath, err := cleanHostFileStatePathForRuntime(path, runtimeDir)
 	if err != nil {
 		return err
 	}
@@ -284,6 +296,10 @@ func upsertCleanHostFileManagedBlock(path string, fileBlockName string, blockID 
 }
 
 func upsertCleanHostFileManagedBlockWithOrder(path string, fileBlockName string, blockID string, before []string, after []string, content string) error {
+	return upsertCleanHostFileManagedBlockWithOrderForRuntime(path, fileBlockName, blockID, before, after, content, "")
+}
+
+func upsertCleanHostFileManagedBlockWithOrderForRuntime(path string, fileBlockName string, blockID string, before []string, after []string, content string, runtimeDir string) error {
 	if err := validateHostFileBlockName(fileBlockName); err != nil {
 		return err
 	}
@@ -291,7 +307,7 @@ func upsertCleanHostFileManagedBlockWithOrder(path string, fileBlockName string,
 		return err
 	}
 
-	state, err := readCleanHostFileState(path)
+	state, err := readCleanHostFileStateForRuntime(path, runtimeDir)
 	if err != nil {
 		return err
 	}
@@ -311,10 +327,14 @@ func upsertCleanHostFileManagedBlockWithOrder(path string, fileBlockName string,
 	}
 	state.Blocks[fileBlockName] = block
 
-	return writeCleanHostFileStateAndContent(path, state)
+	return writeCleanHostFileStateAndContentForRuntime(path, state, runtimeDir)
 }
 
 func removeCleanHostFileManagedBlock(path string, fileBlockName string, blockID string) error {
+	return removeCleanHostFileManagedBlockForRuntime(path, fileBlockName, blockID, "")
+}
+
+func removeCleanHostFileManagedBlockForRuntime(path string, fileBlockName string, blockID string, runtimeDir string) error {
 	if err := validateHostFileBlockName(fileBlockName); err != nil {
 		return err
 	}
@@ -322,7 +342,7 @@ func removeCleanHostFileManagedBlock(path string, fileBlockName string, blockID 
 		return err
 	}
 
-	state, exists, err := readCleanHostFileStateIfExists(path)
+	state, exists, err := readCleanHostFileStateIfExistsForRuntime(path, runtimeDir)
 	if err != nil {
 		return err
 	}
@@ -337,7 +357,7 @@ func removeCleanHostFileManagedBlock(path string, fileBlockName string, blockID 
 	}
 	state.Blocks[fileBlockName] = block
 
-	return writeCleanHostFileStateAndContent(path, state)
+	return writeCleanHostFileStateAndContentForRuntime(path, state, runtimeDir)
 }
 
 func readCleanManagedBlockBody(path string, fileBlockName string, blockID string) (string, bool, error) {
@@ -350,7 +370,11 @@ func readCleanManagedBlockBody(path string, fileBlockName string, blockID string
 }
 
 func readCleanManagedBlock(path string, fileBlockName string, blockID string) (hostFileManagedBlock, bool, error) {
-	state, exists, err := readCleanHostFileStateIfExists(path)
+	return readCleanManagedBlockForRuntime(path, fileBlockName, blockID, "")
+}
+
+func readCleanManagedBlockForRuntime(path string, fileBlockName string, blockID string, runtimeDir string) (hostFileManagedBlock, bool, error) {
+	state, exists, err := readCleanHostFileStateIfExistsForRuntime(path, runtimeDir)
 	if err != nil || !exists {
 		return hostFileManagedBlock{}, false, err
 	}
@@ -372,8 +396,8 @@ func readCleanManagedBlock(path string, fileBlockName string, blockID string) (h
 	}, true, nil
 }
 
-func readCleanHostFileBlockSpecs(path string, specs []hostFileBlockSpec) ([]hostFileBlockSpec, bool, error) {
-	state, exists, err := readCleanHostFileStateIfExists(path)
+func readCleanHostFileBlockSpecsForRuntime(path string, specs []hostFileBlockSpec, runtimeDir string) ([]hostFileBlockSpec, bool, error) {
+	state, exists, err := readCleanHostFileStateIfExistsForRuntime(path, runtimeDir)
 	if err != nil || !exists {
 		return nil, false, err
 	}
@@ -399,8 +423,8 @@ func readCleanHostFileBlockSpecs(path string, specs []hostFileBlockSpec) ([]host
 	return next, true, nil
 }
 
-func readCleanHostFileState(path string) (cleanHostFileState, error) {
-	state, _, err := readCleanHostFileStateIfExists(path)
+func readCleanHostFileStateForRuntime(path string, runtimeDir string) (cleanHostFileState, error) {
+	state, _, err := readCleanHostFileStateIfExistsForRuntime(path, runtimeDir)
 	if err != nil {
 		return cleanHostFileState{}, err
 	}
@@ -411,8 +435,8 @@ func readCleanHostFileState(path string) (cleanHostFileState, error) {
 	return state, nil
 }
 
-func readCleanHostFileStateIfExists(path string) (cleanHostFileState, bool, error) {
-	statePath, err := cleanHostFileStatePath(path)
+func readCleanHostFileStateIfExistsForRuntime(path string, runtimeDir string) (cleanHostFileState, bool, error) {
+	statePath, err := cleanHostFileStatePathForRuntime(path, runtimeDir)
 	if err != nil {
 		return cleanHostFileState{}, false, err
 	}
@@ -436,7 +460,7 @@ func readCleanHostFileStateIfExists(path string) (cleanHostFileState, bool, erro
 	return state, true, nil
 }
 
-func writeCleanHostFileStateAndContent(path string, state cleanHostFileState) error {
+func writeCleanHostFileStateAndContentForRuntime(path string, state cleanHostFileState, runtimeDir string) error {
 	content, err := renderCleanHostFileState(state)
 	if err != nil {
 		return err
@@ -445,7 +469,7 @@ func writeCleanHostFileStateAndContent(path string, state cleanHostFileState) er
 		return err
 	}
 
-	statePath, err := cleanHostFileStatePath(path)
+	statePath, err := cleanHostFileStatePathForRuntime(path, runtimeDir)
 	if err != nil {
 		return err
 	}
@@ -622,8 +646,8 @@ func sortCleanHostFileBlockStateItems(blocks []struct {
 	return sortedBlocks, nil
 }
 
-func cleanHostFileStatePath(path string) (string, error) {
-	stateDir, err := providerRuntimeSubdir("host_files")
+func cleanHostFileStatePathForRuntime(path string, runtimeDir string) (string, error) {
+	stateDir, err := providerRuntimeSubdirForRuntime(runtimeDir, "host_files")
 	if err != nil {
 		return "", err
 	}
@@ -1313,30 +1337,4 @@ func validateHostFileManagedBlockID(blockID string) error {
 	}
 
 	return nil
-}
-
-func expandHostPath(path string) (string, error) {
-	if strings.TrimSpace(path) != path || path == "" {
-		return "", fmt.Errorf("path must be non-empty and must not contain leading or trailing whitespace")
-	}
-
-	if path == "~" || strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home directory: %w", err)
-		}
-		path = filepath.Join(home, strings.TrimPrefix(path, "~/"))
-	} else if strings.HasPrefix(path, "~") {
-		return "", fmt.Errorf("path %q uses unsupported ~user expansion", path)
-	}
-
-	if !filepath.IsAbs(path) {
-		absolute, err := filepath.Abs(path)
-		if err != nil {
-			return "", fmt.Errorf("resolve absolute path for %q: %w", path, err)
-		}
-		path = absolute
-	}
-
-	return filepath.Clean(path), nil
 }

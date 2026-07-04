@@ -15,10 +15,13 @@ import (
 )
 
 var (
-	_ resource.Resource = &HostFileBlockResource{}
+	_ resource.Resource              = &HostFileBlockResource{}
+	_ resource.ResourceWithConfigure = &HostFileBlockResource{}
 )
 
 type HostFileBlockResource struct {
+	homeDir    string
+	runtimeDir string
 }
 
 type HostFileBlockResourceModel struct {
@@ -41,6 +44,20 @@ func NewHostFileBlockResource() resource.Resource {
 
 func (r *HostFileBlockResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_file_block"
+}
+
+func (r *HostFileBlockResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+	if req.ProviderData == nil {
+		return
+	}
+
+	data, ok := req.ProviderData.(HostProviderData)
+	if !ok {
+		resp.Diagnostics.AddError("Unexpected provider data", fmt.Sprintf("Expected HostProviderData, got %T.", req.ProviderData))
+		return
+	}
+	r.homeDir = data.HomeDir
+	r.runtimeDir = data.RuntimeDir
 }
 
 func (r *HostFileBlockResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
@@ -106,7 +123,7 @@ func (r *HostFileBlockResource) Create(ctx context.Context, req resource.CreateR
 	}
 	plan.ID = types.StringValue(blockID)
 
-	target, targetDiags := hostFileBlockTargetFromModel(plan)
+	target, targetDiags := hostFileBlockTargetFromModelForHome(plan, r.homeDir)
 	resp.Diagnostics.Append(targetDiags...)
 	before, beforeDiags := stringListValue(ctx, plan.Before, "host file block before")
 	resp.Diagnostics.Append(beforeDiags...)
@@ -117,8 +134,8 @@ func (r *HostFileBlockResource) Create(ctx context.Context, req resource.CreateR
 	}
 	hydrateHostFileBlockReference(&plan, target)
 
-	if err := withLockedHostFile(ctx, target.path, func(path string) error {
-		return upsertCleanHostFileManagedBlockWithOrder(path, target.name, blockID, before, after, plan.Content.ValueString())
+	if err := withLockedHostFileForHome(ctx, r.homeDir, target.path, func(path string) error {
+		return upsertCleanHostFileManagedBlockWithOrderForRuntime(path, target.name, blockID, before, after, plan.Content.ValueString(), r.runtimeDir)
 	}); err != nil {
 		resp.Diagnostics.AddError("Failed to sync host file block", err.Error())
 		return
@@ -138,7 +155,7 @@ func (r *HostFileBlockResource) Read(ctx context.Context, req resource.ReadReque
 		resp.Diagnostics.AddError("Invalid host file block ID", err.Error())
 		return
 	}
-	target, targetDiags := hostFileBlockTargetFromModel(state)
+	target, targetDiags := hostFileBlockTargetFromModelForHome(state, r.homeDir)
 	resp.Diagnostics.Append(targetDiags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -146,9 +163,9 @@ func (r *HostFileBlockResource) Read(ctx context.Context, req resource.ReadReque
 
 	var block hostFileManagedBlock
 	var exists bool
-	if err := withLockedHostFile(ctx, target.path, func(path string) error {
+	if err := withLockedHostFileForHome(ctx, r.homeDir, target.path, func(path string) error {
 		var err error
-		block, exists, err = readCleanManagedBlock(path, target.name, state.ID.ValueString())
+		block, exists, err = readCleanManagedBlockForRuntime(path, target.name, state.ID.ValueString(), r.runtimeDir)
 		return err
 	}); err != nil {
 		resp.Diagnostics.AddError("Failed to read host file block", err.Error())
@@ -196,9 +213,9 @@ func (r *HostFileBlockResource) Update(ctx context.Context, req resource.UpdateR
 	}
 	plan.ID = types.StringValue(blockID)
 
-	planTarget, planTargetDiags := hostFileBlockTargetFromModel(plan)
+	planTarget, planTargetDiags := hostFileBlockTargetFromModelForHome(plan, r.homeDir)
 	resp.Diagnostics.Append(planTargetDiags...)
-	stateTarget, stateTargetDiags := hostFileBlockTargetFromModel(state)
+	stateTarget, stateTargetDiags := hostFileBlockTargetFromModelForHome(state, r.homeDir)
 	resp.Diagnostics.Append(stateTargetDiags...)
 	before, beforeDiags := stringListValue(ctx, plan.Before, "host file block before")
 	resp.Diagnostics.Append(beforeDiags...)
@@ -210,16 +227,16 @@ func (r *HostFileBlockResource) Update(ctx context.Context, req resource.UpdateR
 	hydrateHostFileBlockReference(&plan, planTarget)
 
 	if hostFileBlockTargetChanged(planTarget, stateTarget) {
-		if err := withLockedHostFile(ctx, stateTarget.path, func(path string) error {
-			return removeCleanHostFileManagedBlock(path, stateTarget.name, blockID)
+		if err := withLockedHostFileForHome(ctx, r.homeDir, stateTarget.path, func(path string) error {
+			return removeCleanHostFileManagedBlockForRuntime(path, stateTarget.name, blockID, r.runtimeDir)
 		}); err != nil {
 			resp.Diagnostics.AddError("Failed to remove prior host file block", err.Error())
 			return
 		}
 	}
 
-	if err := withLockedHostFile(ctx, planTarget.path, func(path string) error {
-		return upsertCleanHostFileManagedBlockWithOrder(path, planTarget.name, blockID, before, after, plan.Content.ValueString())
+	if err := withLockedHostFileForHome(ctx, r.homeDir, planTarget.path, func(path string) error {
+		return upsertCleanHostFileManagedBlockWithOrderForRuntime(path, planTarget.name, blockID, before, after, plan.Content.ValueString(), r.runtimeDir)
 	}); err != nil {
 		resp.Diagnostics.AddError("Failed to sync host file block", err.Error())
 		return
@@ -239,27 +256,27 @@ func (r *HostFileBlockResource) Delete(ctx context.Context, req resource.DeleteR
 		resp.Diagnostics.AddError("Invalid host file block ID", err.Error())
 		return
 	}
-	target, targetDiags := hostFileBlockTargetFromModel(state)
+	target, targetDiags := hostFileBlockTargetFromModelForHome(state, r.homeDir)
 	resp.Diagnostics.Append(targetDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	if err := withLockedHostFile(ctx, target.path, func(path string) error {
-		return removeCleanHostFileManagedBlock(path, target.name, state.ID.ValueString())
+	if err := withLockedHostFileForHome(ctx, r.homeDir, target.path, func(path string) error {
+		return removeCleanHostFileManagedBlockForRuntime(path, target.name, state.ID.ValueString(), r.runtimeDir)
 	}); err != nil {
 		resp.Diagnostics.AddError("Failed to delete host file block", err.Error())
 	}
 }
 
-func validateHostFileBlockReference(ref HostFileBlockReferenceModel) error {
+func validateHostFileBlockReferenceForHome(ref HostFileBlockReferenceModel, homeDir string) error {
 	if ref.Path.IsNull() || ref.Path.IsUnknown() {
 		return fmt.Errorf("path must be known")
 	}
 	if ref.Name.IsNull() || ref.Name.IsUnknown() {
 		return fmt.Errorf("name must be known")
 	}
-	resolvedPath, err := expandHostPath(ref.Path.ValueString())
+	resolvedPath, err := expandHostPathForHome(ref.Path.ValueString(), homeDir)
 	if err != nil {
 		return err
 	}
@@ -272,17 +289,17 @@ func validateHostFileBlockReference(ref HostFileBlockReferenceModel) error {
 	return nil
 }
 
-func hostFileBlockTargetFromModel(model HostFileBlockResourceModel) (hostFileBlockTarget, diag.Diagnostics) {
+func hostFileBlockTargetFromModelForHome(model HostFileBlockResourceModel, homeDir string) (hostFileBlockTarget, diag.Diagnostics) {
 	var diags diag.Diagnostics
 	if model.Block == nil {
 		diags.AddError("Invalid host file block target", "`block` must be set.")
 		return hostFileBlockTarget{}, diags
 	}
-	if err := validateHostFileBlockReference(*model.Block); err != nil {
+	if err := validateHostFileBlockReferenceForHome(*model.Block, homeDir); err != nil {
 		diags.AddError("Invalid host file block reference", err.Error())
 		return hostFileBlockTarget{}, diags
 	}
-	resolvedPath, err := expandHostPath(model.Block.Path.ValueString())
+	resolvedPath, err := expandHostPathForHome(model.Block.Path.ValueString(), homeDir)
 	if err != nil {
 		diags.AddError("Invalid host file block reference", err.Error())
 		return hostFileBlockTarget{}, diags
@@ -303,7 +320,7 @@ func hydrateHostFileBlockReference(model *HostFileBlockResourceModel, target hos
 }
 
 func hostFileBlockTargetChanged(a hostFileBlockTarget, b hostFileBlockTarget) bool {
-	return a.path != b.path || a.name != b.name
+	return a.pathResolved != b.pathResolved || a.name != b.name
 }
 
 func sameStringListValue(ctx context.Context, value types.List, expected []string) bool {

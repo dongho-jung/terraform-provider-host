@@ -23,7 +23,9 @@ var (
 )
 
 type HostScheduleResource struct {
-	manager ScheduleManager
+	manager    ScheduleManager
+	homeDir    string
+	runtimeDir string
 }
 
 type HostScheduleResourceModel struct {
@@ -102,7 +104,7 @@ func (r *HostScheduleResource) Schema(ctx context.Context, req resource.SchemaRe
 			},
 			"working_directory": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "Working directory for the scheduled command. `~` is expanded to the current user's home directory.",
+				MarkdownDescription: "Working directory for the scheduled command. `~` is expanded to the provider `home_dir`.",
 			},
 			"working_directory_resolved": schema.StringAttribute{
 				Computed:            true,
@@ -115,7 +117,7 @@ func (r *HostScheduleResource) Schema(ctx context.Context, req resource.SchemaRe
 			},
 			"stdout_path": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "Path where the generated script appends stdout for the command. `~` is expanded to the current user's home directory.",
+				MarkdownDescription: "Path where the generated script appends stdout for the command. `~` is expanded to the provider `home_dir`.",
 			},
 			"stdout_path_resolved": schema.StringAttribute{
 				Computed:            true,
@@ -123,7 +125,7 @@ func (r *HostScheduleResource) Schema(ctx context.Context, req resource.SchemaRe
 			},
 			"stderr_path": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "Path where the generated script appends stderr for the command. `~` is expanded to the current user's home directory.",
+				MarkdownDescription: "Path where the generated script appends stderr for the command. `~` is expanded to the provider `home_dir`.",
 			},
 			"stderr_path_resolved": schema.StringAttribute{
 				Computed:            true,
@@ -169,6 +171,8 @@ func (r *HostScheduleResource) Configure(ctx context.Context, req resource.Confi
 			return
 		}
 		r.manager = data.ScheduleManager
+		r.homeDir = data.HomeDir
+		r.runtimeDir = data.RuntimeDir
 	case ScheduleManager:
 		r.manager = data
 	default:
@@ -201,11 +205,11 @@ func (r *HostScheduleResource) ModifyPlan(ctx context.Context, req resource.Modi
 
 	if !state.ID.IsNull() && !state.ID.IsUnknown() {
 		plan.ID = state.ID
-		status, err := hostScheduleStatus(HostScheduleSpec{
+		status, err := hostScheduleStatusForProvider(HostScheduleSpec{
 			ID:    state.ID.ValueString(),
 			User:  plan.User.ValueString(),
 			Scope: plan.Scope.ValueString(),
-		})
+		}, r.homeDir, r.runtimeDir)
 		if err != nil {
 			resp.Diagnostics.AddError("Invalid schedule state", err.Error())
 			return
@@ -228,20 +232,20 @@ func (r *HostScheduleResource) ModifyPlan(ctx context.Context, req resource.Modi
 			spec.ID = state.ID.ValueString()
 		}
 		if spec.ID != "" {
-			if err := validateHostScheduleSpec(spec); err != nil {
+			if err := validateHostScheduleSpecForHome(spec, r.homeDir); err != nil {
 				resp.Diagnostics.AddError("Invalid schedule", err.Error())
 				return
 			}
-			status, err := hostScheduleStatus(spec)
+			status, err := hostScheduleStatusForProvider(spec, r.homeDir, r.runtimeDir)
 			if err != nil {
 				resp.Diagnostics.AddError("Invalid schedule", err.Error())
 				return
 			}
 			hydrateHostScheduleComputedState(&plan, status)
-		} else if err := validateHostScheduleConfig(spec); err != nil {
+		} else if err := validateHostScheduleConfigForHome(spec, r.homeDir); err != nil {
 			resp.Diagnostics.AddError("Invalid schedule", err.Error())
 			return
-		} else if err := hydrateHostSchedulePathComputedState(&plan, spec); err != nil {
+		} else if err := hydrateHostSchedulePathComputedStateForHome(&plan, spec, r.homeDir); err != nil {
 			resp.Diagnostics.AddError("Invalid schedule", err.Error())
 			return
 		}
@@ -421,16 +425,16 @@ func hydrateHostScheduleComputedState(model *HostScheduleResourceModel, status H
 	model.StderrPathResolved = optionalStringStateValue(status.StderrPathResolved)
 }
 
-func hydrateHostSchedulePathComputedState(model *HostScheduleResourceModel, spec HostScheduleSpec) error {
-	workingDirectoryResolved, err := resolveOptionalHostSchedulePath(spec.WorkingDirectory)
+func hydrateHostSchedulePathComputedStateForHome(model *HostScheduleResourceModel, spec HostScheduleSpec, homeDir string) error {
+	workingDirectoryResolved, err := resolveOptionalHostSchedulePathForHome(spec.WorkingDirectory, homeDir)
 	if err != nil {
 		return fmt.Errorf("invalid working_directory: %w", err)
 	}
-	stdoutPathResolved, err := resolveOptionalHostSchedulePath(spec.StdoutPath)
+	stdoutPathResolved, err := resolveOptionalHostSchedulePathForHome(spec.StdoutPath, homeDir)
 	if err != nil {
 		return fmt.Errorf("invalid stdout_path: %w", err)
 	}
-	stderrPathResolved, err := resolveOptionalHostSchedulePath(spec.StderrPath)
+	stderrPathResolved, err := resolveOptionalHostSchedulePathForHome(spec.StderrPath, homeDir)
 	if err != nil {
 		return fmt.Errorf("invalid stderr_path: %w", err)
 	}
@@ -501,9 +505,9 @@ func hostScheduleSpecFromModel(ctx context.Context, model HostScheduleResourceMo
 	return spec, diags
 }
 
-func validateHostScheduleConfig(spec HostScheduleSpec) error {
+func validateHostScheduleConfigForHome(spec HostScheduleSpec, homeDir string) error {
 	spec.ID = "0000000000000000"
-	return validateHostScheduleSpec(spec)
+	return validateHostScheduleSpecForHome(spec, homeDir)
 }
 
 func scheduleResourceConfigReady(model HostScheduleResourceModel) bool {

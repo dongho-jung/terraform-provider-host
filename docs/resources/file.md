@@ -72,7 +72,7 @@ resource "host_file_block" "bar_function" {
 
 ### Required
 
-- `path` (String) Path to the host file. `~` is expanded to the current user's home directory when the provider reads or writes the file.
+- `path` (String) Path to the host file. `~` is expanded to the provider `home_dir` when the provider reads or writes the file.
 
 ### Optional
 

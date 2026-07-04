@@ -24,8 +24,8 @@ resource "host_link" "nvim" {
 
 ### Required
 
-- `destination` (String) Destination host path where the symbolic link should exist. `~` is expanded to the current user's home directory.
-- `source` (String) Source file or directory the symbolic link points to. Absolute paths are used as-is, `~` is expanded to the current user's home directory, and relative paths are resolved from the Terraform working directory.
+- `destination` (String) Destination host path where the symbolic link should exist. `~` is expanded to the provider `home_dir`.
+- `source` (String) Source file or directory the symbolic link points to. Absolute paths are used as-is, `~` is expanded to the provider `home_dir`, and relative paths are resolved from the Terraform working directory.
 
 ### Read-Only
 

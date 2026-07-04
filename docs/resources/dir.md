@@ -24,7 +24,7 @@ resource "host_dir" "projects" {
 
 ### Required
 
-- `path` (String) Directory path. `~` is expanded to the current user's home directory and relative paths are resolved from the Terraform working directory.
+- `path` (String) Directory path. `~` is expanded to the provider `home_dir` and relative paths are resolved from the Terraform working directory.
 
 ### Optional
 

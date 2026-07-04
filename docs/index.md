@@ -37,6 +37,6 @@ provider "host" {}
 
 Resources use tools available on the machine running Terraform, such as `dnf`, `brew`, `git`, `ssh-keygen`, `crontab`, `defaults`, `killall`, and `osascript`. Resources that mutate protected host state may prompt through `sudo` when Terraform is not already running with the required privileges.
 
-By default the provider resolves these tools from PATH and stores runtime metadata under `./.terraform-provider-host` relative to the Terraform working directory. Set provider-level path overrides when Terraform runs with a constrained PATH, or set `runtime_dir` to move generated metadata such as file block state and schedule scripts.
+By default the provider resolves these tools from PATH and stores runtime metadata under `./.terraform-provider-host` relative to the Terraform working directory. Set `runtime_dir` to move generated metadata such as file block state and schedule scripts, or set `home_dir` to control how leading `~` is expanded in host paths.
 
-Available provider arguments are `runtime_dir`, `sudo_path`, `dnf_path`, `brew_path`, `git_path`, `ssh_keygen_path`, `crontab_path`, `defaults_path`, `killall_path`, `swift_path`, and `osascript_path`.
+Available provider arguments are `runtime_dir` and `home_dir`.

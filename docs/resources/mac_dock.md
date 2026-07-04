@@ -30,8 +30,8 @@ resource "host_mac_dock" "default" {
 
 ### Required
 
-- `apps` (List of String) Ordered absolute `.app` bundle paths to show in the Dock persistent apps section.
-- `folders` (List of String) Ordered absolute folder paths to show in the Dock persistent folders section. Set `[]` for none.
+- `apps` (List of String) Ordered `.app` bundle paths to show in the Dock persistent apps section. `~` is expanded to the provider `home_dir` and relative paths are resolved from the Terraform working directory.
+- `folders` (List of String) Ordered folder paths to show in the Dock persistent folders section. `~` is expanded to the provider `home_dir` and relative paths are resolved from the Terraform working directory. Set `[]` for none.
 
 ### Optional
 

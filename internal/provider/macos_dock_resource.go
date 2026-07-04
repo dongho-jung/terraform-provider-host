@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	tfpath "github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -31,6 +32,7 @@ const macOSDockResourceID = "com.apple.dock"
 
 type MacOSDockResource struct {
 	manager MacOSDockManager
+	homeDir string
 }
 
 type MacOSDockResourceModel struct {
@@ -90,12 +92,12 @@ func (r *MacOSDockResource) Schema(ctx context.Context, req resource.SchemaReque
 			"apps": schema.ListAttribute{
 				ElementType:         types.StringType,
 				Required:            true,
-				MarkdownDescription: "Ordered absolute `.app` bundle paths to show in the Dock persistent apps section.",
+				MarkdownDescription: "Ordered `.app` bundle paths to show in the Dock persistent apps section. `~` is expanded to the provider `home_dir` and relative paths are resolved from the Terraform working directory.",
 			},
 			"folders": schema.ListAttribute{
 				ElementType:         types.StringType,
 				Required:            true,
-				MarkdownDescription: "Ordered absolute folder paths to show in the Dock persistent folders section. Set `[]` for none.",
+				MarkdownDescription: "Ordered folder paths to show in the Dock persistent folders section. `~` is expanded to the provider `home_dir` and relative paths are resolved from the Terraform working directory. Set `[]` for none.",
 			},
 			"restart": schema.BoolAttribute{
 				Optional:            true,
@@ -125,6 +127,7 @@ func (r *MacOSDockResource) Configure(ctx context.Context, req resource.Configur
 			return
 		}
 		r.manager = data.MacOSDockManager
+		r.homeDir = data.HomeDir
 	case MacOSDockManager:
 		r.manager = data
 	default:
@@ -146,8 +149,23 @@ func (r *MacOSDockResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 		return
 	}
 
-	if _, diags := macOSDockSpecFromModel(ctx, plan); diags.HasError() {
-		resp.Diagnostics.Append(diags...)
+	apps, appsKnown, appDiags := resolveMacOSDockListForPlanForHome(plan.Apps, "apps", true, r.homeDir)
+	resp.Diagnostics.Append(appDiags...)
+	folders, foldersKnown, folderDiags := resolveMacOSDockListForPlanForHome(plan.Folders, "folders", false, r.homeDir)
+	resp.Diagnostics.Append(folderDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	plan.Apps = apps
+	plan.Folders = folders
+
+	if appsKnown && foldersKnown {
+		if _, diags := macOSDockSpecFromModelForHome(ctx, plan, r.homeDir); diags.HasError() {
+			resp.Diagnostics.Append(diags...)
+			return
+		}
+	}
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
@@ -261,7 +279,7 @@ func (r *MacOSDockResource) syncDock(ctx context.Context, model MacOSDockResourc
 		return model, fmt.Errorf("macOS Dock manager unavailable")
 	}
 
-	spec, diags := macOSDockSpecFromModel(ctx, model)
+	spec, diags := macOSDockSpecFromModelForHome(ctx, model, r.homeDir)
 	if diags.HasError() {
 		return model, diagnosticsError(diags)
 	}
@@ -353,7 +371,39 @@ func macOSDockPlanReady(model MacOSDockResourceModel) bool {
 		!model.DeleteOnDestroy.IsNull() && !model.DeleteOnDestroy.IsUnknown()
 }
 
-func macOSDockSpecFromModel(ctx context.Context, model MacOSDockResourceModel) (MacOSDockSpec, diag.Diagnostics) {
+func resolveMacOSDockListForPlanForHome(value types.List, label string, wantApp bool, homeDir string) (types.List, bool, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	elements := make([]attr.Value, 0, len(value.Elements()))
+	allKnown := true
+	for _, element := range value.Elements() {
+		if element.IsUnknown() {
+			elements = append(elements, types.StringUnknown())
+			allKnown = false
+			continue
+		}
+		if element.IsNull() {
+			diags.AddError("Invalid macOS Dock "+label, label+" entries must be non-null paths.")
+			continue
+		}
+		stringValue, ok := element.(types.String)
+		if !ok {
+			diags.AddError("Invalid macOS Dock "+label, fmt.Sprintf("%s entries must be strings.", label))
+			continue
+		}
+		resolved, err := resolveMacOSDockPathForHome(label, stringValue.ValueString(), wantApp, homeDir)
+		if err != nil {
+			diags.AddError("Invalid macOS Dock "+label, err.Error())
+			continue
+		}
+		elements = append(elements, types.StringValue(resolved))
+	}
+	if diags.HasError() {
+		return types.ListUnknown(types.StringType), false, diags
+	}
+	return types.ListValueMust(types.StringType, elements), allKnown, diags
+}
+
+func macOSDockSpecFromModelForHome(ctx context.Context, model MacOSDockResourceModel, homeDir string) (MacOSDockSpec, diag.Diagnostics) {
 	var diags diag.Diagnostics
 	apps, appDiags := stringListValue(ctx, model.Apps, "apps")
 	diags.Append(appDiags...)
@@ -363,8 +413,8 @@ func macOSDockSpecFromModel(ctx context.Context, model MacOSDockResourceModel) (
 		return MacOSDockSpec{}, diags
 	}
 
-	validateMacOSDockPaths(&diags, "apps", apps, true)
-	validateMacOSDockPaths(&diags, "folders", folders, false)
+	apps = resolveMacOSDockPathsForHome(&diags, "apps", apps, true, homeDir)
+	folders = resolveMacOSDockPathsForHome(&diags, "folders", folders, false, homeDir)
 	if diags.HasError() {
 		return MacOSDockSpec{}, diags
 	}
@@ -377,34 +427,43 @@ func macOSDockSpecFromModel(ctx context.Context, model MacOSDockResourceModel) (
 	}, diags
 }
 
-func validateMacOSDockPaths(diags *diag.Diagnostics, label string, paths []string, wantApp bool) {
+func resolveMacOSDockPathsForHome(diags *diag.Diagnostics, label string, paths []string, wantApp bool, homeDir string) []string {
+	resolvedPaths := make([]string, 0, len(paths))
 	for _, item := range paths {
-		path := strings.TrimSpace(item)
-		if path == "" {
-			diags.AddError("Invalid macOS Dock "+label, label+" entries must be non-empty absolute paths.")
-			continue
-		}
-		if strings.Contains(path, "\x00") {
-			diags.AddError("Invalid macOS Dock "+label, fmt.Sprintf("%q must not contain NUL bytes.", path))
-			continue
-		}
-		if !filepath.IsAbs(path) {
-			diags.AddError("Invalid macOS Dock "+label, fmt.Sprintf("%q must be an absolute path.", path))
-			continue
-		}
-		info, err := os.Lstat(path)
+		resolved, err := resolveMacOSDockPathForHome(label, item, wantApp, homeDir)
 		if err != nil {
-			diags.AddError("Invalid macOS Dock "+label, fmt.Sprintf("Path %q is not readable: %s.", path, err))
+			diags.AddError("Invalid macOS Dock "+label, err.Error())
 			continue
 		}
-		if !info.IsDir() {
-			diags.AddError("Invalid macOS Dock "+label, fmt.Sprintf("Path %q must be a directory.", path))
-			continue
-		}
-		if wantApp && filepath.Ext(path) != ".app" {
-			diags.AddError("Invalid macOS Dock apps", fmt.Sprintf("App path %q must end with .app.", path))
-		}
+		resolvedPaths = append(resolvedPaths, resolved)
 	}
+	return resolvedPaths
+}
+
+func resolveMacOSDockPathForHome(label string, item string, wantApp bool, homeDir string) (string, error) {
+	path := strings.TrimSpace(item)
+	if path == "" {
+		return "", fmt.Errorf("%s entries must be non-empty paths", label)
+	}
+	if strings.Contains(path, "\x00") {
+		return "", fmt.Errorf("%q must not contain NUL bytes", path)
+	}
+
+	resolved, err := expandHostPathForHome(path, homeDir)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("path %q is not readable: %w", resolved, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("path %q must be a directory", resolved)
+	}
+	if wantApp && filepath.Ext(resolved) != ".app" {
+		return "", fmt.Errorf("app path %q must end with .app", resolved)
+	}
+	return resolved, nil
 }
 
 func macOSDockModelFromSpec(ctx context.Context, model MacOSDockResourceModel, spec MacOSDockSpec) (MacOSDockResourceModel, error) {

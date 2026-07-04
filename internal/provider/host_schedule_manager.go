@@ -69,6 +69,8 @@ type CLICronScheduleManager struct {
 	crontabPath    string
 	packageManager PackageManager
 	sudoPath       string
+	homeDir        string
+	runtimeDir     string
 }
 
 type hostScheduleMetadata struct {
@@ -77,12 +79,19 @@ type hostScheduleMetadata struct {
 	ScriptPath string           `json:"script_path"`
 }
 
-func NewCLICronScheduleManager(crontabPath string, packageManager PackageManager, sudoPath string) *CLICronScheduleManager {
-	return &CLICronScheduleManager{
+func NewCLICronScheduleManager(crontabPath string, packageManager PackageManager, sudoPath string, homeDirs ...string) *CLICronScheduleManager {
+	manager := &CLICronScheduleManager{
 		crontabPath:    crontabPath,
 		packageManager: packageManager,
 		sudoPath:       sudoPath,
 	}
+	if len(homeDirs) > 0 {
+		manager.homeDir = homeDirs[0]
+	}
+	if len(homeDirs) > 1 {
+		manager.runtimeDir = homeDirs[1]
+	}
+	return manager
 }
 
 func newHostScheduleID() (string, error) {
@@ -102,12 +111,12 @@ func validateHostScheduleID(id string) error {
 	return nil
 }
 
-func hostScheduleRuntimeDir(id string) (string, error) {
+func hostScheduleRuntimeDirForRuntime(id string, runtimeDir string) (string, error) {
 	if err := validateHostScheduleID(id); err != nil {
 		return "", err
 	}
 
-	scheduleDir, err := providerRuntimeSubdir(hostScheduleRuntimeDirName)
+	scheduleDir, err := providerRuntimeSubdirForRuntime(runtimeDir, hostScheduleRuntimeDirName)
 	if err != nil {
 		return "", err
 	}
@@ -115,38 +124,38 @@ func hostScheduleRuntimeDir(id string) (string, error) {
 	return filepath.Join(scheduleDir, id), nil
 }
 
-func hostScheduleScriptPath(id string) (string, error) {
-	runtimeDir, err := hostScheduleRuntimeDir(id)
+func hostScheduleScriptPathForRuntime(id string, runtimeDir string) (string, error) {
+	resolvedRuntimeDir, err := hostScheduleRuntimeDirForRuntime(id, runtimeDir)
 	if err != nil {
 		return "", err
 	}
 
-	return filepath.Join(runtimeDir, "run.sh"), nil
+	return filepath.Join(resolvedRuntimeDir, "run.sh"), nil
 }
 
-func hostScheduleMetadataPath(id string) (string, error) {
-	runtimeDir, err := hostScheduleRuntimeDir(id)
+func hostScheduleMetadataPathForRuntime(id string, runtimeDir string) (string, error) {
+	resolvedRuntimeDir, err := hostScheduleRuntimeDirForRuntime(id, runtimeDir)
 	if err != nil {
 		return "", err
 	}
 
-	return filepath.Join(runtimeDir, "metadata.json"), nil
+	return filepath.Join(resolvedRuntimeDir, "metadata.json"), nil
 }
 
 func (m *CLICronScheduleManager) UpsertSchedule(ctx context.Context, spec HostScheduleSpec) (HostScheduleStatus, error) {
-	if err := validateHostScheduleSpec(spec); err != nil {
+	if err := validateHostScheduleSpecForHome(spec, m.homeDir); err != nil {
 		return HostScheduleStatus{}, err
 	}
 	if err := normalizeHostScheduleSpecTarget(&spec); err != nil {
 		return HostScheduleStatus{}, err
 	}
 
-	status, err := hostScheduleStatus(spec)
+	status, err := hostScheduleStatusForProvider(spec, m.homeDir, m.runtimeDir)
 	if err != nil {
 		return HostScheduleStatus{}, err
 	}
 
-	if err := writeHostScheduleRuntimeFiles(spec, status); err != nil {
+	if err := writeHostScheduleRuntimeFilesForProvider(spec, status, m.homeDir, m.runtimeDir); err != nil {
 		return HostScheduleStatus{}, err
 	}
 
@@ -165,7 +174,7 @@ func (m *CLICronScheduleManager) ReadSchedule(ctx context.Context, spec HostSche
 		return HostScheduleStatus{}, false, err
 	}
 
-	status, err := hostScheduleStatus(spec)
+	status, err := hostScheduleStatusForProvider(spec, m.homeDir, m.runtimeDir)
 	if err != nil {
 		return HostScheduleStatus{}, false, err
 	}
@@ -183,7 +192,7 @@ func (m *CLICronScheduleManager) ReadSchedule(ctx context.Context, spec HostSche
 		return status, true, nil
 	}
 
-	metadataExists, err := hostScheduleMetadataExists(spec.ID)
+	metadataExists, err := hostScheduleMetadataExistsForRuntime(spec.ID, m.runtimeDir)
 	if err != nil {
 		return HostScheduleStatus{}, false, err
 	}
@@ -202,7 +211,7 @@ func (m *CLICronScheduleManager) DeleteSchedule(ctx context.Context, spec HostSc
 		return err
 	}
 
-	status, err := hostScheduleStatus(spec)
+	status, err := hostScheduleStatusForProvider(spec, m.homeDir, m.runtimeDir)
 	if err != nil {
 		return err
 	}
@@ -211,7 +220,7 @@ func (m *CLICronScheduleManager) DeleteSchedule(ctx context.Context, spec HostSc
 		return err
 	}
 
-	runtimeDir, err := hostScheduleRuntimeDir(spec.ID)
+	runtimeDir, err := hostScheduleRuntimeDirForRuntime(spec.ID, m.runtimeDir)
 	if err != nil {
 		return err
 	}
@@ -222,7 +231,7 @@ func (m *CLICronScheduleManager) DeleteSchedule(ctx context.Context, spec HostSc
 	return nil
 }
 
-func hostScheduleStatus(spec HostScheduleSpec) (HostScheduleStatus, error) {
+func hostScheduleStatusForProvider(spec HostScheduleSpec, homeDir string, runtimeDir string) (HostScheduleStatus, error) {
 	if err := validateHostScheduleID(spec.ID); err != nil {
 		return HostScheduleStatus{}, err
 	}
@@ -230,23 +239,23 @@ func hostScheduleStatus(spec HostScheduleSpec) (HostScheduleStatus, error) {
 		return HostScheduleStatus{}, err
 	}
 
-	scriptPath, err := hostScheduleScriptPath(spec.ID)
+	scriptPath, err := hostScheduleScriptPathForRuntime(spec.ID, runtimeDir)
 	if err != nil {
 		return HostScheduleStatus{}, err
 	}
-	runtimeDir, err := hostScheduleRuntimeDir(spec.ID)
+	resolvedRuntimeDir, err := hostScheduleRuntimeDirForRuntime(spec.ID, runtimeDir)
 	if err != nil {
 		return HostScheduleStatus{}, err
 	}
-	workingDirectoryResolved, err := resolveOptionalHostSchedulePath(spec.WorkingDirectory)
+	workingDirectoryResolved, err := resolveOptionalHostSchedulePathForHome(spec.WorkingDirectory, homeDir)
 	if err != nil {
 		return HostScheduleStatus{}, fmt.Errorf("invalid working_directory: %w", err)
 	}
-	stdoutPathResolved, err := resolveOptionalHostSchedulePath(spec.StdoutPath)
+	stdoutPathResolved, err := resolveOptionalHostSchedulePathForHome(spec.StdoutPath, homeDir)
 	if err != nil {
 		return HostScheduleStatus{}, fmt.Errorf("invalid stdout_path: %w", err)
 	}
-	stderrPathResolved, err := resolveOptionalHostSchedulePath(spec.StderrPath)
+	stderrPathResolved, err := resolveOptionalHostSchedulePathForHome(spec.StderrPath, homeDir)
 	if err != nil {
 		return HostScheduleStatus{}, fmt.Errorf("invalid stderr_path: %w", err)
 	}
@@ -256,7 +265,7 @@ func hostScheduleStatus(spec HostScheduleSpec) (HostScheduleStatus, error) {
 		User:                     spec.User,
 		Scope:                    spec.Scope,
 		Backend:                  "cron",
-		RuntimeDir:               runtimeDir,
+		RuntimeDir:               resolvedRuntimeDir,
 		ScriptPath:               scriptPath,
 		WorkingDirectoryResolved: workingDirectoryResolved,
 		StdoutPathResolved:       stdoutPathResolved,
@@ -264,15 +273,15 @@ func hostScheduleStatus(spec HostScheduleSpec) (HostScheduleStatus, error) {
 	}, nil
 }
 
-func resolveOptionalHostSchedulePath(path string) (string, error) {
+func resolveOptionalHostSchedulePathForHome(path string, homeDir string) (string, error) {
 	if path == "" {
 		return "", nil
 	}
-	return expandHostPath(path)
+	return expandHostPathForHome(path, homeDir)
 }
 
-func writeHostScheduleRuntimeFiles(spec HostScheduleSpec, status HostScheduleStatus) error {
-	runtimeDir, err := hostScheduleRuntimeDir(spec.ID)
+func writeHostScheduleRuntimeFilesForProvider(spec HostScheduleSpec, status HostScheduleStatus, homeDir string, runtimeDir string) error {
+	resolvedRuntimeDir, err := hostScheduleRuntimeDirForRuntime(spec.ID, runtimeDir)
 	if err != nil {
 		return err
 	}
@@ -280,14 +289,14 @@ func writeHostScheduleRuntimeFiles(spec HostScheduleSpec, status HostScheduleSta
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(runtimeDir, dirMode); err != nil {
-		return fmt.Errorf("create schedule runtime directory %q: %w", runtimeDir, err)
+	if err := os.MkdirAll(resolvedRuntimeDir, dirMode); err != nil {
+		return fmt.Errorf("create schedule runtime directory %q: %w", resolvedRuntimeDir, err)
 	}
-	if err := chmodHostScheduleRuntimeDirs(spec, runtimeDir, dirMode); err != nil {
+	if err := chmodHostScheduleRuntimeDirsForRuntime(spec, resolvedRuntimeDir, dirMode, runtimeDir); err != nil {
 		return err
 	}
 
-	script, err := renderHostScheduleScript(spec)
+	script, err := renderHostScheduleScriptForHome(spec, homeDir)
 	if err != nil {
 		return err
 	}
@@ -307,7 +316,7 @@ func writeHostScheduleRuntimeFiles(spec HostScheduleSpec, status HostScheduleSta
 	if err != nil {
 		return fmt.Errorf("encode schedule metadata: %w", err)
 	}
-	metadataPath, err := hostScheduleMetadataPath(spec.ID)
+	metadataPath, err := hostScheduleMetadataPathForRuntime(spec.ID, runtimeDir)
 	if err != nil {
 		return err
 	}
@@ -339,7 +348,7 @@ func hostScheduleNeedsSharedRuntime(spec HostScheduleSpec) (bool, error) {
 	return spec.User != "" && spec.User != currentUser && spec.User != hostScheduleRootUser, nil
 }
 
-func chmodHostScheduleRuntimeDirs(spec HostScheduleSpec, runtimeDir string, mode os.FileMode) error {
+func chmodHostScheduleRuntimeDirsForRuntime(spec HostScheduleSpec, runtimeDir string, mode os.FileMode, configuredRuntimeDir string) error {
 	shared, err := hostScheduleNeedsSharedRuntime(spec)
 	if err != nil {
 		return err
@@ -349,11 +358,11 @@ func chmodHostScheduleRuntimeDirs(spec HostScheduleSpec, runtimeDir string, mode
 		return nil
 	}
 
-	runtimeRoot, err := providerRuntimeDir()
+	runtimeRoot, err := providerRuntimeDirForRuntime(configuredRuntimeDir)
 	if err != nil {
 		return err
 	}
-	schedulesRoot, err := providerRuntimeSubdir(hostScheduleRuntimeDirName)
+	schedulesRoot, err := providerRuntimeSubdirForRuntime(configuredRuntimeDir, hostScheduleRuntimeDirName)
 	if err != nil {
 		return err
 	}
@@ -633,7 +642,7 @@ func splitCronLines(content string) []string {
 	return strings.Split(content, "\n")
 }
 
-func validateHostScheduleSpec(spec HostScheduleSpec) error {
+func validateHostScheduleSpecForHome(spec HostScheduleSpec, homeDir string) error {
 	if err := validateHostScheduleID(spec.ID); err != nil {
 		return err
 	}
@@ -660,17 +669,17 @@ func validateHostScheduleSpec(spec HostScheduleSpec) error {
 		return err
 	}
 	if spec.WorkingDirectory != "" {
-		if _, err := expandHostPath(spec.WorkingDirectory); err != nil {
+		if _, err := expandHostPathForHome(spec.WorkingDirectory, homeDir); err != nil {
 			return fmt.Errorf("invalid working_directory: %w", err)
 		}
 	}
 	if spec.StdoutPath != "" {
-		if _, err := expandHostPath(spec.StdoutPath); err != nil {
+		if _, err := expandHostPathForHome(spec.StdoutPath, homeDir); err != nil {
 			return fmt.Errorf("invalid stdout_path: %w", err)
 		}
 	}
 	if spec.StderrPath != "" {
-		if _, err := expandHostPath(spec.StderrPath); err != nil {
+		if _, err := expandHostPathForHome(spec.StderrPath, homeDir); err != nil {
 			return fmt.Errorf("invalid stderr_path: %w", err)
 		}
 	}
@@ -918,13 +927,17 @@ func cronExpressionFromEvery(value string) (string, error) {
 }
 
 func renderHostScheduleScript(spec HostScheduleSpec) (string, error) {
+	return renderHostScheduleScriptForHome(spec, "")
+}
+
+func renderHostScheduleScriptForHome(spec HostScheduleSpec, homeDir string) (string, error) {
 	var builder strings.Builder
 	builder.WriteString("#!")
 	builder.WriteString(spec.Shell)
 	builder.WriteString("\n")
 
 	if spec.StdoutPath != "" {
-		path, err := expandHostPath(spec.StdoutPath)
+		path, err := expandHostPathForHome(spec.StdoutPath, homeDir)
 		if err != nil {
 			return "", fmt.Errorf("invalid stdout_path: %w", err)
 		}
@@ -933,7 +946,7 @@ func renderHostScheduleScript(spec HostScheduleSpec) (string, error) {
 		builder.WriteString("\n")
 	}
 	if spec.StderrPath != "" {
-		path, err := expandHostPath(spec.StderrPath)
+		path, err := expandHostPathForHome(spec.StderrPath, homeDir)
 		if err != nil {
 			return "", fmt.Errorf("invalid stderr_path: %w", err)
 		}
@@ -951,7 +964,7 @@ func renderHostScheduleScript(spec HostScheduleSpec) (string, error) {
 		}
 	}
 	if spec.WorkingDirectory != "" {
-		path, err := expandHostPath(spec.WorkingDirectory)
+		path, err := expandHostPathForHome(spec.WorkingDirectory, homeDir)
 		if err != nil {
 			return "", fmt.Errorf("invalid working_directory: %w", err)
 		}
@@ -967,8 +980,8 @@ func renderHostScheduleScript(spec HostScheduleSpec) (string, error) {
 	return builder.String(), nil
 }
 
-func hostScheduleMetadataExists(id string) (bool, error) {
-	metadataPath, err := hostScheduleMetadataPath(id)
+func hostScheduleMetadataExistsForRuntime(id string, runtimeDir string) (bool, error) {
+	metadataPath, err := hostScheduleMetadataPathForRuntime(id, runtimeDir)
 	if err != nil {
 		return false, err
 	}

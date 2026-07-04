@@ -19,11 +19,13 @@ import (
 
 var (
 	_ resource.Resource                = &HostDirResource{}
+	_ resource.ResourceWithConfigure   = &HostDirResource{}
 	_ resource.ResourceWithImportState = &HostDirResource{}
 	_ resource.ResourceWithModifyPlan  = &HostDirResource{}
 )
 
 type HostDirResource struct {
+	homeDir string
 }
 
 type HostDirResourceModel struct {
@@ -42,6 +44,19 @@ func (r *HostDirResource) Metadata(ctx context.Context, req resource.MetadataReq
 	resp.TypeName = req.ProviderTypeName + "_dir"
 }
 
+func (r *HostDirResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+	if req.ProviderData == nil {
+		return
+	}
+
+	data, ok := req.ProviderData.(HostProviderData)
+	if !ok {
+		resp.Diagnostics.AddError("Unexpected provider data", fmt.Sprintf("Expected HostProviderData, got %T.", req.ProviderData))
+		return
+	}
+	r.homeDir = data.HomeDir
+}
+
 func (r *HostDirResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "Manages a host directory.",
@@ -55,10 +70,7 @@ func (r *HostDirResource) Schema(ctx context.Context, req resource.SchemaRequest
 			},
 			"path": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Directory path. `~` is expanded to the current user's home directory and relative paths are resolved from the Terraform working directory.",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
+				MarkdownDescription: "Directory path. `~` is expanded to the provider `home_dir` and relative paths are resolved from the Terraform working directory.",
 			},
 			"path_resolved": schema.StringAttribute{
 				Computed:            true,
@@ -86,12 +98,16 @@ func (r *HostDirResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 	}
 
 	var plan HostDirResourceModel
+	var state HostDirResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if !req.State.Raw.IsNull() {
+		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	}
 	if resp.Diagnostics.HasError() || plan.Path.IsNull() || plan.Path.IsUnknown() || plan.Mode.IsNull() || plan.Mode.IsUnknown() {
 		return
 	}
 
-	resolvedPath, err := resolveHostDirPath(plan.Path.ValueString())
+	resolvedPath, err := resolveHostDirPathForHome(plan.Path.ValueString(), r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid host directory path", err.Error())
 		return
@@ -103,6 +119,12 @@ func (r *HostDirResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 
 	plan.ID = types.StringValue(plan.Path.ValueString())
 	plan.PathResolved = types.StringValue(resolvedPath)
+	requireReplaceIfResolvedPathChanged(req, resp, tfpath.Root("path"), state.Path, state.PathResolved, resolvedPath, func(value string) (string, error) {
+		return resolveHostDirPathForHome(value, r.homeDir)
+	})
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
@@ -113,7 +135,7 @@ func (r *HostDirResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
-	state, err := syncHostDir(plan)
+	state, err := syncHostDirForHome(plan, r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to sync host directory", err.Error())
 		return
@@ -129,7 +151,7 @@ func (r *HostDirResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	next, exists, err := readHostDir(state)
+	next, exists, err := readHostDirForHome(state, r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read host directory", err.Error())
 		return
@@ -149,7 +171,7 @@ func (r *HostDirResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
-	state, err := syncHostDir(plan)
+	state, err := syncHostDirForHome(plan, r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to sync host directory", err.Error())
 		return
@@ -165,7 +187,7 @@ func (r *HostDirResource) Delete(ctx context.Context, req resource.DeleteRequest
 		return
 	}
 
-	if err := deleteHostDir(state); err != nil {
+	if err := deleteHostDirForHome(state, r.homeDir); err != nil {
 		resp.Diagnostics.AddError("Failed to delete host directory", err.Error())
 	}
 }
@@ -175,7 +197,11 @@ func (r *HostDirResource) ImportState(ctx context.Context, req resource.ImportSt
 }
 
 func syncHostDir(model HostDirResourceModel) (HostDirResourceModel, error) {
-	resolvedPath, err := resolveHostDirPath(model.Path.ValueString())
+	return syncHostDirForHome(model, "")
+}
+
+func syncHostDirForHome(model HostDirResourceModel, homeDir string) (HostDirResourceModel, error) {
+	resolvedPath, err := resolveHostDirPathForHome(model.Path.ValueString(), homeDir)
 	if err != nil {
 		return model, err
 	}
@@ -194,8 +220,8 @@ func syncHostDir(model HostDirResourceModel) (HostDirResourceModel, error) {
 	return readExistingHostDir(model, resolvedPath)
 }
 
-func readHostDir(model HostDirResourceModel) (HostDirResourceModel, bool, error) {
-	resolvedPath, err := resolveHostDirPath(model.Path.ValueString())
+func readHostDirForHome(model HostDirResourceModel, homeDir string) (HostDirResourceModel, bool, error) {
+	resolvedPath, err := resolveHostDirPathForHome(model.Path.ValueString(), homeDir)
 	if err != nil {
 		return model, false, err
 	}
@@ -233,7 +259,11 @@ func readExistingHostDir(model HostDirResourceModel, resolvedPath string) (HostD
 }
 
 func deleteHostDir(model HostDirResourceModel) error {
-	resolvedPath, err := resolveHostDirPath(model.Path.ValueString())
+	return deleteHostDirForHome(model, "")
+}
+
+func deleteHostDirForHome(model HostDirResourceModel, homeDir string) error {
+	resolvedPath, err := resolveHostDirPathForHome(model.Path.ValueString(), homeDir)
 	if err != nil {
 		return err
 	}
@@ -261,7 +291,7 @@ func deleteHostDir(model HostDirResourceModel) error {
 	return nil
 }
 
-func resolveHostDirPath(value string) (string, error) {
+func resolveHostDirPathForHome(value string, homeDir string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "", fmt.Errorf("path must be non-empty")
@@ -269,7 +299,7 @@ func resolveHostDirPath(value string) (string, error) {
 	if strings.Contains(value, "\x00") {
 		return "", fmt.Errorf("path must not contain NUL bytes")
 	}
-	return expandHostPath(value)
+	return expandHostPathForHome(value, homeDir)
 }
 
 func parseHostDirMode(value string) (os.FileMode, error) {

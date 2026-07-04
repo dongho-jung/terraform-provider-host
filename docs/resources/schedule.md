@@ -49,10 +49,10 @@ resource "host_schedule" "system_example" {
 - `schedule` (String) Five-field cron-style calendar schedule, or one of `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`. Mutually exclusive with `every`.
 - `scope` (String) Schedule scope. Supported values are `user` and `system`. `system` manages the root crontab and requires root privileges.
 - `shell` (String) Absolute path to the shell used as the generated script interpreter.
-- `stderr_path` (String) Path where the generated script appends stderr for the command. `~` is expanded to the current user's home directory.
-- `stdout_path` (String) Path where the generated script appends stdout for the command. `~` is expanded to the current user's home directory.
+- `stderr_path` (String) Path where the generated script appends stderr for the command. `~` is expanded to the provider `home_dir`.
+- `stdout_path` (String) Path where the generated script appends stdout for the command. `~` is expanded to the provider `home_dir`.
 - `user` (String) User whose crontab should contain the schedule. Defaults to the current Terraform user for `scope = "user"`, or `root` for `scope = "system"`.
-- `working_directory` (String) Working directory for the scheduled command. `~` is expanded to the current user's home directory.
+- `working_directory` (String) Working directory for the scheduled command. `~` is expanded to the provider `home_dir`.
 
 ### Read-Only
 

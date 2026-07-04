@@ -35,6 +35,7 @@ const (
 
 type HostSSHKeyResource struct {
 	manager SSHKeyManager
+	homeDir string
 }
 
 type HostSSHKeyResourceModel struct {
@@ -77,12 +78,17 @@ type HostSSHKeyStatus struct {
 
 type CLISSHKeyManager struct {
 	sshKeygenPath string
+	homeDir       string
 }
 
-func NewCLISSHKeyManager(sshKeygenPath string) SSHKeyManager {
-	return &CLISSHKeyManager{
+func NewCLISSHKeyManager(sshKeygenPath string, homeDirs ...string) SSHKeyManager {
+	manager := &CLISSHKeyManager{
 		sshKeygenPath: sshKeygenPath,
 	}
+	if len(homeDirs) > 0 {
+		manager.homeDir = homeDirs[0]
+	}
+	return manager
 }
 
 func NewHostSSHKeyResource() resource.Resource {
@@ -105,6 +111,7 @@ func (r *HostSSHKeyResource) Configure(ctx context.Context, req resource.Configu
 			return
 		}
 		r.manager = data.SSHKeyManager
+		r.homeDir = data.HomeDir
 	case SSHKeyManager:
 		r.manager = data
 	default:
@@ -125,10 +132,7 @@ func (r *HostSSHKeyResource) Schema(ctx context.Context, req resource.SchemaRequ
 			},
 			"path": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Private key path. `~` is expanded to the current user's home directory and relative paths are resolved from the Terraform working directory.",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
+				MarkdownDescription: "Private key path. `~` is expanded to the provider `home_dir` and relative paths are resolved from the Terraform working directory.",
 			},
 			"path_resolved": schema.StringAttribute{
 				Computed:            true,
@@ -189,12 +193,16 @@ func (r *HostSSHKeyResource) ModifyPlan(ctx context.Context, req resource.Modify
 	}
 
 	var plan HostSSHKeyResourceModel
+	var state HostSSHKeyResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if !req.State.Raw.IsNull() {
+		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	}
 	if resp.Diagnostics.HasError() || plan.Path.IsNull() || plan.Path.IsUnknown() {
 		return
 	}
 
-	pathResolved, err := resolveSSHKeyPath(plan.Path.ValueString())
+	pathResolved, err := resolveSSHKeyPathForHome(plan.Path.ValueString(), r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid SSH key path", err.Error())
 		return
@@ -226,6 +234,12 @@ func (r *HostSSHKeyResource) ModifyPlan(ctx context.Context, req resource.Modify
 	plan.PathResolved = types.StringValue(pathResolved)
 	plan.PublicKeyPath = types.StringValue(publicSSHKeyPath(plan.Path.ValueString()))
 	plan.PublicKeyPathResolved = types.StringValue(publicSSHKeyPath(pathResolved))
+	requireReplaceIfResolvedPathChanged(req, resp, tfpath.Root("path"), state.Path, state.PathResolved, pathResolved, func(value string) (string, error) {
+		return resolveSSHKeyPathForHome(value, r.homeDir)
+	})
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
@@ -257,7 +271,7 @@ func (r *HostSSHKeyResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 
-	pathResolved, err := resolveSSHKeyPath(state.Path.ValueString())
+	pathResolved, err := resolveSSHKeyPathForHome(state.Path.ValueString(), r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid SSH key path", err.Error())
 		return
@@ -306,7 +320,7 @@ func (r *HostSSHKeyResource) Delete(ctx context.Context, req resource.DeleteRequ
 		return
 	}
 
-	pathResolved, err := resolveSSHKeyPath(state.Path.ValueString())
+	pathResolved, err := resolveSSHKeyPathForHome(state.Path.ValueString(), r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid SSH key path", err.Error())
 		return
@@ -325,7 +339,7 @@ func (r *HostSSHKeyResource) syncKey(ctx context.Context, model HostSSHKeyResour
 		return model, fmt.Errorf("ssh-keygen executable not found")
 	}
 
-	pathResolved, err := resolveSSHKeyPath(model.Path.ValueString())
+	pathResolved, err := resolveSSHKeyPathForHome(model.Path.ValueString(), r.homeDir)
 	if err != nil {
 		return model, err
 	}
@@ -350,7 +364,7 @@ func (r *HostSSHKeyResource) syncKey(ctx context.Context, model HostSSHKeyResour
 		return hydrateSSHKeyModel(model, status), nil
 	}
 
-	spec, err := sshKeySpecFromModel(model)
+	spec, err := sshKeySpecFromModelForHome(model, r.homeDir)
 	if err != nil {
 		return model, err
 	}
@@ -363,7 +377,7 @@ func (r *HostSSHKeyResource) syncKey(ctx context.Context, model HostSSHKeyResour
 }
 
 func (m *CLISSHKeyManager) KeyStatus(ctx context.Context, path string) (HostSSHKeyStatus, bool, error) {
-	privatePath, err := resolveSSHKeyPath(path)
+	privatePath, err := resolveSSHKeyPathForHome(path, m.homeDir)
 	if err != nil {
 		return HostSSHKeyStatus{}, false, err
 	}
@@ -388,7 +402,7 @@ func (m *CLISSHKeyManager) KeyStatus(ctx context.Context, path string) (HostSSHK
 }
 
 func (m *CLISSHKeyManager) EnsureKey(ctx context.Context, spec HostSSHKeySpec) (HostSSHKeyStatus, error) {
-	privatePath, err := resolveSSHKeyPath(spec.Path)
+	privatePath, err := resolveSSHKeyPathForHome(spec.Path, m.homeDir)
 	if err != nil {
 		return HostSSHKeyStatus{}, err
 	}
@@ -426,7 +440,7 @@ func (m *CLISSHKeyManager) EnsureKey(ctx context.Context, spec HostSSHKeySpec) (
 }
 
 func (m *CLISSHKeyManager) DeleteKey(ctx context.Context, path string) error {
-	privatePath, err := resolveSSHKeyPath(path)
+	privatePath, err := resolveSSHKeyPathForHome(path, m.homeDir)
 	if err != nil {
 		return err
 	}
@@ -484,8 +498,8 @@ func (m *CLISSHKeyManager) readPublicKey(ctx context.Context, publicKeyPath stri
 	return strings.TrimSpace(string(out)), nil
 }
 
-func sshKeySpecFromModel(model HostSSHKeyResourceModel) (HostSSHKeySpec, error) {
-	path, err := resolveSSHKeyPath(model.Path.ValueString())
+func sshKeySpecFromModelForHome(model HostSSHKeyResourceModel, homeDir string) (HostSSHKeySpec, error) {
+	path, err := resolveSSHKeyPathForHome(model.Path.ValueString(), homeDir)
 	if err != nil {
 		return HostSSHKeySpec{}, err
 	}
@@ -556,11 +570,11 @@ func sshKeyStatusFromPublicKey(privatePath string, publicPath string, publicKey 
 	}, nil
 }
 
-func resolveSSHKeyPath(path string) (string, error) {
+func resolveSSHKeyPathForHome(path string, homeDir string) (string, error) {
 	if strings.Contains(path, "\x00") {
 		return "", fmt.Errorf("path must not contain NUL bytes")
 	}
-	return expandHostPath(path)
+	return expandHostPathForHome(path, homeDir)
 }
 
 func publicSSHKeyPath(path string) string {
