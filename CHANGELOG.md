@@ -1,3 +1,13 @@
+## 0.8.0 (2026-07-04)
+
+FEATURES:
+
+- Add provider-level `target_user` for user home discovery and user-scoped resource defaults.
+
+IMPROVEMENTS:
+
+- Let `host_schedule` default to the provider `target_user` for user-scoped schedules.
+
 ## 0.7.0 (2026-07-04)
 
 BREAKING CHANGES:

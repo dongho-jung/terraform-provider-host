@@ -26,6 +26,7 @@ type HostScheduleResource struct {
 	manager    ScheduleManager
 	homeDir    string
 	runtimeDir string
+	targetUser string
 }
 
 type HostScheduleResourceModel struct {
@@ -173,6 +174,7 @@ func (r *HostScheduleResource) Configure(ctx context.Context, req resource.Confi
 		r.manager = data.ScheduleManager
 		r.homeDir = data.HomeDir
 		r.runtimeDir = data.RuntimeDir
+		r.targetUser = data.TargetUser
 	case ScheduleManager:
 		r.manager = data
 	default:
@@ -198,7 +200,7 @@ func (r *HostScheduleResource) ModifyPlan(ctx context.Context, req resource.Modi
 		return
 	}
 
-	if err := normalizeHostSchedulePlanTarget(&plan); err != nil {
+	if err := normalizeHostSchedulePlanTarget(&plan, r.targetUser); err != nil {
 		resp.Diagnostics.AddError("Invalid schedule target", err.Error())
 		return
 	}
@@ -223,7 +225,7 @@ func (r *HostScheduleResource) ModifyPlan(ctx context.Context, req resource.Modi
 	}
 
 	if scheduleResourceConfigReady(plan) {
-		spec, diags := hostScheduleSpecFromModel(ctx, plan)
+		spec, diags := hostScheduleSpecFromModelForTarget(ctx, plan, r.targetUser)
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
 			return
@@ -271,7 +273,7 @@ func (r *HostScheduleResource) Create(ctx context.Context, req resource.CreateRe
 	}
 	plan.ID = types.StringValue(id)
 
-	spec, diags := hostScheduleSpecFromModel(ctx, plan)
+	spec, diags := hostScheduleSpecFromModelForTarget(ctx, plan, r.targetUser)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -302,7 +304,7 @@ func (r *HostScheduleResource) Read(ctx context.Context, req resource.ReadReques
 		return
 	}
 
-	spec, diags := hostScheduleSpecFromModel(ctx, state)
+	spec, diags := hostScheduleSpecFromModelForTarget(ctx, state, r.targetUser)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -338,13 +340,13 @@ func (r *HostScheduleResource) Update(ctx context.Context, req resource.UpdateRe
 		plan.ID = state.ID
 	}
 
-	spec, diags := hostScheduleSpecFromModel(ctx, plan)
+	spec, diags := hostScheduleSpecFromModelForTarget(ctx, plan, r.targetUser)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	stateSpec, stateDiags := hostScheduleSpecFromModel(ctx, state)
+	stateSpec, stateDiags := hostScheduleSpecFromModelForTarget(ctx, state, r.targetUser)
 	resp.Diagnostics.Append(stateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -380,7 +382,7 @@ func (r *HostScheduleResource) Delete(ctx context.Context, req resource.DeleteRe
 		return
 	}
 
-	spec, diags := hostScheduleSpecFromModel(ctx, state)
+	spec, diags := hostScheduleSpecFromModelForTarget(ctx, state, r.targetUser)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -452,7 +454,7 @@ func optionalStringStateValue(value string) types.String {
 	return types.StringValue(value)
 }
 
-func hostScheduleSpecFromModel(ctx context.Context, model HostScheduleResourceModel) (HostScheduleSpec, diag.Diagnostics) {
+func hostScheduleSpecFromModelForTarget(ctx context.Context, model HostScheduleResourceModel, defaultUser string) (HostScheduleSpec, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
 	environment, envDiags := stringMapValue(ctx, model.Environment, "schedule environment")
@@ -497,7 +499,7 @@ func hostScheduleSpecFromModel(ctx context.Context, model HostScheduleResourceMo
 	if !model.StderrPath.IsNull() && !model.StderrPath.IsUnknown() {
 		spec.StderrPath = model.StderrPath.ValueString()
 	}
-	if err := normalizeHostScheduleSpecTarget(&spec); err != nil {
+	if err := normalizeHostScheduleSpecTargetWithDefault(&spec, defaultUser); err != nil {
 		diags.AddError("Invalid schedule target", err.Error())
 		return HostScheduleSpec{}, diags
 	}
@@ -529,7 +531,7 @@ func scheduleResourceConfigReady(model HostScheduleResourceModel) bool {
 	return true
 }
 
-func normalizeHostSchedulePlanTarget(model *HostScheduleResourceModel) error {
+func normalizeHostSchedulePlanTarget(model *HostScheduleResourceModel, defaultUser string) error {
 	scope := ""
 	if !model.Scope.IsNull() && !model.Scope.IsUnknown() {
 		scope = model.Scope.ValueString()
@@ -540,7 +542,7 @@ func normalizeHostSchedulePlanTarget(model *HostScheduleResourceModel) error {
 		targetUser = model.User.ValueString()
 	}
 
-	normalizedScope, normalizedUser, err := normalizeHostScheduleTarget(scope, targetUser)
+	normalizedScope, normalizedUser, err := normalizeHostScheduleTargetWithDefault(scope, targetUser, defaultUser)
 	if err != nil {
 		return err
 	}

@@ -27,6 +27,6 @@ The Host provider manages local machine configuration with Terraform. It is aime
 
 Resources use tools available on the machine running Terraform, such as `dnf`, `brew`, `git`, `ssh-keygen`, `crontab`, `defaults`, `killall`, and `osascript`. Resources that mutate protected host state may prompt through `sudo` when Terraform is not already running with the required privileges.
 
-By default the provider resolves these tools from PATH and stores runtime metadata under `./.terraform-provider-host` relative to the Terraform working directory. Set `runtime_dir` to move generated metadata such as file block state and schedule scripts, or set `home_dir` to control how leading `~` is expanded in host paths.
+By default the provider resolves these tools from PATH and stores runtime metadata under `./.terraform-provider-host` relative to the Terraform working directory. Set `target_user` to make user-scoped resources default to that user and to expand leading `~` against that user's home directory. Set `home_dir` only when you need to override the discovered home directory, and set `runtime_dir` to move generated metadata such as file block state and schedule scripts.
 
-Available provider arguments are `runtime_dir` and `home_dir`.
+Available provider arguments are `runtime_dir`, `target_user`, and `home_dir`.

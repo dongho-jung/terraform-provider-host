@@ -20,6 +20,7 @@ type HostProvider struct {
 type HostProviderModel struct {
 	RuntimeDir types.String `tfsdk:"runtime_dir"`
 	HomeDir    types.String `tfsdk:"home_dir"`
+	TargetUser types.String `tfsdk:"target_user"`
 }
 
 func (p *HostProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -37,7 +38,11 @@ func (p *HostProvider) Schema(ctx context.Context, req provider.SchemaRequest, r
 			},
 			"home_dir": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "Home directory used to expand leading `~` in host paths. Defaults to the Terraform process user's home directory.",
+				MarkdownDescription: "Home directory used to expand leading `~` in host paths. Defaults to the `target_user` home directory when set, otherwise the Terraform process user's home directory.",
+			},
+			"target_user": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Default target user for user-scoped resources. When `home_dir` is unset, the provider also uses this user's home directory for leading `~` expansion.",
 			},
 		},
 	}
@@ -53,10 +58,26 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 
 	var data HostProviderData
 
+	if !config.TargetUser.IsNull() && !config.TargetUser.IsUnknown() {
+		targetUser := config.TargetUser.ValueString()
+		if err := validateHostUserName(targetUser); err != nil {
+			resp.Diagnostics.AddError("Invalid target_user", err.Error())
+			return
+		}
+		data.TargetUser = targetUser
+	}
+
 	if !config.HomeDir.IsNull() && !config.HomeDir.IsUnknown() {
 		homeDir, err := resolveProviderHomeDir(config.HomeDir.ValueString())
 		if err != nil {
 			resp.Diagnostics.AddError("Invalid home_dir", err.Error())
+			return
+		}
+		data.HomeDir = homeDir
+	} else if data.TargetUser != "" {
+		homeDir, err := resolveTargetUserHomeDir(ctx, data.TargetUser)
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid target_user", err.Error())
 			return
 		}
 		data.HomeDir = homeDir
@@ -100,7 +121,11 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 	}
 
 	crontabPath := executablePath("crontab")
-	data.ScheduleManager = NewCLICronScheduleManager(crontabPath, data.PackageManager, sudoPath, data.HomeDir, data.RuntimeDir)
+	data.ScheduleManager = NewCLICronScheduleManager(crontabPath, data.PackageManager, sudoPath, CLICronScheduleManagerOptions{
+		HomeDir:    data.HomeDir,
+		RuntimeDir: data.RuntimeDir,
+		TargetUser: data.TargetUser,
+	})
 	data.IdentityManager = NewCLIIdentityManager(sudoPath)
 	defaultsPath := executablePath("defaults")
 	if defaultsPath != "" {

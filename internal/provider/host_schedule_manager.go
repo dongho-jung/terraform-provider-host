@@ -71,6 +71,13 @@ type CLICronScheduleManager struct {
 	sudoPath       string
 	homeDir        string
 	runtimeDir     string
+	targetUser     string
+}
+
+type CLICronScheduleManagerOptions struct {
+	HomeDir    string
+	RuntimeDir string
+	TargetUser string
 }
 
 type hostScheduleMetadata struct {
@@ -79,19 +86,15 @@ type hostScheduleMetadata struct {
 	ScriptPath string           `json:"script_path"`
 }
 
-func NewCLICronScheduleManager(crontabPath string, packageManager PackageManager, sudoPath string, homeDirs ...string) *CLICronScheduleManager {
-	manager := &CLICronScheduleManager{
+func NewCLICronScheduleManager(crontabPath string, packageManager PackageManager, sudoPath string, options CLICronScheduleManagerOptions) *CLICronScheduleManager {
+	return &CLICronScheduleManager{
 		crontabPath:    crontabPath,
 		packageManager: packageManager,
 		sudoPath:       sudoPath,
+		homeDir:        options.HomeDir,
+		runtimeDir:     options.RuntimeDir,
+		targetUser:     options.TargetUser,
 	}
-	if len(homeDirs) > 0 {
-		manager.homeDir = homeDirs[0]
-	}
-	if len(homeDirs) > 1 {
-		manager.runtimeDir = homeDirs[1]
-	}
-	return manager
 }
 
 func newHostScheduleID() (string, error) {
@@ -146,7 +149,7 @@ func (m *CLICronScheduleManager) UpsertSchedule(ctx context.Context, spec HostSc
 	if err := validateHostScheduleSpecForHome(spec, m.homeDir); err != nil {
 		return HostScheduleStatus{}, err
 	}
-	if err := normalizeHostScheduleSpecTarget(&spec); err != nil {
+	if err := normalizeHostScheduleSpecTargetWithDefault(&spec, m.targetUser); err != nil {
 		return HostScheduleStatus{}, err
 	}
 
@@ -170,7 +173,7 @@ func (m *CLICronScheduleManager) ReadSchedule(ctx context.Context, spec HostSche
 	if err := validateHostScheduleID(spec.ID); err != nil {
 		return HostScheduleStatus{}, false, err
 	}
-	if err := normalizeHostScheduleSpecTarget(&spec); err != nil {
+	if err := normalizeHostScheduleSpecTargetWithDefault(&spec, m.targetUser); err != nil {
 		return HostScheduleStatus{}, false, err
 	}
 
@@ -207,7 +210,7 @@ func (m *CLICronScheduleManager) DeleteSchedule(ctx context.Context, spec HostSc
 	if err := validateHostScheduleID(spec.ID); err != nil {
 		return err
 	}
-	if err := normalizeHostScheduleSpecTarget(&spec); err != nil {
+	if err := normalizeHostScheduleSpecTargetWithDefault(&spec, m.targetUser); err != nil {
 		return err
 	}
 
@@ -696,7 +699,11 @@ func validateHostScheduleSpecForHome(spec HostScheduleSpec, homeDir string) erro
 }
 
 func normalizeHostScheduleSpecTarget(spec *HostScheduleSpec) error {
-	scope, targetUser, err := normalizeHostScheduleTarget(spec.Scope, spec.User)
+	return normalizeHostScheduleSpecTargetWithDefault(spec, "")
+}
+
+func normalizeHostScheduleSpecTargetWithDefault(spec *HostScheduleSpec, defaultUser string) error {
+	scope, targetUser, err := normalizeHostScheduleTargetWithDefault(spec.Scope, spec.User, defaultUser)
 	if err != nil {
 		return err
 	}
@@ -707,8 +714,22 @@ func normalizeHostScheduleSpecTarget(spec *HostScheduleSpec) error {
 }
 
 func normalizeHostScheduleTarget(scope string, targetUser string) (string, string, error) {
+	return normalizeHostScheduleTargetWithDefault(scope, targetUser, "")
+}
+
+func normalizeHostScheduleTargetWithDefault(scope string, targetUser string, defaultUser string) (string, string, error) {
 	scope = strings.TrimSpace(scope)
 	targetUser = strings.TrimSpace(targetUser)
+	defaultUser = strings.TrimSpace(defaultUser)
+	if defaultUser != "" {
+		if err := validateHostUserName(defaultUser); err != nil {
+			return "", "", err
+		}
+	}
+
+	if scope == "" && targetUser == "" && defaultUser != "" {
+		targetUser = defaultUser
+	}
 
 	if scope == "" {
 		if targetUser == hostScheduleRootUser {
@@ -721,11 +742,15 @@ func normalizeHostScheduleTarget(scope string, targetUser string) (string, strin
 	switch scope {
 	case hostScheduleScopeUser:
 		if targetUser == "" {
-			currentUser, err := currentHostUsername()
-			if err != nil {
-				return "", "", err
+			if defaultUser != "" {
+				targetUser = defaultUser
+			} else {
+				currentUser, err := currentHostUsername()
+				if err != nil {
+					return "", "", err
+				}
+				targetUser = currentUser
 			}
-			targetUser = currentUser
 		}
 	case hostScheduleScopeSystem:
 		if targetUser == "" {

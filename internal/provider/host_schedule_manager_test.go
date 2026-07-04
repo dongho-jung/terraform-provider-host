@@ -149,12 +149,36 @@ func TestNormalizeHostScheduleTargetDefaultsToCurrentUser(t *testing.T) {
 	}
 }
 
+func TestNormalizeHostScheduleTargetDefaultsToConfiguredUser(t *testing.T) {
+	t.Parallel()
+
+	scope, targetUser, err := normalizeHostScheduleTargetWithDefault("", "", "deploy")
+	if err != nil {
+		t.Fatalf("normalizeHostScheduleTargetWithDefault: %s", err)
+	}
+	if scope != hostScheduleScopeUser || targetUser != "deploy" {
+		t.Fatalf("got scope=%q user=%q", scope, targetUser)
+	}
+}
+
 func TestNormalizeHostScheduleTargetSystemDefaultsToRoot(t *testing.T) {
 	t.Parallel()
 
 	scope, targetUser, err := normalizeHostScheduleTarget(hostScheduleScopeSystem, "")
 	if err != nil {
 		t.Fatalf("normalizeHostScheduleTarget: %s", err)
+	}
+	if scope != hostScheduleScopeSystem || targetUser != hostScheduleRootUser {
+		t.Fatalf("got scope=%q user=%q", scope, targetUser)
+	}
+}
+
+func TestNormalizeHostScheduleTargetExplicitSystemIgnoresConfiguredUser(t *testing.T) {
+	t.Parallel()
+
+	scope, targetUser, err := normalizeHostScheduleTargetWithDefault(hostScheduleScopeSystem, "", "deploy")
+	if err != nil {
+		t.Fatalf("normalizeHostScheduleTargetWithDefault: %s", err)
 	}
 	if scope != hostScheduleScopeSystem || targetUser != hostScheduleRootUser {
 		t.Fatalf("got scope=%q user=%q", scope, targetUser)
