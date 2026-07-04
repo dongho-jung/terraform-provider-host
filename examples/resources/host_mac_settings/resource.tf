@@ -1,15 +1,15 @@
 resource "host_mac_settings" "settings" {
   groups = {
-    dock = {
+    "com.apple.dock" = {
       autohide       = true
       "show-recents" = false
     }
 
-    global = {
+    NSGlobalDomain = {
       AppleLanguages = ["ko-KR", "en-US"]
     }
 
-    "menuextra.battery" = {
+    "com.apple.menuextra.battery" = {
       ShowPercent = "YES"
     }
   }

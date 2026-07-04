@@ -155,6 +155,87 @@ func TestBrewPackageResourceRefreshStateDefaultsToIgnoreVersion(t *testing.T) {
 	}
 }
 
+func TestBrewPackageResourceRefreshStateCaskAppPaths(t *testing.T) {
+	t.Parallel()
+
+	resource := &BrewPackageResource{
+		manager: &fakeBrewPackageManager{
+			statuses: map[string]BrewPackageStatus{
+				"cask:hammerspoon": {
+					Name:             "hammerspoon",
+					PackageType:      brewPackageTypeCask,
+					Installed:        true,
+					InstalledVersion: "1.1.1",
+					CandidateVersion: "1.1.1",
+					AppPaths:         []string{"/Applications/Hammerspoon.app"},
+				},
+			},
+		},
+	}
+
+	state, installed, err := resource.refreshState(context.Background(), BrewPackageResourceModel{
+		Name:        types.StringValue("hammerspoon"),
+		PackageType: types.StringValue(brewPackageTypeCask),
+		Version:     types.StringValue(versionLatest),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	if !installed {
+		t.Fatal("expected installed cask")
+	}
+	if state.AppPath.ValueString() != "/Applications/Hammerspoon.app" {
+		t.Fatalf("expected app_path, got %#v", state.AppPath)
+	}
+	var appPaths []string
+	diags := state.AppPaths.ElementsAs(context.Background(), &appPaths, false)
+	if diags.HasError() {
+		t.Fatalf("app_paths diagnostics: %s", diagnosticsError(diags))
+	}
+	if !reflect.DeepEqual(appPaths, []string{"/Applications/Hammerspoon.app"}) {
+		t.Fatalf("app_paths got %#v", appPaths)
+	}
+}
+
+func TestBrewPackageResourceRefreshStateCaskMultipleAppPathsLeavesAppPathNull(t *testing.T) {
+	t.Parallel()
+
+	resource := &BrewPackageResource{
+		manager: &fakeBrewPackageManager{
+			statuses: map[string]BrewPackageStatus{
+				"cask:example": {
+					Name:             "example",
+					PackageType:      brewPackageTypeCask,
+					Installed:        true,
+					InstalledVersion: "1.0.0",
+					CandidateVersion: "1.0.0",
+					AppPaths: []string{
+						"/Applications/Example.app",
+						"/Applications/Example Helper.app",
+					},
+				},
+			},
+		},
+	}
+
+	state, installed, err := resource.refreshState(context.Background(), BrewPackageResourceModel{
+		Name:        types.StringValue("example"),
+		PackageType: types.StringValue(brewPackageTypeCask),
+		Version:     types.StringValue(versionLatest),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	if !installed {
+		t.Fatal("expected installed cask")
+	}
+	if !state.AppPath.IsNull() {
+		t.Fatalf("expected app_path to be null for multiple apps, got %#v", state.AppPath)
+	}
+}
+
 func TestBrewPackageResourceSyncInstallsMissingPackage(t *testing.T) {
 	t.Parallel()
 

@@ -1,3 +1,14 @@
+## 0.6.0 (2026-07-04)
+
+BREAKING CHANGES:
+
+- Simplify `host_mac_setting` and `host_mac_settings` to use raw macOS defaults domains only.
+- Remove macOS settings domain aliases such as `dock`, `global`, `screenshot`, and `raw:<domain>`.
+
+FEATURES:
+
+- Add `app_path` and `app_paths` computed attributes to `host_package_brew` for Homebrew cask `.app` artifacts.
+
 ## 0.5.0 (2026-07-04)
 
 FEATURES:

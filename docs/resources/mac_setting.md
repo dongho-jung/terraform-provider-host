@@ -16,12 +16,9 @@ Use this resource when you want a separate Terraform resource address for one ma
 
 ```terraform
 resource "host_mac_setting" "dock_autohide" {
-  domain = {
-    apple = "dock"
-  }
-
-  key   = "autohide"
-  value = true
+  domain = "com.apple.dock"
+  key    = "autohide"
+  value  = true
 }
 ```
 
@@ -38,7 +35,7 @@ When `restart` is omitted, the provider applies built-in restarts for known doma
 
 ### Required
 
-- `domain` (Attributes) macOS defaults domain selector. Set exactly one of `apple`, `global`, or `raw`. (see [below for nested schema](#nestedatt--domain))
+- `domain` (String) Raw macOS defaults domain, such as `com.apple.dock`, `NSGlobalDomain`, or an application bundle identifier.
 - `key` (String) Defaults key to manage inside the domain.
 - `value` (Dynamic) Setting value. Supported values are bool, number, string, and a list or tuple of strings. Whole numbers are written as integer defaults values; fractional numbers are written as float defaults values.
 
@@ -50,14 +47,4 @@ When `restart` is omitted, the provider applies built-in restarts for known doma
 
 ### Read-Only
 
-- `domain_resolved` (String) Resolved macOS defaults domain, such as `com.apple.dock` or `NSGlobalDomain`.
 - `id` (String) Resource identifier derived from `domain`, `key`, and `current_host`.
-
-<a id="nestedatt--domain"></a>
-### Nested Schema for `domain`
-
-Optional:
-
-- `apple` (String) Apple defaults domain suffix without the `com.apple.` prefix, such as `dock`, `screencapture`, or `AppleMultitouchTrackpad`.
-- `global` (Boolean) Use `NSGlobalDomain` when true.
-- `raw` (String) Full raw defaults domain for non-Apple domains or domains that should not be expanded.

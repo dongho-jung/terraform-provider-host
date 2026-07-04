@@ -70,7 +70,7 @@ func TestMacOSDefaultsSpecsFromModelParsesGroups(t *testing.T) {
 	t.Parallel()
 
 	groups := mustMacOSSettingsGroupsMap(t, map[string]map[string]attr.Value{
-		"menuextra.clock": {
+		"com.apple.menuextra.clock": {
 			"IsAnalog": types.BoolValue(true),
 			"ShowAMPM": types.BoolValue(true),
 		},
@@ -85,10 +85,10 @@ func TestMacOSDefaultsSpecsFromModelParsesGroups(t *testing.T) {
 	if len(specs) != 2 {
 		t.Fatalf("got %d specs, want 2", len(specs))
 	}
-	if specs[0].GroupName != "menuextra.clock" || specs[0].Name != "IsAnalog" || specs[0].Spec.ID != "user:com.apple.menuextra.clock:IsAnalog" {
+	if specs[0].GroupName != "com.apple.menuextra.clock" || specs[0].Name != "IsAnalog" || specs[0].Spec.ID != "user:com.apple.menuextra.clock:IsAnalog" {
 		t.Fatalf("unexpected first grouped spec: %#v", specs[0])
 	}
-	if specs[1].GroupName != "menuextra.clock" || specs[1].Name != "ShowAMPM" || specs[1].Spec.ID != "user:com.apple.menuextra.clock:ShowAMPM" {
+	if specs[1].GroupName != "com.apple.menuextra.clock" || specs[1].Name != "ShowAMPM" || specs[1].Spec.ID != "user:com.apple.menuextra.clock:ShowAMPM" {
 		t.Fatalf("unexpected second grouped spec: %#v", specs[1])
 	}
 }
@@ -97,7 +97,7 @@ func TestMacOSDefaultsSpecsFromModelParsesGroupSettingsByMapKey(t *testing.T) {
 	t.Parallel()
 
 	groups := mustMacOSSettingsGroupsMap(t, map[string]map[string]attr.Value{
-		"dock": {
+		"com.apple.dock": {
 			"autohide":     types.BoolValue(true),
 			"show-recents": types.BoolValue(false),
 		},
@@ -124,13 +124,13 @@ func TestMacOSDefaultsSpecsFromModelParsesSpecialGroupDomains(t *testing.T) {
 	t.Parallel()
 
 	groups := mustMacOSSettingsGroupsMap(t, map[string]map[string]attr.Value{
-		"global": {
+		"NSGlobalDomain": {
 			"AppleLanguages": types.ListValueMust(types.StringType, []attr.Value{
 				types.StringValue("ko-KR"),
 				types.StringValue("en-US"),
 			}),
 		},
-		"raw:com.example.app": {
+		"com.example.app": {
 			"Enabled": types.BoolValue(true),
 		},
 	})
@@ -144,11 +144,28 @@ func TestMacOSDefaultsSpecsFromModelParsesSpecialGroupDomains(t *testing.T) {
 	if len(specs) != 2 {
 		t.Fatalf("got %d specs, want 2", len(specs))
 	}
-	if specs[0].GroupName != "global" || specs[0].Spec.ID != "user:NSGlobalDomain:AppleLanguages" {
+	if specs[0].GroupName != "NSGlobalDomain" || specs[0].Spec.ID != "user:NSGlobalDomain:AppleLanguages" {
 		t.Fatalf("unexpected global spec: %#v", specs[0])
 	}
-	if specs[1].GroupName != "raw:com.example.app" || specs[1].Spec.ID != "user:com.example.app:Enabled" {
+	if specs[1].GroupName != "com.example.app" || specs[1].Spec.ID != "user:com.example.app:Enabled" {
 		t.Fatalf("unexpected raw spec: %#v", specs[1])
+	}
+}
+
+func TestMacOSDefaultsSpecsFromModelRejectsLegacyGroupAliases(t *testing.T) {
+	t.Parallel()
+
+	groups := mustMacOSSettingsGroupsMap(t, map[string]map[string]attr.Value{
+		"dock": {
+			"autohide": types.BoolValue(true),
+		},
+	})
+
+	_, diags := macOSDefaultsSpecsFromModel(context.Background(), MacOSDefaultsResourceModel{
+		Groups: groups,
+	})
+	if !diags.HasError() {
+		t.Fatal("expected legacy group alias diagnostics")
 	}
 }
 
@@ -163,7 +180,7 @@ func TestMacOSDefaultsSpecsFromModelRejectsGroupSettingsWrapper(t *testing.T) {
 	}
 
 	groups := mustMacOSSettingsGroupsMap(t, map[string]map[string]attr.Value{
-		"dock": {
+		"com.apple.dock": {
 			"settings": wrappedSettings,
 		},
 	})
@@ -188,7 +205,7 @@ func TestMacOSDefaultsSpecsFromModelRejectsGroupSettingObjectForm(t *testing.T) 
 	}
 
 	groups := mustMacOSSettingsGroupsMap(t, map[string]map[string]attr.Value{
-		"dock": {
+		"com.apple.dock": {
 			"show-recents": objectForm,
 		},
 	})
@@ -222,17 +239,17 @@ func TestMacOSDefaultsImportSpecs(t *testing.T) {
 func TestMacOSDefaultsImportSpecsParsesGroupedNames(t *testing.T) {
 	t.Parallel()
 
-	specs, err := macOSDefaultsImportSpecs("menuextra.clock/IsAnalog=user:com.apple.menuextra.clock:IsAnalog,menuextra.clock/ShowAMPM=user:com.apple.menuextra.clock:ShowAMPM")
+	specs, err := macOSDefaultsImportSpecs("com.apple.menuextra.clock/IsAnalog=user:com.apple.menuextra.clock:IsAnalog,com.apple.menuextra.clock/ShowAMPM=user:com.apple.menuextra.clock:ShowAMPM")
 	if err != nil {
 		t.Fatalf("macOSDefaultsImportSpecs: %s", err)
 	}
 	if len(specs) != 2 {
 		t.Fatalf("got %d specs, want 2", len(specs))
 	}
-	if specs[0].GroupName != "menuextra.clock" || specs[0].Name != "IsAnalog" || specs[0].Spec.ID != "user:com.apple.menuextra.clock:IsAnalog" {
+	if specs[0].GroupName != "com.apple.menuextra.clock" || specs[0].Name != "IsAnalog" || specs[0].Spec.ID != "user:com.apple.menuextra.clock:IsAnalog" {
 		t.Fatalf("unexpected first grouped import: %#v", specs[0])
 	}
-	if specs[1].GroupName != "menuextra.clock" || specs[1].Name != "ShowAMPM" || specs[1].Spec.ID != "user:com.apple.menuextra.clock:ShowAMPM" {
+	if specs[1].GroupName != "com.apple.menuextra.clock" || specs[1].Name != "ShowAMPM" || specs[1].Spec.ID != "user:com.apple.menuextra.clock:ShowAMPM" {
 		t.Fatalf("unexpected second grouped import: %#v", specs[1])
 	}
 }
@@ -240,7 +257,7 @@ func TestMacOSDefaultsImportSpecsParsesGroupedNames(t *testing.T) {
 func TestMacOSDefaultsImportSpecsRejectsGroupedDomainMismatch(t *testing.T) {
 	t.Parallel()
 
-	_, err := macOSDefaultsImportSpecs("dock/IsAnalog=user:com.apple.menuextra.clock:IsAnalog")
+	_, err := macOSDefaultsImportSpecs("com.apple.dock/IsAnalog=user:com.apple.menuextra.clock:IsAnalog")
 	if err == nil {
 		t.Fatal("expected grouped domain mismatch error")
 	}

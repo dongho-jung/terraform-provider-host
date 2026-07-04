@@ -46,6 +46,8 @@ resource "host_package_brew" "terraform" {
 
 ### Read-Only
 
+- `app_path` (String) Application bundle path for casks with exactly one `.app` artifact. Null for formulae, casks without app artifacts, or casks with multiple app artifacts.
+- `app_paths` (List of String) Application bundle paths reported by Homebrew cask app artifacts. Empty for formulae and casks without app artifacts.
 - `candidate_version` (String) Latest Homebrew package version known to Homebrew. Null when `ignore_version` is true and `version` is `latest`.
 - `id` (String) Resource identifier in `<package_type>:<name>` form.
 - `installed_version` (String) Installed Homebrew package version.

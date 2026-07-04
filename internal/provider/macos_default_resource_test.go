@@ -168,8 +168,8 @@ func TestMacOSDefaultResourceImportStateReadsCurrentValue(t *testing.T) {
 	if state.ID.ValueString() != "user:com.apple.dock:autohide" {
 		t.Fatalf("id got %q", state.ID.ValueString())
 	}
-	if state.DomainResolved.ValueString() != "com.apple.dock" || state.Key.ValueString() != "autohide" {
-		t.Fatalf("got domain=%q key=%q", state.DomainResolved.ValueString(), state.Key.ValueString())
+	if state.Domain.ValueString() != "com.apple.dock" || state.Key.ValueString() != "autohide" {
+		t.Fatalf("got domain=%q key=%q", state.Domain.ValueString(), state.Key.ValueString())
 	}
 	importedValue, diags := macOSDefaultValueFromDynamic(state.Value)
 	if diags.HasError() {
@@ -200,7 +200,7 @@ func TestParseMacOSDefaultReadValue(t *testing.T) {
 	}
 }
 
-func TestMacOSSettingDomainFromObject(t *testing.T) {
+func TestMacOSDefaultDomainFromString(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]string{
@@ -213,10 +213,9 @@ func TestMacOSSettingDomainFromObject(t *testing.T) {
 		t.Run(input, func(t *testing.T) {
 			t.Parallel()
 
-			object := mustMacOSSettingDomain(t, input)
-			got, diags := macOSSettingDomainFromObject(context.Background(), object)
+			got, diags := macOSDefaultDomainFromString(types.StringValue(input))
 			if diags.HasError() {
-				t.Fatalf("domain from object: %s", diagnosticsError(diags))
+				t.Fatalf("domain from string: %s", diagnosticsError(diags))
 			}
 			if got != want {
 				t.Fatalf("got %q, want %q", got, want)
@@ -225,14 +224,10 @@ func TestMacOSSettingDomainFromObject(t *testing.T) {
 	}
 }
 
-func mustMacOSSettingDomain(t *testing.T, domain string) types.Object {
+func mustMacOSSettingDomain(t *testing.T, domain string) types.String {
 	t.Helper()
 
-	object, err := macOSSettingDomainObjectFromResolved(domain)
-	if err != nil {
-		t.Fatalf("domain object: %s", err)
-	}
-	return object
+	return types.StringValue(domain)
 }
 
 func mustMacOSDefaultDynamic(t *testing.T, value macOSDefaultValue) types.Dynamic {

@@ -10,7 +10,7 @@ description: |-
 
 Manages multiple macOS settings backed by `defaults` keys as one grouped Terraform resource.
 
-Use this resource when you want one compact macOS settings block. Put related preferences in `groups` when they share a domain, or use `settings` for one-off entries. Each setting maps to one macOS preference identified by a defaults domain, key, and scope.
+Use this resource when you want one compact macOS settings block. Put related preferences in `groups` when they share a domain, or use `settings` for one-off entries. Each setting maps to one macOS preference identified by a raw defaults domain, key, and scope.
 
 ## Example Usage
 
@@ -18,9 +18,9 @@ Use this resource when you want one compact macOS settings block. Put related pr
 
 ## Value Attributes
 
-In `groups`, the outer map key is the macOS defaults domain selector and the inner map is defaults key to value. Apple domains omit `com.apple.`, `global` means `NSGlobalDomain`, and non-Apple domains use `raw:<domain>`. Quote keys that contain punctuation, such as `"show-recents" = false`.
+In `groups`, the outer map key is the exact macOS defaults domain and the inner map is defaults key to value. Use raw domains such as `com.apple.dock`, `NSGlobalDomain`, `com.apple.menuextra.clock`, or an application bundle identifier. Quote keys that contain punctuation, such as `"show-recents" = false`.
 
-Values can be bools, numbers, strings, or lists of strings. Top-level `settings` entries still include `domain`, `key`, and `value`; use them when a setting needs explicit `restart`, `current_host`, or `delete_on_destroy` behavior.
+Values can be bools, numbers, strings, or lists of strings. Top-level `settings` entries still include raw string `domain`, `key`, and `value`; use them when a setting needs explicit `restart`, `current_host`, or `delete_on_destroy` behavior.
 
 ## Restart Behavior
 
@@ -40,10 +40,10 @@ terraform import 'host_mac_settings.settings' 'dock_autohide=user:com.apple.dock
 
 Each import entry uses `<map_key>=<domain>:<key>`, `<map_key>=user:<domain>:<key>`, or `<map_key>=currentHost:<domain>:<key>`. The provider reads only the defaults keys listed in the import ID; it does not scan an entire defaults domain.
 
-Use `<group>/<setting>=<default_id>` when importing directly into `groups`:
+Use `<domain>/<setting>=<default_id>` when importing directly into `groups`:
 
 ```shell
-terraform import 'host_mac_settings.settings' 'menuextra.clock/IsAnalog=user:com.apple.menuextra.clock:IsAnalog,menuextra.clock/ShowAMPM=user:com.apple.menuextra.clock:ShowAMPM'
+terraform import 'host_mac_settings.settings' 'com.apple.menuextra.clock/IsAnalog=user:com.apple.menuextra.clock:IsAnalog,com.apple.menuextra.clock/ShowAMPM=user:com.apple.menuextra.clock:ShowAMPM'
 ```
 
 {{ .SchemaMarkdown | trimspace }}

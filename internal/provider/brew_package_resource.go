@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -40,6 +41,8 @@ type BrewPackageResourceModel struct {
 	InstalledVersion types.String `tfsdk:"installed_version"`
 	CandidateVersion types.String `tfsdk:"candidate_version"`
 	Pinned           types.Bool   `tfsdk:"pinned"`
+	AppPath          types.String `tfsdk:"app_path"`
+	AppPaths         types.List   `tfsdk:"app_paths"`
 }
 
 func NewBrewPackageResource() resource.Resource {
@@ -129,6 +132,18 @@ func (r *BrewPackageResource) Schema(ctx context.Context, req resource.SchemaReq
 					boolplanmodifier.UseStateForUnknown(),
 				},
 			},
+			"app_path": schema.StringAttribute{
+				Computed:            true,
+				MarkdownDescription: "Application bundle path for casks with exactly one `.app` artifact. Null for formulae, casks without app artifacts, or casks with multiple app artifacts.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"app_paths": schema.ListAttribute{
+				Computed:            true,
+				ElementType:         types.StringType,
+				MarkdownDescription: "Application bundle paths reported by Homebrew cask app artifacts. Empty for formulae and casks without app artifacts.",
+			},
 		},
 	}
 }
@@ -201,6 +216,8 @@ func (r *BrewPackageResource) ModifyPlan(ctx context.Context, req resource.Modif
 		if !tapInstalled {
 			plan.ID = types.StringValue(brewPackageID(plan.PackageType.ValueString(), packageName))
 			plan.InstalledVersion = types.StringUnknown()
+			plan.AppPath = types.StringUnknown()
+			plan.AppPaths = types.ListUnknown(types.StringType)
 			if brewPackageIgnoresVersion(plan) {
 				plan.CandidateVersion = types.StringNull()
 			} else {
@@ -220,6 +237,7 @@ func (r *BrewPackageResource) ModifyPlan(ctx context.Context, req resource.Modif
 	}
 
 	hydrateBrewVersionState(&plan, status)
+	hydrateBrewAppPathState(&plan, status)
 	plan.ID = types.StringValue(brewPackageID(plan.PackageType.ValueString(), packageName))
 	plan.Pinned = types.BoolValue(status.Pinned)
 	if brewPackageIgnoresVersion(plan) {
@@ -428,6 +446,7 @@ func (r *BrewPackageResource) refreshState(ctx context.Context, model BrewPackag
 	}
 	model.Pinned = types.BoolValue(status.Pinned)
 	hydrateBrewVersionState(&model, status)
+	hydrateBrewAppPathState(&model, status)
 	if brewPackageIgnoresVersion(model) {
 		model.CandidateVersion = types.StringNull()
 	}
@@ -504,6 +523,25 @@ func hydrateBrewVersionState(model *BrewPackageResourceModel, status BrewPackage
 	} else {
 		model.CandidateVersion = types.StringValue(status.CandidateVersion)
 	}
+}
+
+func hydrateBrewAppPathState(model *BrewPackageResourceModel, status BrewPackageStatus) {
+	if status.PackageType != brewPackageTypeCask {
+		model.AppPath = types.StringNull()
+		model.AppPaths = types.ListValueMust(types.StringType, nil)
+		return
+	}
+
+	elements := make([]attr.Value, 0, len(status.AppPaths))
+	for _, appPath := range status.AppPaths {
+		elements = append(elements, types.StringValue(appPath))
+	}
+	model.AppPaths = types.ListValueMust(types.StringType, elements)
+	if len(status.AppPaths) == 1 {
+		model.AppPath = types.StringValue(status.AppPaths[0])
+		return
+	}
+	model.AppPath = types.StringNull()
 }
 
 func markBrewVersionStateUnknown(model *BrewPackageResourceModel) {

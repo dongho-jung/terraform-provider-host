@@ -90,7 +90,13 @@ func TestParseBrewCaskStatus(t *testing.T) {
       "installed": "4.71.0,225177",
       "outdated": true,
       "pinned": false,
-      "auto_updates": true
+      "auto_updates": true,
+      "artifacts": [
+        {
+          "app": ["Docker.app"],
+          "target": "/Applications/Docker.app"
+        }
+      ]
     }
   ]
 }`))
@@ -112,5 +118,46 @@ func TestParseBrewCaskStatus(t *testing.T) {
 	}
 	if !status.AutoUpdates {
 		t.Fatal("expected auto-updating cask")
+	}
+	if len(status.AppPaths) != 1 || status.AppPaths[0] != "/Applications/Docker.app" {
+		t.Fatalf("expected Docker app path, got %#v", status.AppPaths)
+	}
+}
+
+func TestBrewCaskAppPathsIgnoresNonAppArtifacts(t *testing.T) {
+	t.Parallel()
+
+	status, err := parseBrewPackageStatus("hammerspoon", brewPackageTypeCask, []byte(`{
+  "formulae": [],
+  "casks": [
+    {
+      "token": "hammerspoon",
+      "full_token": "hammerspoon",
+      "version": "1.1.1",
+      "installed": "1.1.1",
+      "outdated": false,
+      "pinned": false,
+      "auto_updates": false,
+      "artifacts": [
+        { "uninstall": [{ "quit": "org.hammerspoon.Hammerspoon" }] },
+        {
+          "app": ["Hammerspoon.app"],
+          "target": "/Applications/Hammerspoon.app"
+        },
+        {
+          "binary": ["/Applications/Hammerspoon.app/Contents/Frameworks/hs/hs"],
+          "target": "/opt/homebrew/bin/hs"
+        }
+      ]
+    }
+  ]
+}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	want := []string{"/Applications/Hammerspoon.app"}
+	if len(status.AppPaths) != len(want) || status.AppPaths[0] != want[0] {
+		t.Fatalf("app paths got %#v, want %#v", status.AppPaths, want)
 	}
 }

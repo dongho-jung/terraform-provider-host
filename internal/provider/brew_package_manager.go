@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,7 @@ type BrewPackageStatus struct {
 	InstalledOnRequest bool
 	Pinned             bool
 	AutoUpdates        bool
+	AppPaths           []string
 }
 
 type CLIBrewPackageManager struct {
@@ -85,6 +87,10 @@ type brewCaskInfo struct {
 	Outdated    bool    `json:"outdated"`
 	Pinned      bool    `json:"pinned"`
 	AutoUpdates bool    `json:"auto_updates"`
+	Artifacts   []struct {
+		App    []string `json:"app"`
+		Target string   `json:"target"`
+	} `json:"artifacts"`
 }
 
 func NewCLIBrewPackageManager(brewPath string, sudoPathOverride ...string) *CLIBrewPackageManager {
@@ -503,6 +509,7 @@ func brewCaskStatus(cask brewCaskInfo) BrewPackageStatus {
 		Pinned:             cask.Pinned,
 		AutoUpdates:        cask.AutoUpdates,
 		InstalledOnRequest: true,
+		AppPaths:           brewCaskAppPaths(cask),
 	}
 
 	if cask.Installed != nil && *cask.Installed != "" {
@@ -515,6 +522,30 @@ func brewCaskStatus(cask brewCaskInfo) BrewPackageStatus {
 	}
 
 	return status
+}
+
+func brewCaskAppPaths(cask brewCaskInfo) []string {
+	var paths []string
+	seen := make(map[string]struct{})
+	for _, artifact := range cask.Artifacts {
+		if len(artifact.App) == 0 {
+			continue
+		}
+
+		path := strings.TrimSpace(artifact.Target)
+		if path == "" {
+			path = strings.TrimSpace(artifact.App[0])
+		}
+		if path == "" || !filepath.IsAbs(path) || !strings.HasSuffix(path, ".app") {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	return paths
 }
 
 func brewPackageTypeFlag(packageType string) string {
