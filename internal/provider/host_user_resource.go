@@ -450,6 +450,9 @@ func hostUserGroupsFromSet(ctx context.Context, value types.Set) ([]string, diag
 }
 
 func hostUserStringSet(ctx context.Context, values []string) (types.Set, diag.Diagnostics) {
+	if values == nil {
+		values = []string{}
+	}
 	sort.Strings(values)
 	return types.SetValueFrom(ctx, types.StringType, values)
 }

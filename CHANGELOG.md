@@ -1,3 +1,9 @@
+## 0.11.1 (2026-07-05)
+
+FIXES:
+
+- Preserve empty `host_user.groups` as an empty set during refresh.
+
 ## 0.11.0 (2026-07-05)
 
 BREAKING CHANGES:
