@@ -25,3 +25,17 @@ func TestAccProviderConfig(t *testing.T) {
 		},
 	})
 }
+
+func TestAccProviderConfigAllowsExplicitHomeDirForMissingTargetUser(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `provider "host" {
+  target_user = "tfhostmissingtargetuser"
+  home_dir    = "/tmp/tfhostmissingtargetuser"
+}`,
+			},
+		},
+	})
+}

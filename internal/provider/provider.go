@@ -2,7 +2,9 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
+	"runtime"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
@@ -38,11 +40,11 @@ func (p *HostProvider) Schema(ctx context.Context, req provider.SchemaRequest, r
 			},
 			"home_dir": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "Home directory used to expand leading `~` in host paths. Defaults to the configured `target_user` home directory.",
+				MarkdownDescription: "Home directory used to expand leading `~` in host paths. Defaults to the configured `target_user` home directory. Set this when bootstrapping a target user that does not exist yet.",
 			},
 			"target_user": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Existing local user this provider instance manages. User-scoped resources use this user's home directory and crontab.",
+				MarkdownDescription: "Local user this provider instance manages. User-scoped resources use this user's home directory and crontab.",
 			},
 		},
 	}
@@ -59,7 +61,7 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 	var data HostProviderData
 
 	if config.TargetUser.IsNull() || config.TargetUser.IsUnknown() {
-		resp.Diagnostics.AddError("Missing target_user", "`target_user` must name the existing local user this provider instance manages.")
+		resp.Diagnostics.AddError("Missing target_user", "`target_user` must name the local user this provider instance manages.")
 		return
 	}
 	targetUser := config.TargetUser.ValueString()
@@ -70,19 +72,22 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 	data.TargetUser = targetUser
 
 	targetHomeDir, err := resolveTargetUserHomeDir(ctx, data.TargetUser)
-	if err != nil {
-		resp.Diagnostics.AddError("Invalid target_user", err.Error())
-		return
-	}
-
 	if !config.HomeDir.IsNull() && !config.HomeDir.IsUnknown() {
-		homeDir, err := expandHostPathWithHome(config.HomeDir.ValueString(), targetHomeDir)
+		homeBase := targetHomeDir
+		if err != nil {
+			homeBase = ""
+		}
+		homeDir, err := expandHostPathWithHome(config.HomeDir.ValueString(), homeBase)
 		if err != nil {
 			resp.Diagnostics.AddError("Invalid home_dir", err.Error())
 			return
 		}
 		data.HomeDir = homeDir
 	} else {
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid target_user", fmt.Sprintf("%s. Set home_dir when bootstrapping a target user that does not exist yet.", err.Error()))
+			return
+		}
 		data.HomeDir = targetHomeDir
 	}
 
@@ -103,14 +108,55 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 	}
 
 	sudoPath := executablePath("sudo")
+	data.IdentityManager = NewCLIIdentityManager(sudoPath)
+
 	dnfPath := executablePath("dnf")
 	if dnfPath != "" {
 		data.PackageManager = NewCLIPackageManager(dnfPath, sudoPath)
 	}
 
+	pacmanPath := executablePath("pacman")
+	if pacmanPath != "" {
+		data.PacmanManager = NewCLIPacmanPackageManager(pacmanPath, sudoPath)
+	}
+
 	brewPath := executablePath("brew")
 	if brewPath != "" {
 		data.BrewManager = NewCLIBrewPackageManager(brewPath, sudoPath)
+	}
+
+	hostnamectlPath := executablePath("hostnamectl")
+	scutilPath := executablePath("scutil")
+	if hostnamectlPath != "" || scutilPath != "" {
+		data.HostnameManager = NewCLIHostnameManager(runtime.GOOS, hostnamectlPath, scutilPath, sudoPath)
+	}
+
+	timedatectlPath := executablePath("timedatectl")
+	systemsetupPath := executablePath("systemsetup")
+	if timedatectlPath != "" || systemsetupPath != "" {
+		data.TimezoneManager = NewCLITimezoneManager(runtime.GOOS, timedatectlPath, systemsetupPath, sudoPath)
+	}
+
+	localectlPath := executablePath("localectl")
+	if localectlPath != "" {
+		localectlManager := NewCLILocalectlManager(localectlPath, sudoPath)
+		data.LocaleManager = localectlManager
+		data.KeymapManager = localectlManager
+	}
+
+	systemctlPath := executablePath("systemctl")
+	if systemctlPath != "" {
+		data.SystemdManager = NewCLISystemdServiceManager(systemctlPath, sudoPath)
+		data.SystemdUnitManager = NewCLISystemdUnitManager(systemctlPath, sudoPath)
+	}
+
+	sysctlPath := executablePath("sysctl")
+	if runtime.GOOS == "linux" && sysctlPath != "" {
+		data.SysctlManager = NewCLISysctlManager(sysctlPath, sudoPath)
+	}
+
+	if runtime.GOOS == "linux" {
+		data.FstabManager = NewHostFstabManager(sudoPath)
 	}
 
 	gitPath := executablePath("git")
@@ -160,11 +206,22 @@ func executablePath(name string) string {
 func (p *HostProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewDNFPackageResource,
+		NewPacmanPackageResource,
 		NewBrewPackageResource,
 		NewHostDirResource,
 		NewHostFileResource,
 		NewHostFileBlockResource,
 		NewHostGitRepositoryResource,
+		NewHostHostnameResource,
+		NewHostTimezoneResource,
+		NewHostLocaleResource,
+		NewHostKeymapResource,
+		NewHostSysctlResource,
+		NewHostSystemdUnitResource,
+		NewHostSystemdServiceResource,
+		NewHostFstabEntryResource,
+		NewHostGroupResource,
+		NewHostUserResource,
 		NewHostSSHKeyResource,
 		NewHostSSHConfigHostResource,
 		NewHostLinkResource,

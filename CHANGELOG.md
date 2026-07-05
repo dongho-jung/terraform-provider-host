@@ -1,10 +1,25 @@
-## 0.11.0 (2026-07-04)
+## 0.11.0 (2026-07-05)
 
 BREAKING CHANGES:
 
-- Require provider `target_user`; the provider now manages one existing local user per configuration.
-- Remove local account-management resources and data sources: `host_user`, `host_group`, and `data.host_group`.
+- Require provider `target_user`; the provider now manages one local user per configuration.
+- Simplify `host_user` for target-user bootstrap with `name` and `home_dir` attributes.
+- Remove the `data.host_group` role lookup; use explicit group names and `host_group` resource references.
 - Remove `user` and `scope` from `host_schedule`; schedules now target the provider `target_user` crontab.
+
+FEATURES:
+
+- Allow provider `home_dir` to be set explicitly when bootstrapping a `target_user` that does not exist yet.
+- Add `host_group` for local group bootstrap.
+- Add `host_hostname` for system hostname management.
+- Add `host_package_pacman` for Arch Linux package management.
+- Add `host_fstab_entry` for provider-owned `/etc/fstab` entry blocks.
+- Add `host_keymap` for Linux virtual console keymap management.
+- Add `host_locale` for Linux system locale management.
+- Add `host_sysctl` for Linux sysctl key management through `/etc/sysctl.d`.
+- Add `host_systemd_service` for systemd service enabled/running state.
+- Add `host_systemd_unit` for systemd unit file management with daemon reloads.
+- Add `host_timezone` for system timezone management.
 
 ## 0.10.0 (2026-07-04)
 
