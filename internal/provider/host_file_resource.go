@@ -180,14 +180,14 @@ func (r *HostFileResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 	if plan.Path.IsNull() || plan.Path.IsUnknown() {
 		return
 	}
-	resolvedPath, err := expandHostPathForHome(plan.Path.ValueString(), r.homeDir)
+	resolvedPath, err := expandHostPathWithHome(plan.Path.ValueString(), r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid host file path", err.Error())
 		return
 	}
 	plan.PathResolved = types.StringValue(resolvedPath)
 	requireReplaceIfResolvedPathChanged(req, resp, tfpath.Root("path"), state.Path, state.PathResolved, resolvedPath, func(value string) (string, error) {
-		return expandHostPathForHome(value, r.homeDir)
+		return expandHostPathWithHome(value, r.homeDir)
 	})
 	if resp.Diagnostics.HasError() {
 		return
@@ -661,7 +661,7 @@ func hostFileHasConfiguredBlocks(blocks types.List) bool {
 }
 
 func hostFilePathResolvedValueForHome(path string, homeDir string, diags *diag.Diagnostics) types.String {
-	resolved, err := expandHostPathForHome(path, homeDir)
+	resolved, err := expandHostPathWithHome(path, homeDir)
 	if err != nil {
 		diags.AddError("Invalid host file path", err.Error())
 		return types.StringUnknown()

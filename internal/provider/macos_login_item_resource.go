@@ -470,7 +470,7 @@ func resolveMacOSLoginItemPathForHome(path string, homeDir string) (string, erro
 	if strings.Contains(path, "\x00") {
 		return "", fmt.Errorf("path must not contain NUL bytes")
 	}
-	return expandHostPathForHome(path, homeDir)
+	return expandHostPathWithHome(path, homeDir)
 }
 
 func ensureMacOSLoginItemPath(path string) error {

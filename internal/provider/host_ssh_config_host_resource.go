@@ -352,10 +352,6 @@ func syncHostSSHConfigHostForHome(ctx context.Context, plan HostSSHConfigHostRes
 	return plan, nil
 }
 
-func hostSSHConfigHostSpecFromModel(ctx context.Context, model HostSSHConfigHostResourceModel) (hostSSHConfigHostSpec, diag.Diagnostics) {
-	return hostSSHConfigHostSpecFromModelForHome(ctx, model, "")
-}
-
 func hostSSHConfigHostSpecFromModelForHome(ctx context.Context, model HostSSHConfigHostResourceModel, homeDir string) (hostSSHConfigHostSpec, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
@@ -811,14 +807,14 @@ func resolveSSHConfigPathForHome(path string, homeDir string) (string, error) {
 	if strings.Contains(path, "\x00") {
 		return "", fmt.Errorf("path must not contain NUL bytes")
 	}
-	return expandHostPathForHome(path, homeDir)
+	return expandHostPathWithHome(path, homeDir)
 }
 
 func resolveSSHConfigIdentityFileForHome(path string, homeDir string) (string, error) {
 	if strings.Contains(path, "\x00") {
 		return "", fmt.Errorf("identity_file must not contain NUL bytes")
 	}
-	return expandHostPathForHome(path, homeDir)
+	return expandHostPathWithHome(path, homeDir)
 }
 
 func validateSSHConfigHostSpec(spec hostSSHConfigHostSpec) error {

@@ -25,8 +25,6 @@ const (
 	hostSchedulePackageFedoraCron  = "cronie"
 	hostScheduleCrondSystemdUnit   = "crond.service"
 	hostScheduleCronNoCrontabToken = "no crontab"
-	hostScheduleScopeUser          = "user"
-	hostScheduleScopeSystem        = "system"
 	hostScheduleRootUser           = "root"
 )
 
@@ -41,7 +39,6 @@ type ScheduleManager interface {
 type HostScheduleSpec struct {
 	ID               string            `json:"id"`
 	User             string            `json:"user"`
-	Scope            string            `json:"scope"`
 	Command          string            `json:"command"`
 	Schedule         string            `json:"schedule,omitempty"`
 	Every            string            `json:"every,omitempty"`
@@ -56,7 +53,6 @@ type HostScheduleSpec struct {
 type HostScheduleStatus struct {
 	ID                       string
 	User                     string
-	Scope                    string
 	Backend                  string
 	RuntimeDir               string
 	ScriptPath               string
@@ -146,10 +142,10 @@ func hostScheduleMetadataPathForRuntime(id string, runtimeDir string) (string, e
 }
 
 func (m *CLICronScheduleManager) UpsertSchedule(ctx context.Context, spec HostScheduleSpec) (HostScheduleStatus, error) {
-	if err := validateHostScheduleSpecForHome(spec, m.homeDir); err != nil {
+	if err := applyHostScheduleTargetUser(&spec, m.targetUser); err != nil {
 		return HostScheduleStatus{}, err
 	}
-	if err := normalizeHostScheduleSpecTargetWithDefault(&spec, m.targetUser); err != nil {
+	if err := validateHostScheduleSpecForHome(spec, m.homeDir); err != nil {
 		return HostScheduleStatus{}, err
 	}
 
@@ -173,7 +169,7 @@ func (m *CLICronScheduleManager) ReadSchedule(ctx context.Context, spec HostSche
 	if err := validateHostScheduleID(spec.ID); err != nil {
 		return HostScheduleStatus{}, false, err
 	}
-	if err := normalizeHostScheduleSpecTargetWithDefault(&spec, m.targetUser); err != nil {
+	if err := applyHostScheduleTargetUser(&spec, m.targetUser); err != nil {
 		return HostScheduleStatus{}, false, err
 	}
 
@@ -210,7 +206,7 @@ func (m *CLICronScheduleManager) DeleteSchedule(ctx context.Context, spec HostSc
 	if err := validateHostScheduleID(spec.ID); err != nil {
 		return err
 	}
-	if err := normalizeHostScheduleSpecTargetWithDefault(&spec, m.targetUser); err != nil {
+	if err := applyHostScheduleTargetUser(&spec, m.targetUser); err != nil {
 		return err
 	}
 
@@ -238,7 +234,7 @@ func hostScheduleStatusForProvider(spec HostScheduleSpec, homeDir string, runtim
 	if err := validateHostScheduleID(spec.ID); err != nil {
 		return HostScheduleStatus{}, err
 	}
-	if err := normalizeHostScheduleSpecTarget(&spec); err != nil {
+	if err := validateHostScheduleTargetUser(spec.User); err != nil {
 		return HostScheduleStatus{}, err
 	}
 
@@ -266,7 +262,6 @@ func hostScheduleStatusForProvider(spec HostScheduleSpec, homeDir string, runtim
 	return HostScheduleStatus{
 		ID:                       spec.ID,
 		User:                     spec.User,
-		Scope:                    spec.Scope,
 		Backend:                  "cron",
 		RuntimeDir:               resolvedRuntimeDir,
 		ScriptPath:               scriptPath,
@@ -280,7 +275,7 @@ func resolveOptionalHostSchedulePathForHome(path string, homeDir string) (string
 	if path == "" {
 		return "", nil
 	}
-	return expandHostPathForHome(path, homeDir)
+	return expandHostPathWithHome(path, homeDir)
 }
 
 func writeHostScheduleRuntimeFilesForProvider(spec HostScheduleSpec, status HostScheduleStatus, homeDir string, runtimeDir string) error {
@@ -649,7 +644,7 @@ func validateHostScheduleSpecForHome(spec HostScheduleSpec, homeDir string) erro
 	if err := validateHostScheduleID(spec.ID); err != nil {
 		return err
 	}
-	if err := normalizeHostScheduleSpecTarget(&spec); err != nil {
+	if err := validateHostScheduleTargetUser(spec.User); err != nil {
 		return err
 	}
 
@@ -672,17 +667,17 @@ func validateHostScheduleSpecForHome(spec HostScheduleSpec, homeDir string) erro
 		return err
 	}
 	if spec.WorkingDirectory != "" {
-		if _, err := expandHostPathForHome(spec.WorkingDirectory, homeDir); err != nil {
+		if _, err := expandHostPathWithHome(spec.WorkingDirectory, homeDir); err != nil {
 			return fmt.Errorf("invalid working_directory: %w", err)
 		}
 	}
 	if spec.StdoutPath != "" {
-		if _, err := expandHostPathForHome(spec.StdoutPath, homeDir); err != nil {
+		if _, err := expandHostPathWithHome(spec.StdoutPath, homeDir); err != nil {
 			return fmt.Errorf("invalid stdout_path: %w", err)
 		}
 	}
 	if spec.StderrPath != "" {
-		if _, err := expandHostPathForHome(spec.StderrPath, homeDir); err != nil {
+		if _, err := expandHostPathWithHome(spec.StderrPath, homeDir); err != nil {
 			return fmt.Errorf("invalid stderr_path: %w", err)
 		}
 	}
@@ -698,76 +693,21 @@ func validateHostScheduleSpecForHome(spec HostScheduleSpec, homeDir string) erro
 	return nil
 }
 
-func normalizeHostScheduleSpecTarget(spec *HostScheduleSpec) error {
-	return normalizeHostScheduleSpecTargetWithDefault(spec, "")
-}
-
-func normalizeHostScheduleSpecTargetWithDefault(spec *HostScheduleSpec, defaultUser string) error {
-	scope, targetUser, err := normalizeHostScheduleTargetWithDefault(spec.Scope, spec.User, defaultUser)
-	if err != nil {
+func applyHostScheduleTargetUser(spec *HostScheduleSpec, targetUser string) error {
+	targetUser = strings.TrimSpace(targetUser)
+	if err := validateHostScheduleTargetUser(targetUser); err != nil {
 		return err
 	}
-
-	spec.Scope = scope
 	spec.User = targetUser
 	return nil
 }
 
-func normalizeHostScheduleTarget(scope string, targetUser string) (string, string, error) {
-	return normalizeHostScheduleTargetWithDefault(scope, targetUser, "")
-}
-
-func normalizeHostScheduleTargetWithDefault(scope string, targetUser string, defaultUser string) (string, string, error) {
-	scope = strings.TrimSpace(scope)
+func validateHostScheduleTargetUser(targetUser string) error {
 	targetUser = strings.TrimSpace(targetUser)
-	defaultUser = strings.TrimSpace(defaultUser)
-	if defaultUser != "" {
-		if err := validateHostUserName(defaultUser); err != nil {
-			return "", "", err
-		}
+	if targetUser == "" {
+		return fmt.Errorf("target user must be configured on the provider")
 	}
-
-	if scope == "" && targetUser == "" && defaultUser != "" {
-		targetUser = defaultUser
-	}
-
-	if scope == "" {
-		if targetUser == hostScheduleRootUser {
-			scope = hostScheduleScopeSystem
-		} else {
-			scope = hostScheduleScopeUser
-		}
-	}
-
-	switch scope {
-	case hostScheduleScopeUser:
-		if targetUser == "" {
-			if defaultUser != "" {
-				targetUser = defaultUser
-			} else {
-				currentUser, err := currentHostUsername()
-				if err != nil {
-					return "", "", err
-				}
-				targetUser = currentUser
-			}
-		}
-	case hostScheduleScopeSystem:
-		if targetUser == "" {
-			targetUser = hostScheduleRootUser
-		}
-		if targetUser != hostScheduleRootUser {
-			return "", "", fmt.Errorf("scope %q manages the root crontab, so user must be unset or %q", hostScheduleScopeSystem, hostScheduleRootUser)
-		}
-	default:
-		return "", "", fmt.Errorf("scope must be %q or %q", hostScheduleScopeUser, hostScheduleScopeSystem)
-	}
-
-	if err := validateHostUserName(targetUser); err != nil {
-		return "", "", err
-	}
-
-	return scope, targetUser, nil
+	return validateHostUserName(targetUser)
 }
 
 func currentHostUsername() (string, error) {
@@ -962,7 +902,7 @@ func renderHostScheduleScriptForHome(spec HostScheduleSpec, homeDir string) (str
 	builder.WriteString("\n")
 
 	if spec.StdoutPath != "" {
-		path, err := expandHostPathForHome(spec.StdoutPath, homeDir)
+		path, err := expandHostPathWithHome(spec.StdoutPath, homeDir)
 		if err != nil {
 			return "", fmt.Errorf("invalid stdout_path: %w", err)
 		}
@@ -971,7 +911,7 @@ func renderHostScheduleScriptForHome(spec HostScheduleSpec, homeDir string) (str
 		builder.WriteString("\n")
 	}
 	if spec.StderrPath != "" {
-		path, err := expandHostPathForHome(spec.StderrPath, homeDir)
+		path, err := expandHostPathWithHome(spec.StderrPath, homeDir)
 		if err != nil {
 			return "", fmt.Errorf("invalid stderr_path: %w", err)
 		}
@@ -989,7 +929,7 @@ func renderHostScheduleScriptForHome(spec HostScheduleSpec, homeDir string) (str
 		}
 	}
 	if spec.WorkingDirectory != "" {
-		path, err := expandHostPathForHome(spec.WorkingDirectory, homeDir)
+		path, err := expandHostPathWithHome(spec.WorkingDirectory, homeDir)
 		if err != nil {
 			return "", fmt.Errorf("invalid working_directory: %w", err)
 		}

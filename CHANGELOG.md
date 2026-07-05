@@ -1,3 +1,11 @@
+## 0.11.0 (2026-07-04)
+
+BREAKING CHANGES:
+
+- Require provider `target_user`; the provider now manages one existing local user per configuration.
+- Remove local account-management resources and data sources: `host_user`, `host_group`, and `data.host_group`.
+- Remove `user` and `scope` from `host_schedule`; schedules now target the provider `target_user` crontab.
+
 ## 0.10.0 (2026-07-04)
 
 BREAKING CHANGES:
@@ -34,7 +42,7 @@ FEATURES:
 
 FIXES:
 
-- Resolve host paths and runtime metadata per provider instance so provider aliases can target different users safely.
+- Resolve host paths and runtime metadata from the configured provider target user.
 - Compare resolved paths when deciding replacement for path-based resources, reducing noisy diffs between equivalent `~` and absolute paths.
 
 ## 0.6.0 (2026-07-04)

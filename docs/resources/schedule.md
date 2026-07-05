@@ -3,12 +3,12 @@
 page_title: "host_schedule Resource - host"
 subcategory: ""
 description: |-
-  Manages a user schedule through the user's crontab.
+  Manages a schedule through the provider target user's crontab.
 ---
 
 # host_schedule (Resource)
 
-Manages a user schedule through the user's crontab.
+Manages a schedule through the provider target user's crontab.
 
 ## Example Usage
 
@@ -61,15 +61,13 @@ resource "host_schedule" "shell_history_git_auto_commit" {
 
 ### Optional
 
-- `enabled` (Boolean) Whether the schedule should be present in the user's crontab.
+- `enabled` (Boolean) Whether the schedule should be present in the provider target user's crontab.
 - `environment` (Map of String) Environment variables passed to the scheduled command.
 - `every` (String) Interval duration such as `15m`, `1h`, or `24h`. Mutually exclusive with `schedule`.
 - `schedule` (String) Five-field cron-style calendar schedule, or one of `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`. Mutually exclusive with `every`.
-- `scope` (String) Schedule scope. Supported values are `user` and `system`. `system` manages the root crontab and requires root privileges.
 - `shell` (String) Absolute path to the shell used as the generated script interpreter.
 - `stderr_path` (String) Path where the generated script appends stderr for the command. `~` is expanded to the provider `home_dir`.
 - `stdout_path` (String) Path where the generated script appends stdout for the command. `~` is expanded to the provider `home_dir`.
-- `user` (String) User whose crontab should contain the schedule. Defaults to the current Terraform user for `scope = "user"`, or `root` for `scope = "system"`.
 - `working_directory` (String) Working directory for the scheduled command. `~` is expanded to the provider `home_dir`.
 
 ### Read-Only

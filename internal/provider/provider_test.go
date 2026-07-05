@@ -42,31 +42,35 @@ func TestExecutablePathReturnsEmptyWhenToolIsMissing(t *testing.T) {
 func TestExpandHostPathWithConfiguredHome(t *testing.T) {
 	t.Parallel()
 
-	got, err := expandHostPathWithHome("~/projects", "/Users/alice")
+	got, err := expandHostPathWithHome("~/projects", "/Users/dongho")
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
-	if got != "/Users/alice/projects" {
-		t.Fatalf("got %q, want /Users/alice/projects", got)
+	if got != "/Users/dongho/projects" {
+		t.Fatalf("got %q, want /Users/dongho/projects", got)
 	}
 }
 
-func TestExpandHostPathForHomeUsesCallHome(t *testing.T) {
+func TestExpandHostPathWithHomeRequiresHome(t *testing.T) {
 	t.Parallel()
 
-	first, err := expandHostPathForHome("~/projects", "/Users/alice")
-	if err != nil {
-		t.Fatalf("expand first home: %s", err)
+	if _, err := expandHostPathWithHome("~/projects", ""); err == nil {
+		t.Fatalf("expected empty home directory to fail")
 	}
-	second, err := expandHostPathForHome("~/projects", "/Users/bob")
-	if err != nil {
-		t.Fatalf("expand second home: %s", err)
+}
+
+func TestValidateHostUserName(t *testing.T) {
+	t.Parallel()
+
+	for _, username := range []string{"dongho", "alice_1", "build-user"} {
+		if err := validateHostUserName(username); err != nil {
+			t.Fatalf("expected %q to be valid: %s", username, err)
+		}
 	}
 
-	if first != "/Users/alice/projects" {
-		t.Fatalf("first got %q, want /Users/alice/projects", first)
-	}
-	if second != "/Users/bob/projects" {
-		t.Fatalf("second got %q, want /Users/bob/projects", second)
+	for _, username := range []string{"", " dongho", "dongho ", "bad/user", "bad:user", "-bad", "bad user"} {
+		if err := validateHostUserName(username); err == nil {
+			t.Fatalf("expected %q to be invalid", username)
+		}
 	}
 }

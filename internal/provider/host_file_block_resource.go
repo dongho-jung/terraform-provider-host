@@ -276,7 +276,7 @@ func validateHostFileBlockReferenceForHome(ref HostFileBlockReferenceModel, home
 	if ref.Name.IsNull() || ref.Name.IsUnknown() {
 		return fmt.Errorf("name must be known")
 	}
-	resolvedPath, err := expandHostPathForHome(ref.Path.ValueString(), homeDir)
+	resolvedPath, err := expandHostPathWithHome(ref.Path.ValueString(), homeDir)
 	if err != nil {
 		return err
 	}
@@ -299,7 +299,7 @@ func hostFileBlockTargetFromModelForHome(model HostFileBlockResourceModel, homeD
 		diags.AddError("Invalid host file block reference", err.Error())
 		return hostFileBlockTarget{}, diags
 	}
-	resolvedPath, err := expandHostPathForHome(model.Block.Path.ValueString(), homeDir)
+	resolvedPath, err := expandHostPathWithHome(model.Block.Path.ValueString(), homeDir)
 	if err != nil {
 		diags.AddError("Invalid host file block reference", err.Error())
 		return hostFileBlockTarget{}, diags

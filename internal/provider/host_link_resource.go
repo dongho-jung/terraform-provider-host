@@ -264,7 +264,7 @@ func resolveHostLinkDestinationForHome(value string, homeDir string) (string, er
 	}
 
 	if strings.HasPrefix(value, "~") {
-		return expandHostPathForHome(value, homeDir)
+		return expandHostPathWithHome(value, homeDir)
 	}
 	if filepath.IsAbs(value) {
 		return filepath.Clean(value), nil
@@ -291,7 +291,7 @@ func resolveHostLinkSourceForHome(value string, homeDir string) (string, error) 
 	}
 
 	if strings.HasPrefix(value, "~") {
-		return expandHostPathForHome(value, homeDir)
+		return expandHostPathWithHome(value, homeDir)
 	}
 	if filepath.IsAbs(value) {
 		return filepath.Clean(value), nil

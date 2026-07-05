@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -20,13 +22,15 @@ import (
 )
 
 var (
-	_ resource.Resource               = &MacOSDockAppResource{}
-	_ resource.ResourceWithConfigure  = &MacOSDockAppResource{}
-	_ resource.ResourceWithModifyPlan = &MacOSDockAppResource{}
+	_ resource.Resource                = &MacOSDockAppResource{}
+	_ resource.ResourceWithConfigure   = &MacOSDockAppResource{}
+	_ resource.ResourceWithImportState = &MacOSDockAppResource{}
+	_ resource.ResourceWithModifyPlan  = &MacOSDockAppResource{}
 
-	_ resource.Resource               = &MacOSDockFolderResource{}
-	_ resource.ResourceWithConfigure  = &MacOSDockFolderResource{}
-	_ resource.ResourceWithModifyPlan = &MacOSDockFolderResource{}
+	_ resource.Resource                = &MacOSDockFolderResource{}
+	_ resource.ResourceWithConfigure   = &MacOSDockFolderResource{}
+	_ resource.ResourceWithImportState = &MacOSDockFolderResource{}
+	_ resource.ResourceWithModifyPlan  = &MacOSDockFolderResource{}
 )
 
 const (
@@ -102,6 +106,10 @@ func (r *MacOSDockAppResource) ModifyPlan(ctx context.Context, req resource.Modi
 	r.item.modifyPlan(ctx, req, resp)
 }
 
+func (r *MacOSDockAppResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	r.item.importState(ctx, req, resp)
+}
+
 func (r *MacOSDockAppResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	r.item.create(ctx, req, resp)
 }
@@ -132,6 +140,10 @@ func (r *MacOSDockFolderResource) Schema(ctx context.Context, req resource.Schem
 
 func (r *MacOSDockFolderResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
 	r.item.modifyPlan(ctx, req, resp)
+}
+
+func (r *MacOSDockFolderResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	r.item.importState(ctx, req, resp)
 }
 
 func (r *MacOSDockFolderResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -220,6 +232,65 @@ func (r *MacOSDockItemResource) modifyPlan(ctx context.Context, req resource.Mod
 	}
 	plan.PathResolved = types.StringValue(resolved)
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+}
+
+func (r *MacOSDockItemResource) importState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	state, err := r.importModel(ctx, req.ID)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid macOS Dock import", err.Error())
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+func (r *MacOSDockItemResource) importModel(ctx context.Context, importID string) (MacOSDockItemResourceModel, error) {
+	if r.manager == nil {
+		return MacOSDockItemResourceModel{}, fmt.Errorf("macOS Dock manager unavailable")
+	}
+
+	priority, path, hasPriority, err := parseMacOSDockManagedItemImportID(importID)
+	if err != nil {
+		return MacOSDockItemResourceModel{}, err
+	}
+	pathResolved, err := resolveMacOSDockPathForHome(r.kind+"s", path, r.kind == macOSDockItemKindApp, r.homeDir)
+	if err != nil {
+		return MacOSDockItemResourceModel{}, err
+	}
+
+	dock, err := r.manager.ReadDock(ctx)
+	if err != nil {
+		return MacOSDockItemResourceModel{}, err
+	}
+	liveIndex := macOSDockPathIndex(macOSDockPathsForKind(dock, r.kind), pathResolved)
+	if liveIndex < 0 {
+		return MacOSDockItemResourceModel{}, fmt.Errorf("path %q is not present in the live macOS Dock", pathResolved)
+	}
+	if !hasPriority {
+		priority = int64((liveIndex + 1) * 10)
+	}
+
+	id, err := newMacOSDockManagedItemID()
+	if err != nil {
+		return MacOSDockItemResourceModel{}, err
+	}
+	spec := macOSDockManagedItemSpec{
+		ID:       id,
+		Kind:     r.kind,
+		Path:     pathResolved,
+		Priority: priority,
+	}
+	id, err = importMacOSDockManagedItemForRuntime(spec, r.runtimeDir)
+	if err != nil {
+		return MacOSDockItemResourceModel{}, err
+	}
+
+	return MacOSDockItemResourceModel{
+		ID:           types.StringValue(id),
+		Path:         types.StringValue(path),
+		PathResolved: types.StringValue(pathResolved),
+		Priority:     types.Int64Value(priority),
+		Restart:      types.BoolValue(true),
+	}, nil
 }
 
 func (r *MacOSDockItemResource) create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -387,6 +458,65 @@ func validateMacOSDockManagedItemID(id string) error {
 		return fmt.Errorf("dock item ID must contain hex characters")
 	}
 	return nil
+}
+
+func parseMacOSDockManagedItemImportID(importID string) (int64, string, bool, error) {
+	importID = strings.TrimSpace(importID)
+	if importID == "" {
+		return 0, "", false, fmt.Errorf("import ID must be a path or priority,path")
+	}
+
+	priorityText, path, hasSeparator := strings.Cut(importID, ",")
+	if hasSeparator {
+		if priority, err := strconv.ParseInt(strings.TrimSpace(priorityText), 10, 64); err == nil {
+			path = strings.TrimSpace(path)
+			if path == "" {
+				return 0, "", false, fmt.Errorf("import path must be non-empty")
+			}
+			return priority, path, true, nil
+		}
+	}
+
+	return 0, importID, false, nil
+}
+
+func macOSDockPathsForKind(spec MacOSDockSpec, kind string) []string {
+	if kind == macOSDockItemKindFolder {
+		return spec.Folders
+	}
+	return spec.Apps
+}
+
+func macOSDockPathIndex(paths []string, path string) int {
+	for index, candidate := range paths {
+		if candidate == path {
+			return index
+		}
+	}
+	return -1
+}
+
+func importMacOSDockManagedItemForRuntime(spec macOSDockManagedItemSpec, runtimeDir string) (string, error) {
+	importedID := spec.ID
+	err := withLockedMacOSDockManagedState(runtimeDir, func() error {
+		state, err := readMacOSDockManagedStateForRuntime(runtimeDir)
+		if err != nil {
+			return err
+		}
+
+		for id, item := range macOSDockManagedStateItemsForKind(&state, spec.Kind) {
+			if item.Path == spec.Path {
+				spec.ID = id
+				importedID = id
+				break
+			}
+		}
+		if err := upsertMacOSDockManagedStateItem(&state, spec); err != nil {
+			return err
+		}
+		return writeMacOSDockManagedStateForRuntime(state, runtimeDir)
+	})
+	return importedID, err
 }
 
 func upsertMacOSDockManagedItemForRuntime(ctx context.Context, manager MacOSDockManager, spec macOSDockManagedItemSpec, runtimeDir string, restart bool) error {

@@ -299,7 +299,7 @@ func resolveHostDirPathForHome(value string, homeDir string) (string, error) {
 	if strings.Contains(value, "\x00") {
 		return "", fmt.Errorf("path must not contain NUL bytes")
 	}
-	return expandHostPathForHome(value, homeDir)
+	return expandHostPathWithHome(value, homeDir)
 }
 
 func parseHostDirMode(value string) (os.FileMode, error) {

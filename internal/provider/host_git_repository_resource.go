@@ -178,7 +178,7 @@ func (r *HostGitRepositoryResource) ModifyPlan(ctx context.Context, req resource
 	plan.ID = types.StringValue(spec.Path)
 	plan.PathResolved = types.StringValue(spec.PathResolved)
 	requireReplaceIfResolvedPathChanged(req, resp, tfpath.Root("path"), state.Path, state.PathResolved, spec.PathResolved, func(value string) (string, error) {
-		return expandHostPathForHome(value, r.homeDir)
+		return expandHostPathWithHome(value, r.homeDir)
 	})
 	if resp.Diagnostics.HasError() {
 		return
@@ -284,7 +284,7 @@ func (r *HostGitRepositoryResource) importRepositoryState(ctx context.Context, i
 	if pathValue == "" {
 		return HostGitRepositoryResourceModel{}, fmt.Errorf("import ID must be the repository path")
 	}
-	pathResolved, err := expandHostPathForHome(pathValue, r.homeDir)
+	pathResolved, err := expandHostPathWithHome(pathValue, r.homeDir)
 	if err != nil {
 		return HostGitRepositoryResourceModel{}, err
 	}
@@ -497,7 +497,7 @@ func hostGitRepositorySpecFromModelForHome(model HostGitRepositoryResourceModel,
 	if strings.Contains(pathValue, "\x00") {
 		return hostGitRepositorySpec{}, fmt.Errorf("path must not contain NUL bytes")
 	}
-	pathResolved, err := expandHostPathForHome(pathValue, homeDir)
+	pathResolved, err := expandHostPathWithHome(pathValue, homeDir)
 	if err != nil {
 		return hostGitRepositorySpec{}, err
 	}

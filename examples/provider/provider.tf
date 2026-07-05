@@ -6,11 +6,6 @@ terraform {
   }
 }
 
-variable "target_user" {
-  type    = string
-  default = "alice"
-}
-
 provider "host" {
-  target_user = var.target_user
+  target_user = "dongho"
 }

@@ -574,7 +574,7 @@ func resolveSSHKeyPathForHome(path string, homeDir string) (string, error) {
 	if strings.Contains(path, "\x00") {
 		return "", fmt.Errorf("path must not contain NUL bytes")
 	}
-	return expandHostPathForHome(path, homeDir)
+	return expandHostPathWithHome(path, homeDir)
 }
 
 func publicSSHKeyPath(path string) string {

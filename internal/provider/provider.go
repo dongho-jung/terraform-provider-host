@@ -38,11 +38,11 @@ func (p *HostProvider) Schema(ctx context.Context, req provider.SchemaRequest, r
 			},
 			"home_dir": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "Home directory used to expand leading `~` in host paths. Defaults to the `target_user` home directory when set, otherwise the Terraform process user's home directory.",
+				MarkdownDescription: "Home directory used to expand leading `~` in host paths. Defaults to the configured `target_user` home directory.",
 			},
 			"target_user": schema.StringAttribute{
-				Optional:            true,
-				MarkdownDescription: "Default target user for user-scoped resources. When `home_dir` is unset, the provider also uses this user's home directory for leading `~` expansion.",
+				Required:            true,
+				MarkdownDescription: "Existing local user this provider instance manages. User-scoped resources use this user's home directory and crontab.",
 			},
 		},
 	}
@@ -58,33 +58,36 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 
 	var data HostProviderData
 
-	if !config.TargetUser.IsNull() && !config.TargetUser.IsUnknown() {
-		targetUser := config.TargetUser.ValueString()
-		if err := validateHostUserName(targetUser); err != nil {
-			resp.Diagnostics.AddError("Invalid target_user", err.Error())
-			return
-		}
-		data.TargetUser = targetUser
+	if config.TargetUser.IsNull() || config.TargetUser.IsUnknown() {
+		resp.Diagnostics.AddError("Missing target_user", "`target_user` must name the existing local user this provider instance manages.")
+		return
+	}
+	targetUser := config.TargetUser.ValueString()
+	if err := validateHostUserName(targetUser); err != nil {
+		resp.Diagnostics.AddError("Invalid target_user", err.Error())
+		return
+	}
+	data.TargetUser = targetUser
+
+	targetHomeDir, err := resolveTargetUserHomeDir(ctx, data.TargetUser)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid target_user", err.Error())
+		return
 	}
 
 	if !config.HomeDir.IsNull() && !config.HomeDir.IsUnknown() {
-		homeDir, err := resolveProviderHomeDir(config.HomeDir.ValueString())
+		homeDir, err := expandHostPathWithHome(config.HomeDir.ValueString(), targetHomeDir)
 		if err != nil {
 			resp.Diagnostics.AddError("Invalid home_dir", err.Error())
 			return
 		}
 		data.HomeDir = homeDir
-	} else if data.TargetUser != "" {
-		homeDir, err := resolveTargetUserHomeDir(ctx, data.TargetUser)
-		if err != nil {
-			resp.Diagnostics.AddError("Invalid target_user", err.Error())
-			return
-		}
-		data.HomeDir = homeDir
+	} else {
+		data.HomeDir = targetHomeDir
 	}
 
 	if !config.RuntimeDir.IsNull() && !config.RuntimeDir.IsUnknown() {
-		runtimeDir, err := expandHostPathForHome(config.RuntimeDir.ValueString(), data.HomeDir)
+		runtimeDir, err := expandHostPathWithHome(config.RuntimeDir.ValueString(), data.HomeDir)
 		if err != nil {
 			resp.Diagnostics.AddError("Invalid runtime_dir", err.Error())
 			return
@@ -126,7 +129,6 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		RuntimeDir: data.RuntimeDir,
 		TargetUser: data.TargetUser,
 	})
-	data.IdentityManager = NewCLIIdentityManager(sudoPath)
 	defaultsPath := executablePath("defaults")
 	if defaultsPath != "" {
 		killallPath := executablePath("killall")
@@ -173,15 +175,12 @@ func (p *HostProvider) Resources(ctx context.Context) []func() resource.Resource
 		NewMacOSLoginItemResource,
 		NewMacOSAudioMultiOutputResource,
 		NewHostScheduleResource,
-		NewHostGroupResource,
-		NewHostUserResource,
 	}
 }
 
 func (p *HostProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		NewBrewPackageDataSource,
-		NewHostGroupDataSource,
 		NewMacOSAudioDeviceDataSource,
 	}
 }

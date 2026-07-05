@@ -104,7 +104,7 @@ func resolveMacOSDockPathForHome(label string, item string, wantApp bool, homeDi
 		return "", fmt.Errorf("%q must not contain NUL bytes", path)
 	}
 
-	resolved, err := expandHostPathForHome(path, homeDir)
+	resolved, err := expandHostPathWithHome(path, homeDir)
 	if err != nil {
 		return "", err
 	}

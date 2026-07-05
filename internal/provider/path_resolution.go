@@ -11,22 +11,6 @@ import (
 	"strings"
 )
 
-func processHomeDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	return home, nil
-}
-
-func resolveProviderHomeDir(path string) (string, error) {
-	home, err := processHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return expandHostPathWithHome(path, home)
-}
-
 func resolveTargetUserHomeDir(ctx context.Context, username string) (string, error) {
 	if err := validateHostUserName(username); err != nil {
 		return "", err
@@ -110,16 +94,14 @@ func cleanResolvedHomeDir(username string, home string) (string, error) {
 	return filepath.Clean(home), nil
 }
 
-func expandHostPathForHome(path string, home string) (string, error) {
-	if home != "" {
-		return expandHostPathWithHome(path, home)
+func validateHostUserName(username string) error {
+	if strings.TrimSpace(username) != username || username == "" {
+		return fmt.Errorf("username must be non-empty and must not contain leading or trailing whitespace")
 	}
-
-	defaultHome, err := processHomeDir()
-	if err != nil {
-		return "", err
+	if strings.ContainsAny(username, " \t\r\n:/") || strings.HasPrefix(username, "-") {
+		return fmt.Errorf("username %q is invalid; it must not contain whitespace, ':' or '/' and must not start with '-'", username)
 	}
-	return expandHostPathWithHome(path, defaultHome)
+	return nil
 }
 
 func expandHostPathWithHome(path string, home string) (string, error) {

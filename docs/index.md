@@ -7,7 +7,7 @@ description: |-
 
 # host Provider
 
-The Host provider manages local machine configuration with Terraform. It is aimed at personal workstations, development hosts, and small systems where files, packages, users, schedules, Git checkouts, and macOS preferences should be described in HCL.
+The Host provider manages local machine configuration with Terraform. It is aimed at personal workstations, development hosts, and small systems where files, packages, schedules, Git checkouts, and macOS preferences for one target user should be described in HCL.
 
 ## Example Usage
 
@@ -20,13 +20,8 @@ terraform {
   }
 }
 
-variable "target_user" {
-  type    = string
-  default = "alice"
-}
-
 provider "host" {
-  target_user = var.target_user
+  target_user = "dongho"
 }
 ```
 
@@ -36,14 +31,13 @@ provider "host" {
 - Directories, whole files, file blocks, and symbolic links
 - Git repositories checked out to host paths
 - SSH keypairs and OpenSSH client config host blocks
-- Local users, groups, and group lookups
-- User and system cron schedules
+- Target-user cron schedules
 - macOS `defaults` keys, Dock persistent items, Login Items, CoreAudio device lookups, and CoreAudio multi-output devices
 
 ## Platform Notes
 
-Resources use tools available on the machine running Terraform, such as `dnf`, `brew`, `git`, `ssh-keygen`, `crontab`, `defaults`, `killall`, `osascript`, `swift`, and platform account-management commands. Resources that mutate protected host state may prompt through `sudo` when Terraform is not already running with the required privileges.
+Resources use tools available on the machine running Terraform, such as `dnf`, `brew`, `git`, `ssh-keygen`, `crontab`, `defaults`, `killall`, `osascript`, and `swift`. Resources that mutate protected host state may prompt through `sudo` when Terraform is not already running with the required privileges.
 
-By default the provider resolves these tools from PATH and stores runtime metadata under `./.terraform-provider-host` relative to the Terraform working directory. Set `target_user` to make user-scoped resources default to that user and to expand leading `~` against that user's home directory. Set `home_dir` only when you need to override the discovered home directory, and set `runtime_dir` to move generated metadata such as file block state and schedule scripts.
+The provider manages one existing local user per configuration. Set `target_user` to that user; user-scoped resources expand leading `~` against that user's home directory and schedules use that user's crontab. Set `home_dir` only when you need to override the discovered home directory, and set `runtime_dir` to move generated metadata such as file block state and schedule scripts.
 
 Available provider arguments are `runtime_dir`, `target_user`, and `home_dir`.

@@ -134,77 +134,26 @@ func TestRenderHostScheduleScript(t *testing.T) {
 	}
 }
 
-func TestNormalizeHostScheduleTargetDefaultsToCurrentUser(t *testing.T) {
+func TestApplyHostScheduleTargetUserUsesConfiguredUser(t *testing.T) {
 	t.Parallel()
 
-	scope, targetUser, err := normalizeHostScheduleTarget("", "")
-	if err != nil {
-		t.Fatalf("normalizeHostScheduleTarget: %s", err)
+	spec := HostScheduleSpec{}
+	if err := applyHostScheduleTargetUser(&spec, "deploy"); err != nil {
+		t.Fatalf("applyHostScheduleTargetUser: %s", err)
 	}
-	if scope != hostScheduleScopeUser {
-		t.Fatalf("scope got %q, want %q", scope, hostScheduleScopeUser)
-	}
-	if targetUser == "" {
-		t.Fatal("expected current username")
+	if spec.User != "deploy" {
+		t.Fatalf("user got %q, want deploy", spec.User)
 	}
 }
 
-func TestNormalizeHostScheduleTargetDefaultsToConfiguredUser(t *testing.T) {
+func TestApplyHostScheduleTargetUserRequiresConfiguredUser(t *testing.T) {
 	t.Parallel()
 
-	scope, targetUser, err := normalizeHostScheduleTargetWithDefault("", "", "deploy")
-	if err != nil {
-		t.Fatalf("normalizeHostScheduleTargetWithDefault: %s", err)
-	}
-	if scope != hostScheduleScopeUser || targetUser != "deploy" {
-		t.Fatalf("got scope=%q user=%q", scope, targetUser)
-	}
-}
-
-func TestNormalizeHostScheduleTargetSystemDefaultsToRoot(t *testing.T) {
-	t.Parallel()
-
-	scope, targetUser, err := normalizeHostScheduleTarget(hostScheduleScopeSystem, "")
-	if err != nil {
-		t.Fatalf("normalizeHostScheduleTarget: %s", err)
-	}
-	if scope != hostScheduleScopeSystem || targetUser != hostScheduleRootUser {
-		t.Fatalf("got scope=%q user=%q", scope, targetUser)
-	}
-}
-
-func TestNormalizeHostScheduleTargetExplicitSystemIgnoresConfiguredUser(t *testing.T) {
-	t.Parallel()
-
-	scope, targetUser, err := normalizeHostScheduleTargetWithDefault(hostScheduleScopeSystem, "", "deploy")
-	if err != nil {
-		t.Fatalf("normalizeHostScheduleTargetWithDefault: %s", err)
-	}
-	if scope != hostScheduleScopeSystem || targetUser != hostScheduleRootUser {
-		t.Fatalf("got scope=%q user=%q", scope, targetUser)
-	}
-}
-
-func TestNormalizeHostScheduleTargetRootInfersSystem(t *testing.T) {
-	t.Parallel()
-
-	scope, targetUser, err := normalizeHostScheduleTarget("", hostScheduleRootUser)
-	if err != nil {
-		t.Fatalf("normalizeHostScheduleTarget: %s", err)
-	}
-	if scope != hostScheduleScopeSystem || targetUser != hostScheduleRootUser {
-		t.Fatalf("got scope=%q user=%q", scope, targetUser)
-	}
-}
-
-func TestNormalizeHostScheduleTargetRejectsSystemNonRootUser(t *testing.T) {
-	t.Parallel()
-
-	_, _, err := normalizeHostScheduleTarget(hostScheduleScopeSystem, "deploy")
+	err := applyHostScheduleTargetUser(&HostScheduleSpec{}, "")
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "root crontab") {
+	if !strings.Contains(err.Error(), "target user") {
 		t.Fatalf("unexpected error: %s", err)
 	}
 }

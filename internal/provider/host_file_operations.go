@@ -48,7 +48,7 @@ type cleanHostFileManagedBlockState struct {
 }
 
 func withLockedHostFileForHome(ctx context.Context, homeDir string, path string, fn func(path string) error) error {
-	resolvedPath, err := expandHostPathForHome(path, homeDir)
+	resolvedPath, err := expandHostPathWithHome(path, homeDir)
 	if err != nil {
 		return err
 	}
@@ -217,7 +217,7 @@ func plannedCleanHostFileStateForProvider(path string, specs []hostFileBlockSpec
 		return cleanHostFileState{}, err
 	}
 
-	resolvedPath, err := expandHostPathForHome(path, homeDir)
+	resolvedPath, err := expandHostPathWithHome(path, homeDir)
 	if err != nil {
 		return cleanHostFileState{}, err
 	}
@@ -257,7 +257,7 @@ func plannedCleanHostFileStateForProvider(path string, specs []hostFileBlockSpec
 }
 
 func readRenderedHostFileContentForHome(path string, homeDir string) (string, error) {
-	resolvedPath, err := expandHostPathForHome(path, homeDir)
+	resolvedPath, err := expandHostPathWithHome(path, homeDir)
 	if err != nil {
 		return "", err
 	}
