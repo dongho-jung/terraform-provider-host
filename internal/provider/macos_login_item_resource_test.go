@@ -69,7 +69,7 @@ func TestMacOSLoginItemResourceSyncLoginItem(t *testing.T) {
 		Hidden: types.BoolValue(true),
 	}
 
-	state, err := resource.syncLoginItem(context.Background(), model)
+	state, err := resource.syncLoginItem(t.Context(), model)
 	if err != nil {
 		t.Fatalf("sync login item: %s", err)
 	}
@@ -80,7 +80,7 @@ func TestMacOSLoginItemResourceSyncLoginItem(t *testing.T) {
 		t.Fatal("hidden got false, want true")
 	}
 
-	status, exists, err := manager.LoginItemStatus(context.Background(), appPath)
+	status, exists, err := manager.LoginItemStatus(t.Context(), appPath)
 	if err != nil {
 		t.Fatalf("read fake login item: %s", err)
 	}

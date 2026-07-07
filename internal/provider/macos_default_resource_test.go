@@ -79,7 +79,7 @@ func TestMacOSDefaultWriteArgs(t *testing.T) {
 func TestMacOSDefaultSpecUsesDefaultRestartsWhenRestartOmitted(t *testing.T) {
 	t.Parallel()
 
-	spec, diags := macOSDefaultSpecFromModel(context.Background(), MacOSDefaultResourceModel{
+	spec, diags := macOSDefaultSpecFromModel(t.Context(), MacOSDefaultResourceModel{
 		Domain:          mustMacOSSettingDomain(t, "com.apple.dock"),
 		Key:             types.StringValue("autohide"),
 		CurrentHost:     types.BoolValue(false),
@@ -98,12 +98,12 @@ func TestMacOSDefaultSpecUsesDefaultRestartsWhenRestartOmitted(t *testing.T) {
 func TestMacOSDefaultSpecRespectsEmptyRestartList(t *testing.T) {
 	t.Parallel()
 
-	emptyRestart, diags := types.ListValueFrom(context.Background(), types.StringType, []string{})
+	emptyRestart, diags := types.ListValueFrom(t.Context(), types.StringType, []string{})
 	if diags.HasError() {
 		t.Fatalf("build empty restart list: %s", diagnosticsError(diags))
 	}
 
-	spec, specDiags := macOSDefaultSpecFromModel(context.Background(), MacOSDefaultResourceModel{
+	spec, specDiags := macOSDefaultSpecFromModel(t.Context(), MacOSDefaultResourceModel{
 		Domain:          mustMacOSSettingDomain(t, "com.apple.dock"),
 		Key:             types.StringValue("autohide"),
 		CurrentHost:     types.BoolValue(false),
@@ -161,7 +161,7 @@ func TestMacOSDefaultResourceImportStateReadsCurrentValue(t *testing.T) {
 			},
 		},
 	}
-	state, err := resource.importDefaultState(context.Background(), "user:com.apple.dock:autohide")
+	state, err := resource.importDefaultState(t.Context(), "user:com.apple.dock:autohide")
 	if err != nil {
 		t.Fatalf("importDefaultState: %s", err)
 	}
@@ -282,10 +282,10 @@ func TestCLIMacOSDefaultsManagerCommands(t *testing.T) {
 		Value:       macOSDefaultValue{Type: macOSDefaultValueBool, Bool: true},
 	}
 
-	if err := manager.WriteDefault(context.Background(), spec); err != nil {
+	if err := manager.WriteDefault(t.Context(), spec); err != nil {
 		t.Fatalf("WriteDefault: %s", err)
 	}
-	if err := manager.RestartProcesses(context.Background(), spec.Restart); err != nil {
+	if err := manager.RestartProcesses(t.Context(), spec.Restart); err != nil {
 		t.Fatalf("RestartProcesses: %s", err)
 	}
 
@@ -317,7 +317,7 @@ func TestCLIMacOSDefaultsManagerRead(t *testing.T) {
 		},
 	}
 
-	value, exists, err := manager.ReadDefault(context.Background(), macOSDefaultSpec{
+	value, exists, err := manager.ReadDefault(t.Context(), macOSDefaultSpec{
 		Domain: "NSGlobalDomain",
 		Key:    "AppleLanguages",
 	})

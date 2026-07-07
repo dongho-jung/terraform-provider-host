@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -233,7 +232,7 @@ func TestHostSSHConfigHostSpecFromModel(t *testing.T) {
 		IdentityFile:   types.StringValue("~/.ssh/id_ed25519_github"),
 		IdentitiesOnly: types.BoolValue(true),
 	}
-	spec, diags := hostSSHConfigHostSpecFromModelForHome(context.Background(), model, "/Users/dongho")
+	spec, diags := hostSSHConfigHostSpecFromModelForHome(t.Context(), model, "/Users/dongho")
 	if diags.HasError() {
 		t.Fatalf("unexpected diagnostics: %s", diagnosticsError(diags))
 	}

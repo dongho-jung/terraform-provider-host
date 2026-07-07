@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"context"
 	"reflect"
 	"testing"
 
@@ -25,7 +24,7 @@ func TestPacmanPackageResourceRefreshStateInstalledExplicitPackage(t *testing.T)
 		},
 	}
 
-	state, installed, err := resource.refreshState(context.Background(), PacmanPackageResourceModel{
+	state, installed, err := resource.refreshState(t.Context(), PacmanPackageResourceModel{
 		Name: types.StringValue("git"),
 	})
 	if err != nil {
@@ -71,7 +70,7 @@ func TestPacmanPackageResourceSyncUpgradesWhenVersionIsNotIgnored(t *testing.T) 
 	}
 	resource := &PacmanPackageResource{manager: manager}
 
-	err := resource.syncPackage(context.Background(), PacmanPackageResourceModel{
+	err := resource.syncPackage(t.Context(), PacmanPackageResourceModel{
 		Name:          types.StringValue("git"),
 		Version:       types.StringValue(versionLatest),
 		IgnoreVersion: types.BoolValue(false),

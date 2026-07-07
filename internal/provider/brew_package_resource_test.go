@@ -92,7 +92,7 @@ func TestBrewPackageResourceRefreshStateInstalledFormula(t *testing.T) {
 		},
 	}
 
-	state, installed, err := resource.refreshState(context.Background(), BrewPackageResourceModel{
+	state, installed, err := resource.refreshState(t.Context(), BrewPackageResourceModel{
 		Name:          types.StringValue("bat"),
 		PackageType:   types.StringValue(brewPackageTypeFormula),
 		Version:       types.StringValue(versionLatest),
@@ -135,7 +135,7 @@ func TestBrewPackageResourceRefreshStateDefaultsToIgnoreVersion(t *testing.T) {
 		},
 	}
 
-	state, installed, err := resource.refreshState(context.Background(), BrewPackageResourceModel{
+	state, installed, err := resource.refreshState(t.Context(), BrewPackageResourceModel{
 		Name:        types.StringValue("bat"),
 		PackageType: types.StringValue(brewPackageTypeFormula),
 		Version:     types.StringValue(versionLatest),
@@ -173,7 +173,7 @@ func TestBrewPackageResourceRefreshStateCaskAppPaths(t *testing.T) {
 		},
 	}
 
-	state, installed, err := resource.refreshState(context.Background(), BrewPackageResourceModel{
+	state, installed, err := resource.refreshState(t.Context(), BrewPackageResourceModel{
 		Name:        types.StringValue("hammerspoon"),
 		PackageType: types.StringValue(brewPackageTypeCask),
 		Version:     types.StringValue(versionLatest),
@@ -189,7 +189,7 @@ func TestBrewPackageResourceRefreshStateCaskAppPaths(t *testing.T) {
 		t.Fatalf("expected app_path, got %#v", state.AppPath)
 	}
 	var appPaths []string
-	diags := state.AppPaths.ElementsAs(context.Background(), &appPaths, false)
+	diags := state.AppPaths.ElementsAs(t.Context(), &appPaths, false)
 	if diags.HasError() {
 		t.Fatalf("app_paths diagnostics: %s", diagnosticsError(diags))
 	}
@@ -219,7 +219,7 @@ func TestBrewPackageResourceRefreshStateCaskMultipleAppPathsLeavesAppPathNull(t 
 		},
 	}
 
-	state, installed, err := resource.refreshState(context.Background(), BrewPackageResourceModel{
+	state, installed, err := resource.refreshState(t.Context(), BrewPackageResourceModel{
 		Name:        types.StringValue("example"),
 		PackageType: types.StringValue(brewPackageTypeCask),
 		Version:     types.StringValue(versionLatest),
@@ -244,7 +244,7 @@ func TestBrewPackageResourceSyncInstallsMissingPackage(t *testing.T) {
 	}
 	resource := &BrewPackageResource{manager: manager}
 
-	err := resource.syncPackage(context.Background(), BrewPackageResourceModel{
+	err := resource.syncPackage(t.Context(), BrewPackageResourceModel{
 		Name:        types.StringValue("bat"),
 		PackageType: types.StringValue(brewPackageTypeFormula),
 		Version:     types.StringValue(versionLatest),
@@ -271,7 +271,7 @@ func TestBrewPackageResourceSyncTapsBeforeInstallingPackage(t *testing.T) {
 	}
 	resource := &BrewPackageResource{manager: manager}
 
-	err := resource.syncPackage(context.Background(), BrewPackageResourceModel{
+	err := resource.syncPackage(t.Context(), BrewPackageResourceModel{
 		Name:        types.StringValue("terraform"),
 		Tap:         types.StringValue("hashicorp/tap"),
 		PackageType: types.StringValue(brewPackageTypeFormula),
@@ -308,7 +308,7 @@ func TestBrewPackageResourceSyncUpgradesOutdatedCask(t *testing.T) {
 	}
 	resource := &BrewPackageResource{manager: manager}
 
-	err := resource.syncPackage(context.Background(), BrewPackageResourceModel{
+	err := resource.syncPackage(t.Context(), BrewPackageResourceModel{
 		Name:          types.StringValue("docker-desktop"),
 		PackageType:   types.StringValue(brewPackageTypeCask),
 		Version:       types.StringValue(versionLatest),
@@ -341,7 +341,7 @@ func TestBrewPackageResourceSyncIgnoresOutdatedPackageByDefault(t *testing.T) {
 	}
 	resource := &BrewPackageResource{manager: manager}
 
-	err := resource.syncPackage(context.Background(), BrewPackageResourceModel{
+	err := resource.syncPackage(t.Context(), BrewPackageResourceModel{
 		Name:        types.StringValue("bat"),
 		PackageType: types.StringValue(brewPackageTypeFormula),
 		Version:     types.StringValue(versionLatest),
@@ -371,7 +371,7 @@ func TestBrewPackageResourceExactVersionRejectsUnavailableVersion(t *testing.T) 
 	}
 	resource := &BrewPackageResource{manager: manager}
 
-	err := resource.syncPackage(context.Background(), BrewPackageResourceModel{
+	err := resource.syncPackage(t.Context(), BrewPackageResourceModel{
 		Name:          types.StringValue("bat"),
 		PackageType:   types.StringValue(brewPackageTypeFormula),
 		Version:       types.StringValue("0.24.0"),
@@ -402,7 +402,7 @@ func TestBrewPackageResourceExactVersionCanUpgradeToCandidate(t *testing.T) {
 	}
 	resource := &BrewPackageResource{manager: manager}
 
-	err := resource.syncPackage(context.Background(), BrewPackageResourceModel{
+	err := resource.syncPackage(t.Context(), BrewPackageResourceModel{
 		Name:          types.StringValue("bat"),
 		PackageType:   types.StringValue(brewPackageTypeFormula),
 		Version:       types.StringValue("0.26.1"),
@@ -490,7 +490,7 @@ func TestBrewPackageResourceSyncMarksDependencyFormulaOnRequest(t *testing.T) {
 	}
 	resource := &BrewPackageResource{manager: manager}
 
-	err := resource.syncPackage(context.Background(), BrewPackageResourceModel{
+	err := resource.syncPackage(t.Context(), BrewPackageResourceModel{
 		Name:        types.StringValue("libgit2"),
 		PackageType: types.StringValue(brewPackageTypeFormula),
 		Version:     types.StringValue(versionLatest),
@@ -543,7 +543,7 @@ func TestFakeBrewPackageManagerRecordsRemove(t *testing.T) {
 	t.Parallel()
 
 	manager := &fakeBrewPackageManager{}
-	if err := manager.RemovePackage(context.Background(), "firefox", brewPackageTypeCask, false, true); err != nil {
+	if err := manager.RemovePackage(t.Context(), "firefox", brewPackageTypeCask, false, true); err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
 

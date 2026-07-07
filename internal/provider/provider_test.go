@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"context"
 	"testing"
 
 	frameworkprovider "github.com/hashicorp/terraform-plugin-framework/provider"
@@ -19,7 +18,7 @@ func TestProviderMetadata(t *testing.T) {
 	provider := New("test")()
 
 	var resp frameworkprovider.MetadataResponse
-	provider.Metadata(context.Background(), frameworkprovider.MetadataRequest{}, &resp)
+	provider.Metadata(t.Context(), frameworkprovider.MetadataRequest{}, &resp)
 
 	if resp.TypeName != "host" {
 		t.Fatalf("expected provider type name host, got %q", resp.TypeName)

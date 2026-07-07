@@ -73,7 +73,7 @@ func TestCLIMacOSDockManagerWriteDock(t *testing.T) {
 		},
 	}
 
-	err := manager.WriteDock(context.Background(), MacOSDockSpec{
+	err := manager.WriteDock(t.Context(), MacOSDockSpec{
 		Apps:    []string{"/Applications/Google Chrome.app"},
 		Folders: []string{"/Users/dongho/Downloads"},
 	})

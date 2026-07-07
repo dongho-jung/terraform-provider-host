@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,7 +42,7 @@ func TestGitResolveRemoteRefWithLocalRepository(t *testing.T) {
 
 	wantBytes := runTestGit(t, gitPath, source, "rev-parse", "HEAD")
 	want := stringTrimSpace(wantBytes)
-	got, err := gitResolveRemoteRef(context.Background(), gitPath, source, "main")
+	got, err := gitResolveRemoteRef(t.Context(), gitPath, source, "main")
 	if err != nil {
 		t.Fatalf("gitResolveRemoteRef: %s", err)
 	}
@@ -73,7 +72,7 @@ func TestHostGitRepositorySyncClonesTrackedRef(t *testing.T) {
 
 	destination := filepath.Join(t.TempDir(), "checkout")
 	resource := &HostGitRepositoryResource{gitPath: gitPath}
-	state, err := resource.syncRepository(context.Background(), HostGitRepositoryResourceModel{
+	state, err := resource.syncRepository(t.Context(), HostGitRepositoryResourceModel{
 		URL:             types.StringValue(source),
 		Path:            types.StringValue(destination),
 		Ref:             types.StringValue("main"),
@@ -117,7 +116,7 @@ func TestHostGitRepositoryImportStateReadsExistingCheckout(t *testing.T) {
 	runTestGit(t, gitPath, "", "clone", source, destination)
 
 	resource := &HostGitRepositoryResource{gitPath: gitPath}
-	state, err := resource.importRepositoryState(context.Background(), destination)
+	state, err := resource.importRepositoryState(t.Context(), destination)
 	if err != nil {
 		t.Fatalf("importRepositoryState: %s", err)
 	}
@@ -135,7 +134,7 @@ func TestHostGitRepositoryImportStateReadsExistingCheckout(t *testing.T) {
 func runTestGit(t *testing.T, gitPath string, workDir string, args ...string) []byte {
 	t.Helper()
 
-	out, err := runGit(context.Background(), gitPath, workDir, args...)
+	out, err := runGit(t.Context(), gitPath, workDir, args...)
 	if err != nil {
 		t.Fatalf("git %v: %s", args, err)
 	}

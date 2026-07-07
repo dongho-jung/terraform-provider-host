@@ -84,7 +84,7 @@ func TestDNFPackageResourceRefreshStateInstalledUserPackage(t *testing.T) {
 		},
 	}
 
-	state, installed, err := resource.refreshState(context.Background(), DNFPackageResourceModel{
+	state, installed, err := resource.refreshState(t.Context(), DNFPackageResourceModel{
 		Name:       types.StringValue("git"),
 		Autoremove: types.BoolValue(true),
 	})
@@ -125,7 +125,7 @@ func TestDNFPackageResourceRefreshStateMissingPackage(t *testing.T) {
 		},
 	}
 
-	_, installed, err := resource.refreshState(context.Background(), DNFPackageResourceModel{
+	_, installed, err := resource.refreshState(t.Context(), DNFPackageResourceModel{
 		Name:       types.StringValue("git"),
 		Autoremove: types.BoolValue(true),
 	})
@@ -155,7 +155,7 @@ func TestDNFPackageResourceSyncIgnoresOutdatedPackageByDefault(t *testing.T) {
 	}
 	resource := &DNFPackageResource{manager: manager}
 
-	err := resource.syncPackage(context.Background(), DNFPackageResourceModel{
+	err := resource.syncPackage(t.Context(), DNFPackageResourceModel{
 		Name:    types.StringValue("git"),
 		Version: types.StringValue(versionLatest),
 	})
@@ -184,7 +184,7 @@ func TestDNFPackageResourceSyncUpgradesWhenVersionIsNotIgnored(t *testing.T) {
 	}
 	resource := &DNFPackageResource{manager: manager}
 
-	err := resource.syncPackage(context.Background(), DNFPackageResourceModel{
+	err := resource.syncPackage(t.Context(), DNFPackageResourceModel{
 		Name:          types.StringValue("git"),
 		Version:       types.StringValue(versionLatest),
 		IgnoreVersion: types.BoolValue(false),

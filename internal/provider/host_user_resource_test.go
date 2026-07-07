@@ -1,14 +1,13 @@
 package provider
 
 import (
-	"context"
 	"testing"
 )
 
 func TestHostUserStringSetEmptySliceIsKnownEmptySet(t *testing.T) {
 	t.Parallel()
 
-	got, diags := hostUserStringSet(context.Background(), nil)
+	got, diags := hostUserStringSet(t.Context(), nil)
 	if diags.HasError() {
 		t.Fatalf("hostUserStringSet diagnostics: %s", diags.Errors()[0].Summary())
 	}

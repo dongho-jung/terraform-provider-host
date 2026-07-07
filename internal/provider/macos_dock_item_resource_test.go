@@ -49,7 +49,7 @@ func TestMacOSDockItemImportModelWritesManagedStateWithoutWritingDock(t *testing
 		runtimeDir: t.TempDir(),
 	}
 
-	model, err := resource.importModel(context.Background(), "20,"+chromePath)
+	model, err := resource.importModel(t.Context(), "20,"+chromePath)
 	if err != nil {
 		t.Fatalf("import model: %s", err)
 	}
@@ -104,7 +104,7 @@ func TestMacOSDockItemImportModelInfersPriorityFromLiveOrder(t *testing.T) {
 		runtimeDir: t.TempDir(),
 	}
 
-	model, err := resource.importModel(context.Background(), chromePath)
+	model, err := resource.importModel(t.Context(), chromePath)
 	if err != nil {
 		t.Fatalf("import model: %s", err)
 	}
@@ -129,7 +129,7 @@ func TestMacOSDockItemImportModelRejectsMissingLiveItem(t *testing.T) {
 		runtimeDir: t.TempDir(),
 	}
 
-	if _, err := resource.importModel(context.Background(), chromePath); err == nil {
+	if _, err := resource.importModel(t.Context(), chromePath); err == nil {
 		t.Fatal("expected missing live Dock item to fail")
 	}
 }

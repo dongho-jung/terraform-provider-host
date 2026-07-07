@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,7 +57,7 @@ func TestCLISSHKeyManagerEnsureKey(t *testing.T) {
 	keyPath := filepath.Join(dir, "id_ed25519_test")
 	manager := NewCLISSHKeyManager(sshKeygenPath)
 
-	status, err := manager.EnsureKey(context.Background(), HostSSHKeySpec{
+	status, err := manager.EnsureKey(t.Context(), HostSSHKeySpec{
 		Path:    keyPath,
 		Type:    hostSSHKeyTypeEd25519,
 		Comment: "terraform-provider-host-test",
@@ -79,7 +78,7 @@ func TestCLISSHKeyManagerEnsureKey(t *testing.T) {
 		t.Fatalf("public key missing: %s", err)
 	}
 
-	if err := manager.DeleteKey(context.Background(), keyPath); err != nil {
+	if err := manager.DeleteKey(t.Context(), keyPath); err != nil {
 		t.Fatalf("delete key: %s", err)
 	}
 	if _, err := os.Stat(keyPath); !os.IsNotExist(err) {

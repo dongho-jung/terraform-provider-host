@@ -25,7 +25,7 @@ func TestMacOSDefaultsSpecsFromModelParsesDefaultsMap(t *testing.T) {
 		},
 	})
 
-	specs, diags := macOSDefaultsSpecsFromModel(context.Background(), MacOSDefaultsResourceModel{
+	specs, diags := macOSDefaultsSpecsFromModel(t.Context(), MacOSDefaultsResourceModel{
 		Settings: settings,
 	})
 	if diags.HasError() {
@@ -58,7 +58,7 @@ func TestMacOSDefaultsSpecsFromModelRejectsDuplicateDefaults(t *testing.T) {
 		},
 	})
 
-	_, diags := macOSDefaultsSpecsFromModel(context.Background(), MacOSDefaultsResourceModel{
+	_, diags := macOSDefaultsSpecsFromModel(t.Context(), MacOSDefaultsResourceModel{
 		Settings: settings,
 	})
 	if !diags.HasError() {
@@ -76,7 +76,7 @@ func TestMacOSDefaultsSpecsFromModelParsesGroups(t *testing.T) {
 		},
 	})
 
-	specs, diags := macOSDefaultsSpecsFromModel(context.Background(), MacOSDefaultsResourceModel{
+	specs, diags := macOSDefaultsSpecsFromModel(t.Context(), MacOSDefaultsResourceModel{
 		Groups: groups,
 	})
 	if diags.HasError() {
@@ -103,7 +103,7 @@ func TestMacOSDefaultsSpecsFromModelParsesGroupSettingsByMapKey(t *testing.T) {
 		},
 	})
 
-	specs, diags := macOSDefaultsSpecsFromModel(context.Background(), MacOSDefaultsResourceModel{
+	specs, diags := macOSDefaultsSpecsFromModel(t.Context(), MacOSDefaultsResourceModel{
 		Groups: groups,
 	})
 	if diags.HasError() {
@@ -135,7 +135,7 @@ func TestMacOSDefaultsSpecsFromModelParsesExactGroupDomains(t *testing.T) {
 		},
 	})
 
-	specs, diags := macOSDefaultsSpecsFromModel(context.Background(), MacOSDefaultsResourceModel{
+	specs, diags := macOSDefaultsSpecsFromModel(t.Context(), MacOSDefaultsResourceModel{
 		Groups: groups,
 	})
 	if diags.HasError() {
@@ -155,7 +155,7 @@ func TestMacOSDefaultsSpecsFromModelParsesExactGroupDomains(t *testing.T) {
 func TestMacOSDefaultsSpecsFromModelRejectsGroupSettingsWrapper(t *testing.T) {
 	t.Parallel()
 
-	wrappedSettings, err := macOSSettingsObjectValue(context.Background(), map[string]attr.Value{
+	wrappedSettings, err := macOSSettingsObjectValue(t.Context(), map[string]attr.Value{
 		"autohide": types.BoolValue(true),
 	})
 	if err != nil {
@@ -168,7 +168,7 @@ func TestMacOSDefaultsSpecsFromModelRejectsGroupSettingsWrapper(t *testing.T) {
 		},
 	})
 
-	_, diags := macOSDefaultsSpecsFromModel(context.Background(), MacOSDefaultsResourceModel{
+	_, diags := macOSDefaultsSpecsFromModel(t.Context(), MacOSDefaultsResourceModel{
 		Groups: groups,
 	})
 	if !diags.HasError() {
@@ -179,7 +179,7 @@ func TestMacOSDefaultsSpecsFromModelRejectsGroupSettingsWrapper(t *testing.T) {
 func TestMacOSDefaultsSpecsFromModelRejectsGroupSettingObjectForm(t *testing.T) {
 	t.Parallel()
 
-	objectForm, err := macOSSettingsObjectValue(context.Background(), map[string]attr.Value{
+	objectForm, err := macOSSettingsObjectValue(t.Context(), map[string]attr.Value{
 		"key":   types.StringValue("show-recents"),
 		"value": types.BoolValue(false),
 	})
@@ -193,7 +193,7 @@ func TestMacOSDefaultsSpecsFromModelRejectsGroupSettingObjectForm(t *testing.T) 
 		},
 	})
 
-	_, diags := macOSDefaultsSpecsFromModel(context.Background(), MacOSDefaultsResourceModel{
+	_, diags := macOSDefaultsSpecsFromModel(t.Context(), MacOSDefaultsResourceModel{
 		Groups: groups,
 	})
 	if !diags.HasError() {
@@ -272,7 +272,7 @@ func TestMacOSDefaultsResourceImportStateReadsCurrentValues(t *testing.T) {
 			},
 		},
 	}
-	state, err := resource.importDefaultsState(context.Background(), "dock_autohide=user:com.apple.dock:autohide,languages=NSGlobalDomain:AppleLanguages")
+	state, err := resource.importDefaultsState(t.Context(), "dock_autohide=user:com.apple.dock:autohide,languages=NSGlobalDomain:AppleLanguages")
 	if err != nil {
 		t.Fatalf("importDefaultsState: %s", err)
 	}
@@ -280,7 +280,7 @@ func TestMacOSDefaultsResourceImportStateReadsCurrentValues(t *testing.T) {
 		t.Fatalf("id got %q", state.ID.ValueString())
 	}
 
-	specs, diags := macOSDefaultsSpecsFromModel(context.Background(), state)
+	specs, diags := macOSDefaultsSpecsFromModel(t.Context(), state)
 	if diags.HasError() {
 		t.Fatalf("settings state: %s", diagnosticsError(diags))
 	}
@@ -315,7 +315,7 @@ func TestMacOSDefaultsResourceSyncWritesDefaultsAndRestartsOnce(t *testing.T) {
 	resource := &MacOSDefaultsResource{
 		manager: manager,
 	}
-	state, err := resource.syncDefaults(context.Background(), MacOSDefaultsResourceModel{
+	state, err := resource.syncDefaults(t.Context(), MacOSDefaultsResourceModel{
 		Settings: settings,
 	})
 	if err != nil {
@@ -356,7 +356,7 @@ func TestMacOSDefaultsResourceUpdateDeletesRemovedDefaultsWhenConfigured(t *test
 		manager: manager,
 	}
 	if _, err := resource.updateDefaults(
-		context.Background(),
+		t.Context(),
 		MacOSDefaultsResourceModel{Settings: prior},
 		MacOSDefaultsResourceModel{Settings: plan},
 	); err != nil {
@@ -384,14 +384,14 @@ func mustMacOSDefaultsMap(t *testing.T, values map[string]MacOSDefaultsDefaultMo
 		if value.Restart.IsNull() {
 			value.Restart = types.ListNull(types.StringType)
 		}
-		objectValue, err := macOSDefaultsDefaultObjectValue(context.Background(), value)
+		objectValue, err := macOSDefaultsDefaultObjectValue(t.Context(), value)
 		if err != nil {
 			t.Fatalf("object value: %s", err)
 		}
 		elements[name] = objectValue
 	}
 
-	dynamic, err := macOSSettingsDynamicObject(context.Background(), elements)
+	dynamic, err := macOSSettingsDynamicObject(t.Context(), elements)
 	if err != nil {
 		t.Fatalf("settings value: %s", err)
 	}
@@ -403,14 +403,14 @@ func mustMacOSSettingsGroupsMap(t *testing.T, values map[string]map[string]attr.
 
 	elements := make(map[string]attr.Value, len(values))
 	for name, value := range values {
-		objectValue, err := macOSSettingsObjectValue(context.Background(), value)
+		objectValue, err := macOSSettingsObjectValue(t.Context(), value)
 		if err != nil {
 			t.Fatalf("group object value: %s", err)
 		}
 		elements[name] = objectValue
 	}
 
-	dynamic, err := macOSSettingsDynamicObject(context.Background(), elements)
+	dynamic, err := macOSSettingsDynamicObject(t.Context(), elements)
 	if err != nil {
 		t.Fatalf("groups value: %s", err)
 	}
