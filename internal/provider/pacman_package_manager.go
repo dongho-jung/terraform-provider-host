@@ -7,7 +7,15 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 )
+
+// pacmanMutateMutex serializes mutating pacman invocations across the whole
+// provider process. pacman takes an exclusive database lock (db.lck), so
+// concurrent -S/-D/-R calls (which Terraform issues in parallel for
+// independent resources) would otherwise fail with "unable to lock database".
+// Read-only queries do not take the lock and are left unserialized.
+var pacmanMutateMutex sync.Mutex
 
 type CLIPacmanPackageManager struct {
 	pacmanPath string
@@ -124,6 +132,11 @@ func (m *CLIPacmanPackageManager) runOptional(ctx context.Context, mutate bool, 
 }
 
 func (m *CLIPacmanPackageManager) run(ctx context.Context, mutate bool, name string, args ...string) ([]byte, error) {
+	if mutate {
+		pacmanMutateMutex.Lock()
+		defer pacmanMutateMutex.Unlock()
+	}
+
 	commandName := name
 	commandArgs := args
 

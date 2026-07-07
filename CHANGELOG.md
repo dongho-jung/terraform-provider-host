@@ -1,3 +1,9 @@
+## 0.11.2 (2026-07-07)
+
+FIXES:
+
+- Serialize mutating `host_package_pacman` operations behind a process-wide lock so parallel installs no longer fail with "unable to lock database" on the pacman `db.lck`. Read-only queries remain unserialized.
+
 ## 0.11.1 (2026-07-05)
 
 FIXES:
