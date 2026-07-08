@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -263,12 +264,25 @@ func (r *HostScheduleResource) Create(ctx context.Context, req resource.CreateRe
 
 	status, err := r.manager.UpsertSchedule(ctx, spec)
 	if err != nil {
+		r.cleanupAbandonedScheduleRuntime(id)
 		resp.Diagnostics.AddError("Failed to sync schedule", err.Error())
 		return
 	}
 
 	hydrateHostScheduleComputedState(&plan, status)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// cleanupAbandonedScheduleRuntime removes runtime files written for a schedule
+// whose creation failed before it was recorded in state. Nothing else can
+// reference the freshly generated ID, so leftovers would only accumulate as
+// orphaned schedules/<id> directories.
+func (r *HostScheduleResource) cleanupAbandonedScheduleRuntime(id string) {
+	runtimeDir, err := hostScheduleRuntimeDirForRuntime(id, r.runtimeDir)
+	if err != nil {
+		return
+	}
+	_ = os.RemoveAll(runtimeDir)
 }
 
 func (r *HostScheduleResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
