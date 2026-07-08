@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -15,8 +16,9 @@ import (
 )
 
 var (
-	_ resource.Resource              = &HostFileBlockResource{}
-	_ resource.ResourceWithConfigure = &HostFileBlockResource{}
+	_ resource.Resource                = &HostFileBlockResource{}
+	_ resource.ResourceWithConfigure   = &HostFileBlockResource{}
+	_ resource.ResourceWithImportState = &HostFileBlockResource{}
 )
 
 type HostFileBlockResource struct {
@@ -267,6 +269,65 @@ func (r *HostFileBlockResource) Delete(ctx context.Context, req resource.DeleteR
 	}); err != nil {
 		resp.Diagnostics.AddError("Failed to delete host file block", err.Error())
 	}
+}
+
+// ImportState imports one managed content block as `<path>:<block name>:<block id>`.
+// The block ID is the `hfb-…` identifier recorded for the block in the provider
+// runtime state under `.terraform-provider-host/host_files/`. Content and
+// ordering are hydrated by the follow-up Read.
+func (r *HostFileBlockResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	filePath, blockName, blockID, err := parseHostFileBlockImportID(req.ID)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid host file block import ID", err.Error())
+		return
+	}
+
+	state := HostFileBlockResourceModel{
+		ID: types.StringValue(blockID),
+		Block: &HostFileBlockReferenceModel{
+			Name:         types.StringValue(blockName),
+			Path:         types.StringValue(filePath),
+			PathResolved: types.StringNull(),
+		},
+		Before:  types.ListNull(types.StringType),
+		After:   types.ListNull(types.StringType),
+		Content: types.StringNull(),
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+// parseHostFileBlockImportID splits `<path>:<block name>:<block id>` anchored
+// on the last two separators, so file paths containing `:` still parse. Block
+// names containing `:` cannot be imported with this format.
+func parseHostFileBlockImportID(importID string) (string, string, string, error) {
+	formatErr := fmt.Errorf("import ID must be `<path>:<block name>:<block id>`, where the block ID is the `hfb-…` identifier recorded for the block in the provider runtime state under `.terraform-provider-host/host_files/`; got %q", importID)
+
+	idSep := strings.LastIndex(importID, ":")
+	if idSep < 0 {
+		return "", "", "", formatErr
+	}
+	blockID := importID[idSep+1:]
+	rest := importID[:idSep]
+
+	nameSep := strings.LastIndex(rest, ":")
+	if nameSep < 0 {
+		return "", "", "", formatErr
+	}
+	blockName := rest[nameSep+1:]
+	filePath := rest[:nameSep]
+
+	if filePath == "" || !strings.HasPrefix(blockID, "hfb-") {
+		return "", "", "", formatErr
+	}
+	if err := validateHostFileManagedBlockID(blockID); err != nil {
+		return "", "", "", err
+	}
+	if err := validateHostFileBlockName(blockName); err != nil {
+		return "", "", "", err
+	}
+
+	return filePath, blockName, blockID, nil
 }
 
 func validateHostFileBlockReferenceForHome(ref HostFileBlockReferenceModel, homeDir string) error {

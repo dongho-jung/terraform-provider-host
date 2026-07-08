@@ -78,3 +78,16 @@ Required:
 Optional:
 
 - `path_resolved` (String) Resolved absolute path to the host file that contains the target block.
+
+## Import
+
+Import is supported using the following syntax:
+
+The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
+
+```shell
+# Import as "<path>:<block name>:<block id>". The block ID is the `hfb-...`
+# identifier recorded for the block in the provider runtime state; find it in
+# .terraform-provider-host/host_files/*.json next to the Terraform working dir.
+terraform import host_file_block.git_aliases '~/.zshrc:alias:hfb-0123456789abcdef0123456789abcdef'
+```

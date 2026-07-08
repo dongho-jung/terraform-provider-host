@@ -3,6 +3,7 @@
 FEATURES:
 
 - Add `host_package_aur` for AUR package management through an AUR helper (`yay` or `paru`). The helper runs as the invoking user and shares the pacman database lock with `host_package_pacman`.
+- Add `host_file_block` import support with `<path>:<block name>:<block id>` import IDs.
 
 ## 0.11.2 (2026-07-07)
 
