@@ -1,3 +1,9 @@
+## 0.12.0 (2026-07-08)
+
+FEATURES:
+
+- Add `host_package_aur` for AUR package management through an AUR helper (`yay` or `paru`). The helper runs as the invoking user and shares the pacman database lock with `host_package_pacman`.
+
 ## 0.11.2 (2026-07-07)
 
 FIXES:

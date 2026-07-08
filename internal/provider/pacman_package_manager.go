@@ -36,7 +36,7 @@ func (m *CLIPacmanPackageManager) PackageStatus(ctx context.Context, name string
 
 	status := PackageStatus{Name: name}
 
-	installedOut, installed, err := m.runOptional(ctx, false, m.pacmanPath, "-Q", name)
+	installedOut, installed, err := m.runOptional(ctx, m.pacmanPath, "-Q", name)
 	if err != nil {
 		return PackageStatus{}, err
 	}
@@ -59,7 +59,7 @@ func (m *CLIPacmanPackageManager) PackageStatus(ctx context.Context, name string
 		}
 	}
 
-	candidateOut, candidateFound, err := m.runOptional(ctx, false, m.pacmanPath, "-Si", name)
+	candidateOut, candidateFound, err := m.runOptional(ctx, m.pacmanPath, "-Si", name)
 	if err != nil {
 		return PackageStatus{}, err
 	}
@@ -67,7 +67,7 @@ func (m *CLIPacmanPackageManager) PackageStatus(ctx context.Context, name string
 		status.CandidateVersion = parsePacmanInfoValue(string(candidateOut), "Version")
 	}
 
-	upgradeOut, upgradeFound, err := m.runOptional(ctx, false, m.pacmanPath, "-Qu", name)
+	upgradeOut, upgradeFound, err := m.runOptional(ctx, m.pacmanPath, "-Qu", name)
 	if err != nil {
 		return PackageStatus{}, err
 	}
@@ -120,8 +120,10 @@ func (m *CLIPacmanPackageManager) RemovePackages(ctx context.Context, names []st
 	return err
 }
 
-func (m *CLIPacmanPackageManager) runOptional(ctx context.Context, mutate bool, name string, args ...string) ([]byte, bool, error) {
-	out, err := m.run(ctx, mutate, name, args...)
+// runOptional runs a read-only query and reports "no result" instead of an
+// error when the package is simply unknown.
+func (m *CLIPacmanPackageManager) runOptional(ctx context.Context, name string, args ...string) ([]byte, bool, error) {
+	out, err := m.run(ctx, false, name, args...)
 	if err == nil {
 		return out, true, nil
 	}

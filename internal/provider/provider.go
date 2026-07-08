@@ -117,7 +117,16 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 
 	pacmanPath := executablePath("pacman")
 	if pacmanPath != "" {
-		data.PacmanManager = NewCLIPacmanPackageManager(pacmanPath, sudoPath)
+		pacmanManager := NewCLIPacmanPackageManager(pacmanPath, sudoPath)
+		data.PacmanManager = pacmanManager
+		for _, helperName := range []string{"yay", "paru"} {
+			helperPath := executablePath(helperName)
+			if helperPath == "" {
+				continue
+			}
+			data.AURManager = NewCLIAURPackageManager(helperName, helperPath, executablePath("vercmp"), pacmanManager)
+			break
+		}
 	}
 
 	brewPath := executablePath("brew")
@@ -207,6 +216,7 @@ func (p *HostProvider) Resources(ctx context.Context) []func() resource.Resource
 	return []func() resource.Resource{
 		NewDNFPackageResource,
 		NewPacmanPackageResource,
+		NewAURPackageResource,
 		NewBrewPackageResource,
 		NewHostDirResource,
 		NewHostFileResource,
