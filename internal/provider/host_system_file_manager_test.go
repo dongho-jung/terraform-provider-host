@@ -400,7 +400,10 @@ func TestTrustedHostSystemExecutableIgnoresCallerPATH(t *testing.T) {
 }
 
 func TestValidateHostSystemFileProtectedParents(t *testing.T) {
-	if err := validateHostSystemFileProtectedParents("/usr/local/bin/terraform-provider-host-test"); err != nil {
+	// Hosted CI images may intentionally make /usr/local/bin writable by the
+	// runner user. /usr/bin remains a protected system directory and exercises
+	// the same parent-chain validation without relying on that image policy.
+	if err := validateHostSystemFileProtectedParents("/usr/bin/terraform-provider-host-test"); err != nil {
 		t.Fatalf("trusted system destination: %s", err)
 	}
 	untrustedDestination := filepath.Join(t.TempDir(), "system-file")
