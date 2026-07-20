@@ -96,7 +96,11 @@ func (r *hostRootCommandRunner) Run(ctx context.Context, stdin io.Reader, name s
 	if r.NeedsPrivilegeEscalation() {
 		sudoPath := r.sudoPath
 		if sudoPath == "" {
-			sudoPath, err = resolver("sudo")
+			resolvedSudoPath, resolveErr := resolver("sudo")
+			if resolveErr != nil {
+				return hostSystemFileCommandResult{}, fmt.Errorf("managing system files requires root privileges, but sudo was not found in a trusted system directory: %w", resolveErr)
+			}
+			sudoPath = resolvedSudoPath
 		} else if !filepath.IsAbs(sudoPath) {
 			return hostSystemFileCommandResult{}, fmt.Errorf("configured sudo path must be absolute, got %q", sudoPath)
 		}

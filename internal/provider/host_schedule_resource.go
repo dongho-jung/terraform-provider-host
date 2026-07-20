@@ -565,16 +565,16 @@ func verifiedPreviousHostScheduleRuntime(state HostScheduleResourceModel, status
 		return "", false, fmt.Errorf("read previous schedule metadata: %w", err)
 	}
 	var metadata hostScheduleMetadata
-	if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
-		// A corrupt file is not enough evidence that a state-provided path is
-		// safe to remove recursively. Leave it for manual inspection.
-		return "", false, nil
+	if err := json.Unmarshal(metadataBytes, &metadata); err == nil {
+		expectedScriptPath := filepath.Join(previousRuntimeDir, "run.sh")
+		if metadata.Spec.ID == status.ID && metadata.Backend == "cron" && filepath.Clean(metadata.ScriptPath) == expectedScriptPath {
+			return previousRuntimeDir, true, nil
+		}
 	}
-	expectedScriptPath := filepath.Join(previousRuntimeDir, "run.sh")
-	if metadata.Spec.ID != status.ID || metadata.Backend != "cron" || filepath.Clean(metadata.ScriptPath) != expectedScriptPath {
-		return "", false, nil
-	}
-	return previousRuntimeDir, true, nil
+	// Corrupt or mismatched metadata is not enough evidence that a
+	// state-provided path is safe to remove recursively. Leave it for manual
+	// inspection.
+	return "", false, nil
 }
 
 func isHostScheduleRuntimeDirForID(runtimeDir string, id string) bool {

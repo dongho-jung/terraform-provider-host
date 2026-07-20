@@ -110,16 +110,15 @@ func (m *ResolvingAURPackageManager) resolve(ctx context.Context) (*CLIAURPackag
 
 func (m *ResolvingAURPackageManager) verifyHelperPath(ctx context.Context, name string, packageName string, path string) (string, bool, error) {
 	canonicalPath, err := canonicalExecutablePath(path)
-	if err != nil {
-		return "", false, nil
+	if err == nil {
+		owner, owned, ownerErr := m.pacman.PackageOwner(ctx, canonicalPath)
+		if ownerErr != nil {
+			return "", false, ownerErr
+		}
+		if owned && owner == packageName {
+			m.pacman.rememberVerifiedAURHelper(verifiedAURHelper{Name: name, Package: packageName, Path: canonicalPath})
+			return canonicalPath, true, nil
+		}
 	}
-	owner, owned, err := m.pacman.PackageOwner(ctx, canonicalPath)
-	if err != nil {
-		return "", false, err
-	}
-	if !owned || owner != packageName {
-		return "", false, nil
-	}
-	m.pacman.rememberVerifiedAURHelper(verifiedAURHelper{Name: name, Package: packageName, Path: canonicalPath})
-	return canonicalPath, true, nil
+	return "", false, nil
 }
