@@ -27,6 +27,39 @@ type PackageStatus struct {
 	UpgradeVersion   string
 }
 
+const (
+	packageInstallReasonExplicit   = "explicit"
+	packageInstallReasonDependency = "dependency"
+)
+
+// validatePackageName accepts the portable package-name character set shared
+// by the supported command-line package managers. Keeping option prefixes,
+// whitespace, controls, and path separators out prevents a configured name
+// from changing command semantics even though commands do not use a shell.
+func validatePackageName(name string) error {
+	if name == "" {
+		return fmt.Errorf("package name must be non-empty")
+	}
+	if name[0] == '-' || name[0] == '.' {
+		return fmt.Errorf("package name must not start with %q", name[0])
+	}
+
+	for index := 0; index < len(name); index++ {
+		character := name[index]
+		if character >= 'a' && character <= 'z' ||
+			character >= 'A' && character <= 'Z' ||
+			character >= '0' && character <= '9' ||
+			character == '@' || character == '.' || character == '_' ||
+			character == '+' || character == '-' {
+			continue
+		}
+
+		return fmt.Errorf("package name contains unsupported character %q; use only ASCII letters, digits, @, ., _, +, and -", character)
+	}
+
+	return nil
+}
+
 type CLIPackageManager struct {
 	dnfPath  string
 	sudoPath string
@@ -201,7 +234,7 @@ func (m *CLIPackageManager) run(ctx context.Context, mutate bool, name string, a
 }
 
 func (m *CLIPackageManager) authenticateSudo(ctx context.Context, name string, args ...string) error {
-	check := exec.CommandContext(ctx, m.sudoPath, "-n", "true")
+	check := exec.CommandContext(ctx, m.sudoPath, "-n", "-v")
 	if err := check.Run(); err == nil {
 		return nil
 	}

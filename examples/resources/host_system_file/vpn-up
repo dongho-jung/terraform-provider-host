@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+set -eu
+
+exec /usr/bin/openvpn --config /etc/openvpn/client/example.conf

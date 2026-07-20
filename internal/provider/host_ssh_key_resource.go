@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	tfpath "github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -77,13 +78,16 @@ type HostSSHKeyStatus struct {
 }
 
 type CLISSHKeyManager struct {
-	sshKeygenPath string
-	homeDir       string
+	sshKeygenPath         string
+	homeDir               string
+	sshKeygenExecutableMu sync.Mutex
+	sshKeygenExecutable   *lazyExecutablePath
 }
 
 func NewCLISSHKeyManager(sshKeygenPath string, homeDirs ...string) SSHKeyManager {
 	manager := &CLISSHKeyManager{
-		sshKeygenPath: sshKeygenPath,
+		sshKeygenPath:       sshKeygenPath,
+		sshKeygenExecutable: newLazyExecutablePath("ssh-keygen", sshKeygenPath),
 	}
 	if len(homeDirs) > 0 {
 		manager.homeDir = homeDirs[0]
@@ -106,12 +110,11 @@ func (r *HostSSHKeyResource) Configure(ctx context.Context, req resource.Configu
 
 	switch data := req.ProviderData.(type) {
 	case HostProviderData:
-		if data.SSHKeyManager == nil {
-			resp.Diagnostics.AddError("ssh-keygen executable not found", "`host_ssh_key` requires `ssh-keygen` to be available in PATH.")
-			return
-		}
-		r.manager = data.SSHKeyManager
 		r.homeDir = data.HomeDir
+		r.manager = data.SSHKeyManager
+		if r.manager == nil {
+			r.manager = NewCLISSHKeyManager("", data.HomeDir)
+		}
 	case SSHKeyManager:
 		r.manager = data
 	default:
@@ -455,6 +458,11 @@ func (m *CLISSHKeyManager) DeleteKey(ctx context.Context, path string) error {
 }
 
 func (m *CLISSHKeyManager) generateKey(ctx context.Context, spec HostSSHKeySpec) error {
+	sshKeygenPath, err := m.resolveSSHKeygenPath("SSH key generation")
+	if err != nil {
+		return err
+	}
+
 	parent := filepath.Dir(spec.Path)
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return fmt.Errorf("create SSH key parent directory %q: %w", parent, err)
@@ -465,7 +473,7 @@ func (m *CLISSHKeyManager) generateKey(ctx context.Context, spec HostSSHKeySpec)
 		args = append(args, "-b", strconv.FormatInt(spec.Bits, 10))
 	}
 
-	cmd := exec.CommandContext(ctx, m.sshKeygenPath, args...)
+	cmd := exec.CommandContext(ctx, sshKeygenPath, args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("run ssh-keygen %s: %w%s", strings.Join(args, " "), err, commandOutputSuffix(out))
 	}
@@ -490,12 +498,27 @@ func (m *CLISSHKeyManager) readPublicKey(ctx context.Context, publicKeyPath stri
 		return "", fmt.Errorf("read public key %q: %w", publicKeyPath, err)
 	}
 
-	cmd := exec.CommandContext(ctx, m.sshKeygenPath, "-y", "-f", privateKeyPath)
+	sshKeygenPath, err := m.resolveSSHKeygenPath("SSH public key derivation")
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.CommandContext(ctx, sshKeygenPath, "-y", "-f", privateKeyPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("derive public key from %q: %w%s", privateKeyPath, err, commandOutputSuffix(out))
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func (m *CLISSHKeyManager) resolveSSHKeygenPath(operation string) (string, error) {
+	m.sshKeygenExecutableMu.Lock()
+	if m.sshKeygenExecutable == nil {
+		m.sshKeygenExecutable = newLazyExecutablePath("ssh-keygen", m.sshKeygenPath)
+	}
+	resolver := m.sshKeygenExecutable
+	m.sshKeygenExecutableMu.Unlock()
+
+	return resolver.resolve(operation)
 }
 
 func sshKeySpecFromModelForHome(model HostSSHKeyResourceModel, homeDir string) (HostSSHKeySpec, error) {

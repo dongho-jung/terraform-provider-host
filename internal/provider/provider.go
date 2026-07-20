@@ -36,7 +36,7 @@ func (p *HostProvider) Schema(ctx context.Context, req provider.SchemaRequest, r
 		Attributes: map[string]schema.Attribute{
 			"runtime_dir": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "Directory where provider runtime metadata is stored. Defaults to `./.terraform-provider-host` relative to the Terraform working directory.",
+				MarkdownDescription: "Directory where provider runtime metadata is stored. New configurations default to `~/.local/state/terraform-provider-host` under the configured target user's home directory. When the legacy `./.terraform-provider-host` directory exists, the provider keeps using it for compatibility; set `runtime_dir` after copying its metadata, or move the legacy directory, to opt into the stable path.",
 			},
 			"home_dir": schema.StringAttribute{
 				Optional:            true,
@@ -99,7 +99,7 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		}
 		data.RuntimeDir = runtimeDir
 	} else {
-		runtimeDir, err := providerRuntimeDir()
+		runtimeDir, err := providerDefaultRuntimeDirForHome(data.HomeDir)
 		if err != nil {
 			resp.Diagnostics.AddError("Invalid runtime_dir", err.Error())
 			return
@@ -119,14 +119,8 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 	if pacmanPath != "" {
 		pacmanManager := NewCLIPacmanPackageManager(pacmanPath, sudoPath)
 		data.PacmanManager = pacmanManager
-		for _, helperName := range []string{"yay", "paru"} {
-			helperPath := executablePath(helperName)
-			if helperPath == "" {
-				continue
-			}
-			data.AURManager = NewCLIAURPackageManager(helperName, helperPath, executablePath("vercmp"), pacmanManager)
-			break
-		}
+		data.AURManager = NewResolvingAURPackageManager(pacmanManager)
+		data.AURHelperManager = NewCLIAURHelperManager(pacmanManager)
 	}
 
 	brewPath := executablePath("brew")
@@ -216,11 +210,14 @@ func (p *HostProvider) Resources(ctx context.Context) []func() resource.Resource
 	return []func() resource.Resource{
 		NewDNFPackageResource,
 		NewPacmanPackageResource,
+		NewAURHelperResource,
 		NewAURPackageResource,
 		NewBrewPackageResource,
 		NewHostDirResource,
 		NewHostFileResource,
 		NewHostFileBlockResource,
+		NewHostSystemFileResource,
+		NewHostSudoersRuleResource,
 		NewHostGitRepositoryResource,
 		NewHostHostnameResource,
 		NewHostTimezoneResource,

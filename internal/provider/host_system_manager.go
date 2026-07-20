@@ -328,7 +328,7 @@ func runHostSystemCommand(ctx context.Context, mutate bool, sudoPath string, lab
 }
 
 func authenticateHostSystemSudo(ctx context.Context, sudoPath string, name string, args ...string) error {
-	check := exec.CommandContext(ctx, sudoPath, "-n", "true")
+	check := exec.CommandContext(ctx, sudoPath, "-n", "-v")
 	if err := check.Run(); err == nil {
 		return nil
 	}

@@ -12,6 +12,8 @@ Creates or adopts a local SSH keypair without storing private key material in Te
 
 If the private key file already exists, the provider adopts it and reads the public key and fingerprint. If it does not exist, the provider creates an unencrypted key with `ssh-keygen`.
 
+The provider resolves `ssh-keygen` when the operation needs it rather than when provider configuration starts. On a fresh host, a package resource can therefore install OpenSSH earlier in the same apply when this resource has an explicit dependency on that package.
+
 ## Example Usage
 
 {{ tffile "examples/resources/host_ssh_key/resource.tf" }}

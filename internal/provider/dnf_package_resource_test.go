@@ -202,13 +202,25 @@ func TestDNFPackageResourceSyncUpgradesWhenVersionIsNotIgnored(t *testing.T) {
 func TestValidatePackageName(t *testing.T) {
 	t.Parallel()
 
-	for _, name := range []string{"git", "nodejs22", "NetworkManager-openvpn-gnome"} {
+	for _, name := range []string{"git", "nodejs22", "NetworkManager-openvpn-gnome", "foo@1.2_3+meta"} {
 		if err := validatePackageName(name); err != nil {
 			t.Fatalf("expected %q to be valid: %s", name, err)
 		}
 	}
 
-	for _, name := range []string{"", " git", "git "} {
+	for _, name := range []string{
+		"",
+		"-invalid",
+		".invalid",
+		" git",
+		"git ",
+		"git docs",
+		"git\tdocs",
+		"git\ndocs",
+		"git\x00docs",
+		"owner/package",
+		"café",
+	} {
 		if err := validatePackageName(name); err == nil {
 			t.Fatalf("expected %q to be invalid", name)
 		}

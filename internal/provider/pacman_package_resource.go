@@ -26,12 +26,17 @@ type PacmanPackageResource struct {
 	manager PackageManager
 }
 
+type packageManagerWithStatusOptions interface {
+	PackageStatusWithOptions(ctx context.Context, name string, includeVersions bool) (PackageStatus, error)
+}
+
 type PacmanPackageResourceModel struct {
 	ID               types.String `tfsdk:"id"`
 	Name             types.String `tfsdk:"name"`
 	Version          types.String `tfsdk:"version"`
 	IgnoreVersion    types.Bool   `tfsdk:"ignore_version"`
 	Autoremove       types.Bool   `tfsdk:"autoremove"`
+	InstallReason    types.String `tfsdk:"install_reason"`
 	InstalledVersion types.String `tfsdk:"installed_version"`
 	CandidateVersion types.String `tfsdk:"candidate_version"`
 }
@@ -79,6 +84,12 @@ func (r *PacmanPackageResource) Schema(ctx context.Context, req resource.SchemaR
 				Computed:            true,
 				Default:             booldefault.StaticBool(false),
 				MarkdownDescription: "Remove unused dependencies recursively with `pacman -Rns` when this package is removed. Defaults to false.",
+			},
+			"install_reason": schema.StringAttribute{
+				Optional:            true,
+				Computed:            true,
+				Default:             stringdefault.StaticString(packageInstallReasonExplicit),
+				MarkdownDescription: "Desired and observed Pacman install reason. The only supported desired value is `explicit`; refresh records `dependency` when external package operations change the installed package to a dependency, causing the next plan to restore `explicit`.",
 			},
 			"installed_version": schema.StringAttribute{
 				Computed:            true,
@@ -149,12 +160,16 @@ func (r *PacmanPackageResource) ModifyPlan(ctx context.Context, req resource.Mod
 		resp.Diagnostics.AddError("Invalid Pacman package version policy", err.Error())
 		return
 	}
+	if err := validateInstallReasonPolicy(plan.InstallReason.ValueString()); err != nil {
+		resp.Diagnostics.AddError("Invalid Pacman package install reason", err.Error())
+		return
+	}
 
 	if plan.Name.IsNull() || plan.Name.IsUnknown() {
 		return
 	}
 
-	status, err := r.manager.PackageStatus(ctx, plan.Name.ValueString())
+	status, err := r.packageStatus(ctx, plan.Name.ValueString(), !pacmanPackageIgnoresVersion(plan))
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read Pacman package", err.Error())
 		return
@@ -192,6 +207,10 @@ func (r *PacmanPackageResource) Create(ctx context.Context, req resource.CreateR
 
 	if err := validateVersionPolicy(plan.Version.ValueString()); err != nil {
 		resp.Diagnostics.AddError("Invalid Pacman package version policy", err.Error())
+		return
+	}
+	if err := validateInstallReasonPolicy(plan.InstallReason.ValueString()); err != nil {
+		resp.Diagnostics.AddError("Invalid Pacman package install reason", err.Error())
 		return
 	}
 
@@ -241,6 +260,10 @@ func (r *PacmanPackageResource) Update(ctx context.Context, req resource.UpdateR
 		resp.Diagnostics.AddError("Invalid Pacman package version policy", err.Error())
 		return
 	}
+	if err := validateInstallReasonPolicy(plan.InstallReason.ValueString()); err != nil {
+		resp.Diagnostics.AddError("Invalid Pacman package install reason", err.Error())
+		return
+	}
 
 	if err := r.syncPackage(ctx, plan); err != nil {
 		resp.Diagnostics.AddError("Failed to sync Pacman package", err.Error())
@@ -286,7 +309,7 @@ func (r *PacmanPackageResource) ImportState(ctx context.Context, req resource.Im
 func (r *PacmanPackageResource) refreshState(ctx context.Context, model PacmanPackageResourceModel) (PacmanPackageResourceModel, bool, error) {
 	name := model.Name.ValueString()
 
-	status, err := r.manager.PackageStatus(ctx, name)
+	status, err := r.packageStatus(ctx, name, !pacmanPackageIgnoresVersion(model))
 	if err != nil {
 		return model, false, err
 	}
@@ -301,6 +324,7 @@ func (r *PacmanPackageResource) refreshState(ctx context.Context, model PacmanPa
 	if model.Autoremove.IsNull() || model.Autoremove.IsUnknown() {
 		model.Autoremove = types.BoolValue(false)
 	}
+	hydratePackageInstallReason(&model.InstallReason, status)
 	hydratePacmanVersionState(&model, status)
 	if pacmanPackageIgnoresVersion(model) {
 		model.CandidateVersion = types.StringNull()
@@ -312,7 +336,7 @@ func (r *PacmanPackageResource) refreshState(ctx context.Context, model PacmanPa
 func (r *PacmanPackageResource) syncPackage(ctx context.Context, model PacmanPackageResourceModel) error {
 	name := model.Name.ValueString()
 
-	status, err := r.manager.PackageStatus(ctx, name)
+	status, err := r.packageStatus(ctx, name, !pacmanPackageIgnoresVersion(model))
 	if err != nil {
 		return err
 	}
@@ -338,6 +362,33 @@ func (r *PacmanPackageResource) syncPackage(ctx context.Context, model PacmanPac
 
 func pacmanPackageIgnoresVersion(model PacmanPackageResourceModel) bool {
 	return model.IgnoreVersion.IsNull() || model.IgnoreVersion.IsUnknown() || model.IgnoreVersion.ValueBool()
+}
+
+func (r *PacmanPackageResource) packageStatus(ctx context.Context, name string, includeVersions bool) (PackageStatus, error) {
+	if manager, ok := r.manager.(packageManagerWithStatusOptions); ok {
+		return manager.PackageStatusWithOptions(ctx, name, includeVersions)
+	}
+	return r.manager.PackageStatus(ctx, name)
+}
+
+func validateInstallReasonPolicy(reason string) error {
+	if reason == "" || reason == packageInstallReasonExplicit {
+		return nil
+	}
+
+	return fmt.Errorf("unsupported install reason %q; only %q can be configured", reason, packageInstallReasonExplicit)
+}
+
+func hydratePackageInstallReason(installReason *types.String, status PackageStatus) {
+	if !status.Installed {
+		*installReason = types.StringNull()
+		return
+	}
+	if status.ReasonUser {
+		*installReason = types.StringValue(packageInstallReasonExplicit)
+		return
+	}
+	*installReason = types.StringValue(packageInstallReasonDependency)
 }
 
 func hydratePacmanVersionState(model *PacmanPackageResourceModel, status PackageStatus) {

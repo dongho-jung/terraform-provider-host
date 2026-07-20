@@ -12,9 +12,13 @@ Creates or adopts a local SSH keypair without storing private key material in Te
 
 If the private key file already exists, the provider adopts it and reads the public key and fingerprint. If it does not exist, the provider creates an unencrypted key with `ssh-keygen`.
 
+The provider resolves `ssh-keygen` when the operation needs it rather than when provider configuration starts. On a fresh host, a package resource can therefore install OpenSSH earlier in the same apply when this resource has an explicit dependency on that package.
+
 ## Example Usage
 
 ```terraform
+# ssh-keygen is resolved when this resource needs it, so a package resource may
+# install OpenSSH earlier in the same dependency-ordered apply.
 resource "host_ssh_key" "github" {
   path              = "~/.ssh/id_ed25519"
   comment           = "alice@example.com"

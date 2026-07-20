@@ -273,7 +273,9 @@ func (r *HostFileBlockResource) Delete(ctx context.Context, req resource.DeleteR
 
 // ImportState imports one managed content block as `<path>:<block name>:<block id>`.
 // The block ID is the `hfb-…` identifier recorded for the block in the provider
-// runtime state under `.terraform-provider-host/host_files/`. Content and
+// runtime state under `<runtime_dir>/host_files/` (normally
+// `~/.local/state/terraform-provider-host/host_files/` for a new
+// configuration, or the legacy `./.terraform-provider-host/host_files/`). Content and
 // ordering are hydrated by the follow-up Read.
 func (r *HostFileBlockResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	filePath, blockName, blockID, err := parseHostFileBlockImportID(req.ID)
@@ -301,7 +303,7 @@ func (r *HostFileBlockResource) ImportState(ctx context.Context, req resource.Im
 // on the last two separators, so file paths containing `:` still parse. Block
 // names containing `:` cannot be imported with this format.
 func parseHostFileBlockImportID(importID string) (string, string, string, error) {
-	formatErr := fmt.Errorf("import ID must be `<path>:<block name>:<block id>`, where the block ID is the `hfb-…` identifier recorded for the block in the provider runtime state under `.terraform-provider-host/host_files/`; got %q", importID)
+	formatErr := fmt.Errorf("import ID must be `<path>:<block name>:<block id>`, where the block ID is the `hfb-…` identifier recorded under `<runtime_dir>/host_files/` (normally `~/.local/state/terraform-provider-host/host_files/`, or the legacy `./.terraform-provider-host/host_files/`); got %q", importID)
 
 	idSep := strings.LastIndex(importID, ":")
 	if idSep < 0 {

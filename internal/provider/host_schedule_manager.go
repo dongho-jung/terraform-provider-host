@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -59,9 +60,12 @@ type HostScheduleStatus struct {
 	WorkingDirectoryResolved string
 	StdoutPathResolved       string
 	StderrPathResolved       string
+	RuntimeDrifted           bool
 }
 
 type CLICronScheduleManager struct {
+	crontabPathMu  sync.Mutex
+	crontabWriteMu sync.Mutex
 	crontabPath    string
 	packageManager PackageManager
 	sudoPath       string
@@ -178,28 +182,31 @@ func (m *CLICronScheduleManager) ReadSchedule(ctx context.Context, spec HostSche
 		return HostScheduleStatus{}, false, err
 	}
 
-	cronInstalled := false
+	runtimeHealth, err := inspectHostScheduleRuntimeForProvider(spec, status, m.homeDir, m.runtimeDir)
+	if err != nil {
+		return HostScheduleStatus{}, false, err
+	}
+
+	cronPresent := false
+	cronMatches := !spec.Enabled
 	if m.resolveCrontabPath() {
 		lines, err := m.readCrontab(ctx, spec.User)
 		if err != nil {
 			return HostScheduleStatus{}, false, err
 		}
-		cronInstalled = hostScheduleCronEntryExists(lines, spec.ID, status.ScriptPath)
-	}
-	if cronInstalled {
-		status.Backend = "cron"
-		return status, true, nil
-	}
-
-	metadataExists, err := hostScheduleMetadataExistsForRuntime(spec.ID, m.runtimeDir)
-	if err != nil {
-		return HostScheduleStatus{}, false, err
-	}
-	if metadataExists && !spec.Enabled {
-		return status, true, nil
+		cronPresent, cronMatches, err = inspectHostScheduleCronEntry(lines, spec, status)
+		if err != nil {
+			return HostScheduleStatus{}, false, err
+		}
 	}
 
-	return status, false, nil
+	if !runtimeHealth.Present && !cronPresent {
+		return status, false, nil
+	}
+
+	status.RuntimeDrifted = !runtimeHealth.Valid || !cronMatches
+
+	return status, true, nil
 }
 
 func (m *CLICronScheduleManager) DeleteSchedule(ctx context.Context, spec HostScheduleSpec) error {
@@ -287,7 +294,7 @@ func writeHostScheduleRuntimeFilesForProvider(spec HostScheduleSpec, status Host
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(resolvedRuntimeDir, dirMode); err != nil {
+	if err := ensureHostScheduleRuntimeDir(resolvedRuntimeDir, dirMode); err != nil {
 		return fmt.Errorf("create schedule runtime directory %q: %w", resolvedRuntimeDir, err)
 	}
 	if err := chmodHostScheduleRuntimeDirsForRuntime(spec, resolvedRuntimeDir, dirMode, runtimeDir); err != nil {
@@ -298,31 +305,39 @@ func writeHostScheduleRuntimeFilesForProvider(spec HostScheduleSpec, status Host
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(status.ScriptPath, []byte(script), scriptMode); err != nil {
+	if err := writeHostScheduleFileAtomically(status.ScriptPath, []byte(script), scriptMode); err != nil {
 		return fmt.Errorf("write schedule script %q: %w", status.ScriptPath, err)
 	}
-	if err := os.Chmod(status.ScriptPath, scriptMode); err != nil {
-		return fmt.Errorf("chmod schedule script %q: %w", status.ScriptPath, err)
-	}
 
-	metadata := hostScheduleMetadata{
-		Spec:       spec,
-		Backend:    "cron",
-		ScriptPath: status.ScriptPath,
-	}
-	metadataBytes, err := json.MarshalIndent(metadata, "", "  ")
+	metadataBytes, err := renderHostScheduleMetadata(spec, status)
 	if err != nil {
-		return fmt.Errorf("encode schedule metadata: %w", err)
+		return err
 	}
 	metadataPath, err := hostScheduleMetadataPathForRuntime(spec.ID, runtimeDir)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(metadataPath, append(metadataBytes, '\n'), 0o600); err != nil {
+	if err := writeHostScheduleFileAtomically(metadataPath, metadataBytes, 0o600); err != nil {
 		return fmt.Errorf("write schedule metadata %q: %w", metadataPath, err)
 	}
 
 	return nil
+}
+
+func ensureHostScheduleRuntimeDir(path string, mode os.FileMode) error {
+	info, err := os.Lstat(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err == nil && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
+		// The schedule ID directory is provider-owned. Remove only the leaf
+		// entry (never a followed symlink target) before recreating it.
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	}
+
+	return os.MkdirAll(path, mode)
 }
 
 func hostScheduleRuntimeModes(spec HostScheduleSpec) (os.FileMode, os.FileMode, error) {
@@ -347,6 +362,10 @@ func hostScheduleNeedsSharedRuntime(spec HostScheduleSpec) (bool, error) {
 }
 
 func chmodHostScheduleRuntimeDirsForRuntime(spec HostScheduleSpec, runtimeDir string, mode os.FileMode, configuredRuntimeDir string) error {
+	if err := os.Chmod(runtimeDir, mode); err != nil {
+		return fmt.Errorf("chmod schedule runtime directory %q: %w", runtimeDir, err)
+	}
+
 	shared, err := hostScheduleNeedsSharedRuntime(spec)
 	if err != nil {
 		return err
@@ -364,7 +383,7 @@ func chmodHostScheduleRuntimeDirsForRuntime(spec HostScheduleSpec, runtimeDir st
 	if err != nil {
 		return err
 	}
-	for _, path := range []string{runtimeRoot, schedulesRoot, runtimeDir} {
+	for _, path := range []string{runtimeRoot, schedulesRoot} {
 		if err := os.Chmod(path, mode); err != nil {
 			return fmt.Errorf("chmod schedule runtime directory %q: %w", path, err)
 		}
@@ -374,6 +393,11 @@ func chmodHostScheduleRuntimeDirsForRuntime(spec HostScheduleSpec, runtimeDir st
 }
 
 func (m *CLICronScheduleManager) syncCronEntry(ctx context.Context, spec HostScheduleSpec, status HostScheduleStatus) error {
+	// crontab has a whole-file replace API. Serialize the read/modify/write
+	// transaction so parallel schedule resources cannot overwrite each other.
+	m.crontabWriteMu.Lock()
+	defer m.crontabWriteMu.Unlock()
+
 	if err := m.ensureCrontab(ctx); err != nil {
 		return err
 	}
@@ -400,6 +424,9 @@ func (m *CLICronScheduleManager) syncCronEntry(ctx context.Context, spec HostSch
 }
 
 func (m *CLICronScheduleManager) removeCronEntry(ctx context.Context, spec HostScheduleSpec, status HostScheduleStatus) error {
+	m.crontabWriteMu.Lock()
+	defer m.crontabWriteMu.Unlock()
+
 	if !m.resolveCrontabPath() {
 		return nil
 	}
@@ -436,6 +463,9 @@ func (m *CLICronScheduleManager) ensureCrontab(ctx context.Context) error {
 }
 
 func (m *CLICronScheduleManager) resolveCrontabPath() bool {
+	m.crontabPathMu.Lock()
+	defer m.crontabPathMu.Unlock()
+
 	if m.crontabPath != "" {
 		return true
 	}
@@ -563,7 +593,7 @@ func hostScheduleCrontabArgs(targetUser string, currentUser string, args ...stri
 }
 
 func (m *CLICronScheduleManager) authenticateSudo(ctx context.Context, name string, args ...string) error {
-	check := exec.CommandContext(ctx, m.sudoPath, "-n", "true")
+	check := exec.CommandContext(ctx, m.sudoPath, "-n", "-v")
 	if err := check.Run(); err == nil {
 		return nil
 	}
@@ -606,7 +636,7 @@ func filterHostScheduleCronEntry(lines []string, id string, scriptPath string) [
 			}
 			continue
 		}
-		if scriptPath != "" && strings.Contains(lines[i], scriptPath) {
+		if (scriptPath != "" && strings.Contains(lines[i], scriptPath)) || hostScheduleCronLineReferencesID(lines[i], id) {
 			continue
 		}
 		next = append(next, lines[i])
@@ -615,19 +645,43 @@ func filterHostScheduleCronEntry(lines []string, id string, scriptPath string) [
 	return next
 }
 
-func hostScheduleCronEntryExists(lines []string, id string, scriptPath string) bool {
-	marker := hostScheduleCronMarkerPrefix + id
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == marker {
-			return true
+func inspectHostScheduleCronEntry(lines []string, spec HostScheduleSpec, status HostScheduleStatus) (bool, bool, error) {
+	expected, err := renderHostScheduleCronEntry(spec, status)
+	if err != nil {
+		return false, false, err
+	}
+
+	marker := hostScheduleCronMarkerPrefix + spec.ID
+	markerCount := 0
+	matchingEntryCount := 0
+	scriptReferenceCount := 0
+	for i, line := range lines {
+		if strings.TrimSpace(line) == marker {
+			markerCount++
+			if i+1 < len(lines) && strings.TrimSpace(lines[i+1]) == expected[1] {
+				matchingEntryCount++
+			}
 		}
-		if scriptPath != "" && strings.Contains(line, scriptPath) {
-			return true
+		if (status.ScriptPath != "" && strings.Contains(line, status.ScriptPath)) || hostScheduleCronLineReferencesID(line, spec.ID) {
+			scriptReferenceCount++
 		}
 	}
 
-	return false
+	present := markerCount > 0 || scriptReferenceCount > 0
+	if !spec.Enabled {
+		return present, !present, nil
+	}
+
+	matches := markerCount == 1 && matchingEntryCount == 1 && scriptReferenceCount == 1
+	return present, matches, nil
+}
+
+func hostScheduleCronLineReferencesID(line string, id string) bool {
+	if validateHostScheduleID(id) != nil {
+		return false
+	}
+	providerScriptSuffix := "/" + hostScheduleRuntimeDirName + "/" + id + "/run.sh"
+	return strings.Contains(filepath.ToSlash(line), providerScriptSuffix)
 }
 
 func splitCronLines(content string) []string {
@@ -945,19 +999,119 @@ func renderHostScheduleScriptForHome(spec HostScheduleSpec, homeDir string) (str
 	return builder.String(), nil
 }
 
-func hostScheduleMetadataExistsForRuntime(id string, runtimeDir string) (bool, error) {
-	metadataPath, err := hostScheduleMetadataPathForRuntime(id, runtimeDir)
+type hostScheduleRuntimeHealth struct {
+	Present bool
+	Valid   bool
+}
+
+func inspectHostScheduleRuntimeForProvider(spec HostScheduleSpec, status HostScheduleStatus, homeDir string, runtimeDir string) (hostScheduleRuntimeHealth, error) {
+	dirMode, scriptMode, err := hostScheduleRuntimeModes(spec)
 	if err != nil {
-		return false, err
+		return hostScheduleRuntimeHealth{}, err
 	}
-	if _, err := os.Stat(metadataPath); err != nil {
+
+	directoryInfo, err := os.Lstat(status.RuntimeDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return hostScheduleRuntimeHealth{}, nil
+		}
+		return hostScheduleRuntimeHealth{}, fmt.Errorf("inspect schedule runtime directory %q: %w", status.RuntimeDir, err)
+	}
+	health := hostScheduleRuntimeHealth{Present: true}
+	if !directoryInfo.IsDir() || directoryInfo.Mode()&os.ModeSymlink != 0 || directoryInfo.Mode().Perm() != dirMode.Perm() {
+		return health, nil
+	}
+
+	expectedScript, err := renderHostScheduleScriptForHome(spec, homeDir)
+	if err != nil {
+		return health, err
+	}
+	scriptValid, err := hostScheduleFileMatches(status.ScriptPath, []byte(expectedScript), scriptMode)
+	if err != nil {
+		return health, err
+	}
+
+	expectedMetadata, err := renderHostScheduleMetadata(spec, status)
+	if err != nil {
+		return health, err
+	}
+	metadataPath, err := hostScheduleMetadataPathForRuntime(spec.ID, runtimeDir)
+	if err != nil {
+		return health, err
+	}
+	metadataValid, err := hostScheduleFileMatches(metadataPath, expectedMetadata, 0o600)
+	if err != nil {
+		return health, err
+	}
+
+	health.Valid = scriptValid && metadataValid
+	return health, nil
+}
+
+func hostScheduleFileMatches(path string, expected []byte, mode os.FileMode) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("read schedule metadata %q: %w", metadataPath, err)
+		return false, fmt.Errorf("inspect schedule runtime file %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm() != mode.Perm() {
+		return false, nil
 	}
 
-	return true, nil
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("read schedule runtime file %q: %w", path, err)
+	}
+
+	return bytes.Equal(content, expected), nil
+}
+
+func renderHostScheduleMetadata(spec HostScheduleSpec, status HostScheduleStatus) ([]byte, error) {
+	metadata := hostScheduleMetadata{
+		Spec:       spec,
+		Backend:    "cron",
+		ScriptPath: status.ScriptPath,
+	}
+	metadataBytes, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode schedule metadata: %w", err)
+	}
+
+	return append(metadataBytes, '\n'), nil
+}
+
+func writeHostScheduleFileAtomically(path string, content []byte, mode os.FileMode) (returnErr error) {
+	tempFile, err := os.CreateTemp(filepath.Dir(path), ".terraform-provider-host-*")
+	if err != nil {
+		return fmt.Errorf("create temporary runtime file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	defer func() {
+		_ = tempFile.Close()
+		if err := os.Remove(tempPath); err != nil && !os.IsNotExist(err) && returnErr == nil {
+			returnErr = fmt.Errorf("remove temporary runtime file %q: %w", tempPath, err)
+		}
+	}()
+
+	if err := tempFile.Chmod(mode); err != nil {
+		return fmt.Errorf("chmod temporary runtime file %q: %w", tempPath, err)
+	}
+	if _, err := tempFile.Write(content); err != nil {
+		return fmt.Errorf("write temporary runtime file %q: %w", tempPath, err)
+	}
+	if err := tempFile.Sync(); err != nil {
+		return fmt.Errorf("sync temporary runtime file %q: %w", tempPath, err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("close temporary runtime file %q: %w", tempPath, err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("replace runtime file %q: %w", path, err)
+	}
+
+	return nil
 }
 
 func shellQuote(value string) string {

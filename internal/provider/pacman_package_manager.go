@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // pacmanMutateMutex serializes mutating pacman invocations across the whole
@@ -20,65 +23,221 @@ var pacmanMutateMutex sync.Mutex
 type CLIPacmanPackageManager struct {
 	pacmanPath string
 	sudoPath   string
+
+	cacheMu           sync.RWMutex
+	cacheGeneration   uint64
+	localSnapshot     *pacmanLocalSnapshot
+	versionStatuses   map[string]pacmanVersionStatus
+	localSnapshotLoad singleflight.Group
+	versionStatusLoad singleflight.Group
+
+	aurHelperMu       sync.RWMutex
+	verifiedAURHelper map[string]verifiedAURHelper
+}
+
+type pacmanLocalSnapshot struct {
+	installedVersions map[string]string
+	explicitPackages  map[string]struct{}
+}
+
+type pacmanVersionStatus struct {
+	candidateVersion string
+	upgradeVersion   string
 }
 
 func NewCLIPacmanPackageManager(pacmanPath string, sudoPath string) *CLIPacmanPackageManager {
 	return &CLIPacmanPackageManager{
-		pacmanPath: pacmanPath,
-		sudoPath:   sudoPath,
+		pacmanPath:        pacmanPath,
+		sudoPath:          sudoPath,
+		versionStatuses:   make(map[string]pacmanVersionStatus),
+		verifiedAURHelper: make(map[string]verifiedAURHelper),
 	}
 }
 
+// PackageOwner reports the package owning path according to Pacman's local
+// database. The quiet owner query is the locale-independent form of -Qo.
+func (m *CLIPacmanPackageManager) PackageOwner(ctx context.Context, path string) (string, bool, error) {
+	out, found, err := m.runOptional(ctx, m.pacmanPath, "-Qqo", "--", path)
+	if err != nil {
+		return "", false, err
+	}
+	if !found {
+		return "", false, nil
+	}
+
+	owners := parsePackageNames(out)
+	if len(owners) != 1 {
+		return "", false, fmt.Errorf("expected one Pacman owner for %q, got %q", path, strings.TrimSpace(string(out)))
+	}
+	return owners[0], true, nil
+}
+
 func (m *CLIPacmanPackageManager) PackageStatus(ctx context.Context, name string) (PackageStatus, error) {
+	return m.PackageStatusWithOptions(ctx, name, true)
+}
+
+// PackageStatusWithOptions reads package state from a shared local snapshot.
+// Candidate and upgrade queries are only run when includeVersions is true.
+func (m *CLIPacmanPackageManager) PackageStatusWithOptions(ctx context.Context, name string, includeVersions bool) (PackageStatus, error) {
 	if err := validatePackageName(name); err != nil {
 		return PackageStatus{}, err
 	}
 
-	status := PackageStatus{Name: name}
-
-	installedOut, installed, err := m.runOptional(ctx, m.pacmanPath, "-Q", name)
+	status, err := m.localPackageStatus(ctx, name)
 	if err != nil {
 		return PackageStatus{}, err
 	}
-	if installed {
-		packageName, version, ok := parsePacmanPackageLine(strings.TrimSpace(string(installedOut)))
-		if ok && packageName == name {
-			status.Installed = true
-			status.InstalledVersion = version
-		}
+	if !includeVersions {
+		return status, nil
 	}
 
-	explicitOut, err := m.run(ctx, false, m.pacmanPath, "-Qqe")
+	versions, err := m.packageVersionStatus(ctx, name)
 	if err != nil {
 		return PackageStatus{}, err
 	}
-	for _, explicitName := range parsePackageNames(explicitOut) {
-		if explicitName == name {
-			status.ReasonUser = true
-			break
-		}
-	}
-
-	candidateOut, candidateFound, err := m.runOptional(ctx, m.pacmanPath, "-Si", name)
-	if err != nil {
-		return PackageStatus{}, err
-	}
-	if candidateFound {
-		status.CandidateVersion = parsePacmanInfoValue(string(candidateOut), "Version")
-	}
-
-	upgradeOut, upgradeFound, err := m.runOptional(ctx, m.pacmanPath, "-Qu", name)
-	if err != nil {
-		return PackageStatus{}, err
-	}
-	if upgradeFound {
-		packageName, version, ok := parsePacmanUpgradeLine(strings.TrimSpace(string(upgradeOut)))
-		if ok && packageName == name {
-			status.UpgradeVersion = version
-		}
-	}
+	status.CandidateVersion = versions.candidateVersion
+	status.UpgradeVersion = versions.upgradeVersion
 
 	return status, nil
+}
+
+func (m *CLIPacmanPackageManager) localPackageStatus(ctx context.Context, name string) (PackageStatus, error) {
+	snapshot, err := m.getLocalSnapshot(ctx)
+	if err != nil {
+		return PackageStatus{}, err
+	}
+
+	status := PackageStatus{Name: name}
+	if version, ok := snapshot.installedVersions[name]; ok {
+		status.Installed = true
+		status.InstalledVersion = version
+	}
+	_, status.ReasonUser = snapshot.explicitPackages[name]
+	return status, nil
+}
+
+func (m *CLIPacmanPackageManager) getLocalSnapshot(ctx context.Context) (*pacmanLocalSnapshot, error) {
+	m.cacheMu.RLock()
+	generation := m.cacheGeneration
+	if m.localSnapshot != nil {
+		snapshot := m.localSnapshot
+		m.cacheMu.RUnlock()
+		return snapshot, nil
+	}
+	m.cacheMu.RUnlock()
+
+	key := strconv.FormatUint(generation, 10)
+	value, err, _ := m.localSnapshotLoad.Do(key, func() (any, error) {
+		pacmanMutateMutex.Lock()
+		defer pacmanMutateMutex.Unlock()
+
+		installedOut, err := m.run(ctx, false, m.pacmanPath, "-Q")
+		if err != nil {
+			return nil, err
+		}
+		explicitOut, err := m.run(ctx, false, m.pacmanPath, "-Qqe")
+		if err != nil {
+			return nil, err
+		}
+
+		snapshot := &pacmanLocalSnapshot{
+			installedVersions: parsePacmanInstalledVersions(installedOut),
+			explicitPackages:  packageNameSet(explicitOut),
+		}
+
+		m.cacheMu.Lock()
+		if m.cacheGeneration == generation {
+			m.localSnapshot = snapshot
+		}
+		m.cacheMu.Unlock()
+		return snapshot, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	snapshot, ok := value.(*pacmanLocalSnapshot)
+	if !ok {
+		return nil, fmt.Errorf("unexpected Pacman snapshot result %T", value)
+	}
+	return snapshot, nil
+}
+
+func (m *CLIPacmanPackageManager) packageVersionStatus(ctx context.Context, name string) (pacmanVersionStatus, error) {
+	m.cacheMu.RLock()
+	generation := m.cacheGeneration
+	if status, ok := m.versionStatuses[name]; ok {
+		m.cacheMu.RUnlock()
+		return status, nil
+	}
+	m.cacheMu.RUnlock()
+
+	key := strconv.FormatUint(generation, 10) + ":" + name
+	value, err, _ := m.versionStatusLoad.Do(key, func() (any, error) {
+		status := pacmanVersionStatus{}
+		candidateOut, candidateFound, err := m.runOptional(ctx, m.pacmanPath, "-Si", name)
+		if err != nil {
+			return pacmanVersionStatus{}, err
+		}
+		if candidateFound {
+			status.candidateVersion = parsePacmanInfoValue(string(candidateOut), "Version")
+		}
+
+		upgradeOut, upgradeFound, err := m.runOptional(ctx, m.pacmanPath, "-Qu", name)
+		if err != nil {
+			return pacmanVersionStatus{}, err
+		}
+		if upgradeFound {
+			packageName, version, ok := parsePacmanUpgradeLine(strings.TrimSpace(string(upgradeOut)))
+			if ok && packageName == name {
+				status.upgradeVersion = version
+			}
+		}
+
+		m.cacheMu.Lock()
+		if m.cacheGeneration == generation {
+			if m.versionStatuses == nil {
+				m.versionStatuses = make(map[string]pacmanVersionStatus)
+			}
+			m.versionStatuses[name] = status
+		}
+		m.cacheMu.Unlock()
+		return status, nil
+	})
+	if err != nil {
+		return pacmanVersionStatus{}, err
+	}
+	status, ok := value.(pacmanVersionStatus)
+	if !ok {
+		return pacmanVersionStatus{}, fmt.Errorf("unexpected Pacman version status result %T", value)
+	}
+	return status, nil
+}
+
+func (m *CLIPacmanPackageManager) invalidateStatusCache() {
+	m.cacheMu.Lock()
+	m.cacheGeneration++
+	m.localSnapshot = nil
+	m.versionStatuses = make(map[string]pacmanVersionStatus)
+	m.cacheMu.Unlock()
+}
+
+func parsePacmanInstalledVersions(out []byte) map[string]string {
+	versions := make(map[string]string)
+	for _, line := range strings.Split(string(out), "\n") {
+		name, version, ok := parsePacmanPackageLine(strings.TrimSpace(line))
+		if ok {
+			versions[name] = version
+		}
+	}
+	return versions
+}
+
+func packageNameSet(out []byte) map[string]struct{} {
+	set := make(map[string]struct{})
+	for _, name := range parsePackageNames(out) {
+		set[name] = struct{}{}
+	}
+	return set
 }
 
 func (m *CLIPacmanPackageManager) InstallPackages(ctx context.Context, names []string) error {
@@ -137,6 +296,7 @@ func (m *CLIPacmanPackageManager) run(ctx context.Context, mutate bool, name str
 	if mutate {
 		pacmanMutateMutex.Lock()
 		defer pacmanMutateMutex.Unlock()
+		defer m.invalidateStatusCache()
 	}
 
 	commandName := name
@@ -169,7 +329,7 @@ func (m *CLIPacmanPackageManager) run(ctx context.Context, mutate bool, name str
 }
 
 func (m *CLIPacmanPackageManager) authenticateSudo(ctx context.Context, name string, args ...string) error {
-	check := exec.CommandContext(ctx, m.sudoPath, "-n", "true")
+	check := exec.CommandContext(ctx, m.sudoPath, "-n", "-v")
 	if err := check.Run(); err == nil {
 		return nil
 	}
@@ -230,6 +390,7 @@ func isPacmanNoResultError(err error) bool {
 	return strings.Contains(text, "exit status 1") &&
 		(strings.Contains(text, "was not found") ||
 			strings.Contains(text, "package not found") ||
+			strings.Contains(text, "no package owns") ||
 			strings.Contains(text, "target not found") ||
 			strings.TrimSpace(strings.Split(text, "\n")[len(strings.Split(text, "\n"))-1]) == "")
 }

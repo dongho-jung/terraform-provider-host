@@ -22,15 +22,19 @@ terraform {
 
 provider "host" {
   target_user = "dongho"
+
+  # runtime_dir defaults to ~/.local/state/terraform-provider-host for this
+  # target user unless a legacy ./.terraform-provider-host directory exists.
 }
 ```
 
 ## What It Manages
 
-- Local packages through DNF, Pacman, and Homebrew
+- Local packages through DNF, Pacman, Homebrew, and an AUR helper on Arch Linux
 - Hostname, timezone, locale, and virtual console keymap
-- Linux sysctl keys, systemd unit files, systemd service state, and fstab entries
+- Linux sysctl keys, systemd unit files, systemd service state, fstab entries, and validated sudoers drop-ins
 - Directories, whole files, file blocks, and symbolic links
+- Privileged regular files installed atomically with protected root ownership and mode
 - Git repositories checked out to host paths
 - SSH keypairs and OpenSSH client config host blocks
 - One local user and local groups for target-user bootstrap
@@ -41,6 +45,20 @@ provider "host" {
 
 Resources use tools available on the machine running Terraform, such as `hostnamectl`, `timedatectl`, `localectl`, `systemctl`, `sysctl`, `dnf`, `pacman`, `brew`, `git`, `ssh-keygen`, `crontab`, `defaults`, `killall`, `osascript`, `swift`, and platform account-management commands. Resources that mutate protected host state may prompt through `sudo` when Terraform is not already running with the required privileges.
 
-The provider manages one local user per configuration. Set `target_user` to that user; user-scoped resources expand leading `~` against that user's home directory and schedules use that user's crontab. If the target user already exists, `home_dir` is discovered automatically. If you are bootstrapping the target user with `host_user`, set `home_dir` explicitly, apply `host_user` first, then run a normal apply. Set `runtime_dir` to move generated metadata such as file block state and schedule scripts.
+`git`, `ssh-keygen`, and AUR helper executables are resolved when the corresponding operation needs them. This allows a package resource to install the executable earlier in the same apply when an explicit Terraform dependency establishes the order. Pacman itself must already be available before configuring Pacman or AUR resources.
+
+Privileged `host_system_file` and `host_sudoers_rule` operations do not resolve commands from the caller's `PATH`. Their small utility allowlist is resolved from protected system directories and requires root-owned, non-writable executables and parent directories.
+
+The provider manages one local user per configuration. Set `target_user` to that user; user-scoped resources expand leading `~` against that user's home directory and schedules use that user's crontab. If the target user already exists, `home_dir` is discovered automatically. If you are bootstrapping the target user with `host_user`, set `home_dir` explicitly, apply `host_user` first, then run a normal apply.
+
+## Runtime Metadata
+
+For a new configuration, generated metadata such as file-block state and schedule scripts defaults to `~/.local/state/terraform-provider-host` under the target user's home directory. This stable location does not depend on the Terraform working directory.
+
+For compatibility, if `./.terraform-provider-host` already exists in the current Terraform working directory, the provider continues using that legacy directory. To migrate, copy its metadata to the stable location and set `runtime_dir` explicitly, or move the legacy directory so it no longer takes precedence. Schedule refresh detects runtime or cron drift, and the next apply rewrites the generated artifacts. Cleanup removes an old schedule runtime only from the provider-computed legacy root for the current working directory and only when its metadata verifies the same schedule; explicit, unknown, or corrupt previous locations are left for manual review.
+
+## AUR Trust Boundary
+
+`host_aur_helper` bootstraps `yay` or `paru` from the current AUR Git HEAD, and `host_package_aur` executes the selected helper as the invoking user. AUR repositories and `PKGBUILD` files are user-contributed and mutable; builds execute unsandboxed code. Review and trust each package before applying it. The provider verifies Pacman ownership of helper executables, but that verification is not a source-code audit.
 
 Available provider arguments are `runtime_dir`, `target_user`, and `home_dir`.

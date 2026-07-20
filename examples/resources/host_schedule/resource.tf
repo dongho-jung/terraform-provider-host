@@ -10,6 +10,8 @@ resource "host_git_repo" "shell_history" {
   delete_on_destroy = false
 }
 
+# The provider verifies and repairs this schedule's generated runtime files and
+# exact cron entry on later applies.
 resource "host_schedule" "shell_history_git_auto_commit" {
   schedule = "*/30 * * * *"
   shell    = "/bin/zsh"

@@ -1,3 +1,30 @@
+## 0.13.0 (2026-07-20)
+
+FEATURES:
+
+- Add `host_aur_helper` to bootstrap and manage `yay` or `paru` directly with `git` and `makepkg`, including package variants such as `yay-bin`, without requiring an AUR helper to be present when the provider starts.
+- Add `host_system_file` for atomic installation of privileged, root-owned regular files with a canonical group and a mode that is not writable by group or other users, source-backed content that stays out of Terraform state, explicit adoption, and guarded deletion.
+- Add `host_sudoers_rule` for structured sudoers drop-ins. Rules are strictly validated with `visudo` and authorize only literal local users and exact, absolute commands invoked with no arguments.
+
+IMPROVEMENTS:
+
+- Share cached Pacman installed/explicit-package snapshots across concurrent resources, coalesce duplicate status queries, invalidate caches after mutations, and skip sync-database version queries when `ignore_version = true`.
+- Add desired and observed `install_reason` state to Pacman packages, AUR packages, and AUR helpers. Managed packages converge to `explicit`, while refresh reports external drift to `dependency` so the next apply can repair it.
+- Store runtime metadata for new configurations under `~/.local/state/terraform-provider-host` in the provider target user's home. Existing working-directory `.terraform-provider-host` runtimes remain the default when detected, allowing an explicit migration without silently abandoning stateful artifacts.
+- Resolve `git`, `ssh-keygen`, and AUR helper executables when an operation needs them instead of only during provider configuration. Package resources can therefore install those tools earlier in the same dependency-ordered apply; AUR remote version lookup is deferred during planning until a verified helper is available.
+
+FIXES:
+
+- Detect missing, corrupt, or mismatched schedule scripts, metadata, and cron entries and produce an in-place repair on the next apply. Runtime files are replaced atomically; migration removes a previous schedule runtime only when it is under the provider-computed legacy root for the current working directory and its metadata verifies the same schedule, leaving explicit, unknown, or corrupt previous locations untouched.
+- Serialize each target crontab read/modify/write transaction within the provider process so parallel `host_schedule` resources do not overwrite one another.
+
+SECURITY:
+
+- Resolve privileged system-file and sudoers utilities only from trusted system directories, requiring root ownership, non-writable executables, and protected parent directories instead of trusting the caller's `PATH`.
+- Require every managed system-file destination parent to be an existing, root-owned real directory that is not writable by group or other users; refuse symlink destinations, source bytes changed after planning, and deletion when the checksum, root ownership, safe mode, or special-bit checks fail.
+- Verify that a discovered AUR helper executable is owned by its configured Pacman package before adopting, using, or removing it. Helper bootstrap runs `makepkg` as the unprivileged Terraform user with controlled non-interactive Pacman authentication after sudo validation.
+- Document that AUR repositories are user-contributed, mutable Git HEADs whose `PKGBUILD` files execute unsandboxed code, and require users to review and trust packages before applying them.
+
 ## 0.12.0 (2026-07-08)
 
 FEATURES:

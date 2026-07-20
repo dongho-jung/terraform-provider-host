@@ -2,8 +2,11 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -70,7 +73,7 @@ func (r *HostScheduleResource) Schema(ctx context.Context, req resource.SchemaRe
 			},
 			"command": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Shell command to run when the schedule fires. The provider writes this command into `./.terraform-provider-host/schedules/<id>/run.sh`.",
+				MarkdownDescription: "Shell command to run when the schedule fires. The provider writes this command into the schedule's generated `run.sh` runtime file.",
 			},
 			"schedule": schema.StringAttribute{
 				Optional:            true,
@@ -130,14 +133,14 @@ func (r *HostScheduleResource) Schema(ctx context.Context, req resource.SchemaRe
 			},
 			"runtime_dir": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "Generated schedule runtime directory under `./.terraform-provider-host/schedules/<id>`.",
+				MarkdownDescription: "Generated schedule runtime directory. By default this is `~/.local/state/terraform-provider-host/schedules/<id>` for the provider target user.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"script_path": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "Generated script path under `./.terraform-provider-host/schedules/<id>`.",
+				MarkdownDescription: "Generated `run.sh` path inside the schedule runtime directory.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
@@ -299,6 +302,17 @@ func (r *HostScheduleResource) Read(ctx context.Context, req resource.ReadReques
 		resp.State.RemoveResource(ctx)
 		return
 	}
+	if hostScheduleImportStateNeedsHydration(state) {
+		spec, err := loadHostScheduleImportSpec(state.ID.ValueString(), r.homeDir, r.runtimeDir, r.targetUser)
+		if err != nil {
+			resp.Diagnostics.AddError("Failed to restore imported schedule state", err.Error())
+			return
+		}
+		resp.Diagnostics.Append(hydrateHostScheduleConfigState(ctx, &state, spec)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
 
 	spec, diags := hostScheduleSpecFromModelForTarget(ctx, state, r.targetUser)
 	resp.Diagnostics.Append(diags...)
@@ -312,11 +326,25 @@ func (r *HostScheduleResource) Read(ctx context.Context, req resource.ReadReques
 		return
 	}
 	if !exists {
+		verified, verifyErr := hasVerifiedPreviousHostScheduleRuntime(state, status)
+		if verifyErr != nil {
+			resp.Diagnostics.AddError("Failed to inspect previous schedule runtime", verifyErr.Error())
+			return
+		}
+		if verified {
+			// A disabled schedule has no cron entry. During a runtime_dir change,
+			// its verified previous runtime is the only evidence that the resource
+			// still exists and needs an in-place migration.
+			status.RuntimeDrifted = true
+			exists = true
+		}
+	}
+	if !exists {
 		resp.State.RemoveResource(ctx)
 		return
 	}
 
-	hydrateHostScheduleComputedState(&state, status)
+	hydrateHostScheduleReadState(&state, status)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -359,6 +387,9 @@ func (r *HostScheduleResource) Update(ctx context.Context, req resource.UpdateRe
 		resp.Diagnostics.AddError("Failed to sync schedule", err.Error())
 		return
 	}
+	if err := cleanupPreviousHostScheduleRuntimeForResource(state, status); err != nil {
+		resp.Diagnostics.AddWarning("Failed to clean previous schedule runtime", err.Error())
+	}
 
 	hydrateHostScheduleComputedState(&plan, status)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
@@ -386,6 +417,14 @@ func (r *HostScheduleResource) Delete(ctx context.Context, req resource.DeleteRe
 
 	if err := r.manager.DeleteSchedule(ctx, spec); err != nil {
 		resp.Diagnostics.AddError("Failed to delete schedule", err.Error())
+		return
+	}
+
+	status, err := hostScheduleStatusForProvider(spec, r.homeDir, r.runtimeDir)
+	if err == nil {
+		if err := cleanupPreviousHostScheduleRuntimeForResource(state, status); err != nil {
+			resp.Diagnostics.AddWarning("Failed to clean previous schedule runtime", err.Error())
+		}
 	}
 }
 
@@ -421,6 +460,144 @@ func hydrateHostScheduleComputedState(model *HostScheduleResourceModel, status H
 	model.StderrPathResolved = optionalStringStateValue(status.StderrPathResolved)
 }
 
+func hydrateHostScheduleReadState(model *HostScheduleResourceModel, status HostScheduleStatus) {
+	previousRuntimeDir := model.RuntimeDir
+	previousScriptPath := model.ScriptPath
+	hydrateHostScheduleComputedState(model, status)
+	if !status.RuntimeDrifted {
+		return
+	}
+
+	// Preserve a previous provider-managed runtime path long enough for Update
+	// to migrate and remove it. ModifyPlan computes the new stable path, which
+	// gives Terraform a concrete in-place repair diff.
+	if !previousRuntimeDir.IsNull() && !previousRuntimeDir.IsUnknown() &&
+		filepath.Clean(previousRuntimeDir.ValueString()) != filepath.Clean(status.RuntimeDir) &&
+		isHostScheduleRuntimeDirForID(previousRuntimeDir.ValueString(), status.ID) {
+		model.RuntimeDir = previousRuntimeDir
+		if !previousScriptPath.IsUnknown() {
+			model.ScriptPath = previousScriptPath
+		}
+		return
+	}
+
+	// script_path is an existing computed attribute, so clearing it records
+	// runtime or cron drift without expanding the public resource schema. The
+	// next plan restores the expected path and Update rewrites all artifacts.
+	model.ScriptPath = types.StringNull()
+}
+
+func cleanupPreviousHostScheduleRuntimeForResource(state HostScheduleResourceModel, status HostScheduleStatus) error {
+	legacyRoot, err := filepath.Abs(providerLegacyRuntimeDirName)
+	if err != nil {
+		return fmt.Errorf("resolve legacy schedule runtime root: %w", err)
+	}
+	return cleanupPreviousHostScheduleRuntime(state, status, legacyRoot)
+}
+
+func cleanupPreviousHostScheduleRuntime(state HostScheduleResourceModel, status HostScheduleStatus, allowedPreviousRoots ...string) error {
+	previousRuntimeDir, verified, err := verifiedPreviousHostScheduleRuntime(state, status)
+	if err != nil || !verified {
+		return err
+	}
+	previousRoot := filepath.Clean(filepath.Dir(filepath.Dir(previousRuntimeDir)))
+	allowed := false
+	for _, root := range allowedPreviousRoots {
+		if root != "" && filepath.IsAbs(root) && filepath.Clean(root) == previousRoot {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		// A state-provided path is not sufficient authority for recursive
+		// deletion. Unknown explicit runtime_dir transitions are left behind for
+		// manual inspection; only roots independently derived by the caller are
+		// eligible for automatic cleanup.
+		return nil
+	}
+
+	if err := os.RemoveAll(previousRuntimeDir); err != nil {
+		return fmt.Errorf("remove previous schedule runtime directory %q: %w", previousRuntimeDir, err)
+	}
+	cleanupEmptyLegacyScheduleRuntimeParents(previousRuntimeDir)
+	return nil
+}
+
+func hasVerifiedPreviousHostScheduleRuntime(state HostScheduleResourceModel, status HostScheduleStatus) (bool, error) {
+	_, verified, err := verifiedPreviousHostScheduleRuntime(state, status)
+	return verified, err
+}
+
+func verifiedPreviousHostScheduleRuntime(state HostScheduleResourceModel, status HostScheduleStatus) (string, bool, error) {
+	if state.RuntimeDir.IsNull() || state.RuntimeDir.IsUnknown() {
+		return "", false, nil
+	}
+
+	previousRuntimeDir := filepath.Clean(state.RuntimeDir.ValueString())
+	currentRuntimeDir := filepath.Clean(status.RuntimeDir)
+	if previousRuntimeDir == currentRuntimeDir || !isHostScheduleRuntimeDirForID(previousRuntimeDir, status.ID) {
+		return "", false, nil
+	}
+	runtimeInfo, err := os.Lstat(previousRuntimeDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("inspect previous schedule runtime: %w", err)
+	}
+	if runtimeInfo.Mode()&os.ModeSymlink != 0 || !runtimeInfo.IsDir() {
+		return "", false, nil
+	}
+
+	metadataPath := filepath.Join(previousRuntimeDir, "metadata.json")
+	metadataInfo, err := os.Lstat(metadataPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("inspect previous schedule metadata: %w", err)
+	}
+	if metadataInfo.Mode()&os.ModeSymlink != 0 || !metadataInfo.Mode().IsRegular() {
+		return "", false, nil
+	}
+	metadataBytes, err := os.ReadFile(metadataPath)
+	if err != nil {
+		return "", false, fmt.Errorf("read previous schedule metadata: %w", err)
+	}
+	var metadata hostScheduleMetadata
+	if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
+		// A corrupt file is not enough evidence that a state-provided path is
+		// safe to remove recursively. Leave it for manual inspection.
+		return "", false, nil
+	}
+	expectedScriptPath := filepath.Join(previousRuntimeDir, "run.sh")
+	if metadata.Spec.ID != status.ID || metadata.Backend != "cron" || filepath.Clean(metadata.ScriptPath) != expectedScriptPath {
+		return "", false, nil
+	}
+	return previousRuntimeDir, true, nil
+}
+
+func isHostScheduleRuntimeDirForID(runtimeDir string, id string) bool {
+	if runtimeDir == "" || !filepath.IsAbs(runtimeDir) || validateHostScheduleID(id) != nil {
+		return false
+	}
+	cleaned := filepath.Clean(runtimeDir)
+	return filepath.Base(cleaned) == id && filepath.Base(filepath.Dir(cleaned)) == hostScheduleRuntimeDirName
+}
+
+func cleanupEmptyLegacyScheduleRuntimeParents(scheduleRuntimeDir string) {
+	schedulesRoot := filepath.Dir(scheduleRuntimeDir)
+	runtimeRoot := filepath.Dir(schedulesRoot)
+	if filepath.Base(runtimeRoot) != providerLegacyRuntimeDirName {
+		return
+	}
+
+	// os.Remove only succeeds for empty directories, so unrelated legacy
+	// artifacts are never removed.
+	_ = os.Remove(schedulesRoot)
+	_ = os.Remove(runtimeRoot)
+}
+
 func hydrateHostSchedulePathComputedStateForHome(model *HostScheduleResourceModel, spec HostScheduleSpec, homeDir string) error {
 	workingDirectoryResolved, err := resolveOptionalHostSchedulePathForHome(spec.WorkingDirectory, homeDir)
 	if err != nil {
@@ -446,6 +623,127 @@ func optionalStringStateValue(value string) types.String {
 		return types.StringNull()
 	}
 	return types.StringValue(value)
+}
+
+func hostScheduleImportStateNeedsHydration(model HostScheduleResourceModel) bool {
+	// ImportState intentionally starts with only the stable schedule ID. A
+	// configured resource always has the required command in state, so use its
+	// absence as the narrow compatibility signal and never replace normal
+	// configuration-backed state from runtime metadata.
+	return model.Command.IsNull()
+}
+
+func loadHostScheduleImportSpec(id string, homeDir string, runtimeDir string, targetUser string) (HostScheduleSpec, error) {
+	if err := validateHostScheduleID(id); err != nil {
+		return HostScheduleSpec{}, err
+	}
+	if err := validateHostScheduleTargetUser(targetUser); err != nil {
+		return HostScheduleSpec{}, fmt.Errorf("invalid provider target user: %w", err)
+	}
+
+	metadataPath, err := hostScheduleMetadataPathForRuntime(id, runtimeDir)
+	if err != nil {
+		return HostScheduleSpec{}, err
+	}
+	metadataBytes, err := readRegularHostScheduleMetadata(metadataPath)
+	if err != nil {
+		return HostScheduleSpec{}, err
+	}
+
+	var metadata hostScheduleMetadata
+	if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
+		return HostScheduleSpec{}, fmt.Errorf("decode schedule metadata %q: %w", metadataPath, err)
+	}
+	if metadata.Spec.ID != id {
+		return HostScheduleSpec{}, fmt.Errorf("schedule metadata %q has ID %q, expected %q", metadataPath, metadata.Spec.ID, id)
+	}
+	if metadata.Backend != "cron" {
+		return HostScheduleSpec{}, fmt.Errorf("schedule metadata %q has unsupported backend %q", metadataPath, metadata.Backend)
+	}
+	if metadata.Spec.User != targetUser {
+		return HostScheduleSpec{}, fmt.Errorf("schedule metadata %q targets user %q, but the provider targets %q", metadataPath, metadata.Spec.User, targetUser)
+	}
+	if err := validateHostScheduleSpecForHome(metadata.Spec, homeDir); err != nil {
+		return HostScheduleSpec{}, fmt.Errorf("invalid schedule metadata %q: %w", metadataPath, err)
+	}
+
+	expectedScriptPath, err := hostScheduleScriptPathForRuntime(id, runtimeDir)
+	if err != nil {
+		return HostScheduleSpec{}, err
+	}
+	if metadata.ScriptPath != expectedScriptPath {
+		return HostScheduleSpec{}, fmt.Errorf("schedule metadata %q has script path %q, expected %q", metadataPath, metadata.ScriptPath, expectedScriptPath)
+	}
+
+	return metadata.Spec, nil
+}
+
+func readRegularHostScheduleMetadata(metadataPath string) ([]byte, error) {
+	const maximumMetadataSize = 1 << 20
+
+	info, err := os.Lstat(metadataPath)
+	if err != nil {
+		return nil, fmt.Errorf("inspect schedule metadata %q: %w", metadataPath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("schedule metadata %q must be a regular non-symlink file", metadataPath)
+	}
+	if info.Size() > maximumMetadataSize {
+		return nil, fmt.Errorf("schedule metadata %q exceeds %d bytes", metadataPath, maximumMetadataSize)
+	}
+
+	file, err := os.Open(metadataPath)
+	if err != nil {
+		return nil, fmt.Errorf("open schedule metadata %q: %w", metadataPath, err)
+	}
+	defer file.Close()
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspect opened schedule metadata %q: %w", metadataPath, err)
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		return nil, fmt.Errorf("schedule metadata %q changed while it was being opened", metadataPath)
+	}
+	pathInfo, err := os.Lstat(metadataPath)
+	if err != nil {
+		return nil, fmt.Errorf("reinspect schedule metadata %q: %w", metadataPath, err)
+	}
+	if pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.Mode().IsRegular() || !os.SameFile(openedInfo, pathInfo) {
+		return nil, fmt.Errorf("schedule metadata %q changed while it was being opened", metadataPath)
+	}
+
+	metadataBytes, err := io.ReadAll(io.LimitReader(file, maximumMetadataSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read schedule metadata %q: %w", metadataPath, err)
+	}
+	if len(metadataBytes) > maximumMetadataSize {
+		return nil, fmt.Errorf("schedule metadata %q exceeds %d bytes", metadataPath, maximumMetadataSize)
+	}
+	return metadataBytes, nil
+}
+
+func hydrateHostScheduleConfigState(ctx context.Context, model *HostScheduleResourceModel, spec HostScheduleSpec) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	model.ID = types.StringValue(spec.ID)
+	model.Command = types.StringValue(spec.Command)
+	model.Schedule = optionalStringStateValue(spec.Schedule)
+	model.Every = optionalStringStateValue(spec.Every)
+	model.Shell = types.StringValue(spec.Shell)
+	model.Enabled = types.BoolValue(spec.Enabled)
+	model.WorkingDirectory = optionalStringStateValue(spec.WorkingDirectory)
+	model.StdoutPath = optionalStringStateValue(spec.StdoutPath)
+	model.StderrPath = optionalStringStateValue(spec.StderrPath)
+	if spec.Environment == nil {
+		model.Environment = types.MapNull(types.StringType)
+	} else {
+		var environmentDiags diag.Diagnostics
+		model.Environment, environmentDiags = types.MapValueFrom(ctx, types.StringType, spec.Environment)
+		diags.Append(environmentDiags...)
+	}
+
+	return diags
 }
 
 func hostScheduleSpecFromModelForTarget(ctx context.Context, model HostScheduleResourceModel, defaultUser string) (HostScheduleSpec, diag.Diagnostics) {

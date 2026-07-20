@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -368,14 +367,6 @@ func shouldUpgradeToLatest(version string, status PackageStatus) bool {
 		status.InstalledVersion != "" &&
 		status.UpgradeVersion != "" &&
 		status.InstalledVersion != status.UpgradeVersion
-}
-
-func validatePackageName(name string) error {
-	if strings.TrimSpace(name) != name || name == "" {
-		return fmt.Errorf("package name must be non-empty and must not contain leading or trailing whitespace")
-	}
-
-	return nil
 }
 
 func validateVersionPolicy(version string) error {

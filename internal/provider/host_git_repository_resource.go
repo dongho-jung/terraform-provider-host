@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	tfpath "github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -30,8 +31,10 @@ var (
 var gitSHAishPattern = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
 
 type HostGitRepositoryResource struct {
-	gitPath string
-	homeDir string
+	gitPath         string
+	homeDir         string
+	gitExecutableMu sync.Mutex
+	gitExecutable   *lazyExecutablePath
 }
 
 type HostGitRepositoryResourceModel struct {
@@ -65,14 +68,10 @@ func (r *HostGitRepositoryResource) Configure(ctx context.Context, req resource.
 
 	switch data := req.ProviderData.(type) {
 	case HostProviderData:
-		if data.GitPath == "" {
-			resp.Diagnostics.AddError("Git executable not found", "`host_git_repo` requires `git` to be available in PATH.")
-			return
-		}
-		r.gitPath = data.GitPath
+		r.setConfiguredGitPath(data.GitPath)
 		r.homeDir = data.HomeDir
 	case string:
-		r.gitPath = data
+		r.setConfiguredGitPath(data)
 	default:
 		resp.Diagnostics.AddError("Unexpected provider data", fmt.Sprintf("Expected HostProviderData or git path string, got %T.", req.ProviderData))
 	}
@@ -185,11 +184,16 @@ func (r *HostGitRepositoryResource) ModifyPlan(ctx context.Context, req resource
 	}
 
 	if spec.TrackRemote {
-		if r.gitPath == "" {
-			resp.Diagnostics.AddError("Git executable not found", "`host_git_repo` requires `git` to be available in PATH.")
+		gitPath, available := r.tryGitExecutablePath()
+		if !available {
+			// Planning happens before package resources can install git. Keep the
+			// remote values unknown and resolve git again during apply.
+			plan.RemoteCommit = types.StringUnknown()
+			plan.Commit = types.StringUnknown()
+			resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 			return
 		}
-		remoteCommit, err := gitResolveRemoteRef(ctx, r.gitPath, spec.URL, spec.Ref)
+		remoteCommit, err := gitResolveRemoteRef(ctx, gitPath, spec.URL, spec.Ref)
 		if err != nil {
 			resp.Diagnostics.AddError("Failed to resolve Git remote ref", err.Error())
 			return
@@ -276,8 +280,9 @@ func (r *HostGitRepositoryResource) ImportState(ctx context.Context, req resourc
 }
 
 func (r *HostGitRepositoryResource) importRepositoryState(ctx context.Context, importID string) (HostGitRepositoryResourceModel, error) {
-	if r.gitPath == "" {
-		return HostGitRepositoryResourceModel{}, fmt.Errorf("git executable not found in PATH")
+	gitPath, err := r.resolveGitExecutablePath("Git repository import")
+	if err != nil {
+		return HostGitRepositoryResourceModel{}, err
 	}
 
 	pathValue := strings.TrimSpace(importID)
@@ -303,19 +308,19 @@ func (r *HostGitRepositoryResource) importRepositoryState(ctx context.Context, i
 		Force:           false,
 		DeleteOnDestroy: false,
 	}
-	if err := ensureGitRepositoryPath(ctx, r.gitPath, spec.PathResolved); err != nil {
+	if err := ensureGitRepositoryPath(ctx, gitPath, spec.PathResolved); err != nil {
 		return HostGitRepositoryResourceModel{}, err
 	}
 
-	url, err := gitRemoteURL(ctx, r.gitPath, spec.PathResolved, spec.RemoteName)
+	url, err := gitRemoteURL(ctx, gitPath, spec.PathResolved, spec.RemoteName)
 	if err != nil {
 		return HostGitRepositoryResourceModel{}, err
 	}
-	commit, err := gitCurrentCommit(ctx, r.gitPath, spec.PathResolved)
+	commit, err := gitCurrentCommit(ctx, gitPath, spec.PathResolved)
 	if err != nil {
 		return HostGitRepositoryResourceModel{}, err
 	}
-	dirty, err := gitCheckoutDirty(ctx, r.gitPath, spec.PathResolved)
+	dirty, err := gitCheckoutDirty(ctx, gitPath, spec.PathResolved)
 	if err != nil {
 		return HostGitRepositoryResourceModel{}, err
 	}
@@ -338,8 +343,9 @@ func (r *HostGitRepositoryResource) importRepositoryState(ctx context.Context, i
 }
 
 func (r *HostGitRepositoryResource) syncRepository(ctx context.Context, model HostGitRepositoryResourceModel) (HostGitRepositoryResourceModel, error) {
-	if r.gitPath == "" {
-		return model, fmt.Errorf("git executable not found in PATH")
+	gitPath, err := r.resolveGitExecutablePath("Git repository sync")
+	if err != nil {
+		return model, err
 	}
 
 	spec, err := hostGitRepositorySpecFromModelForHome(model, r.homeDir)
@@ -352,20 +358,20 @@ func (r *HostGitRepositoryResource) syncRepository(ctx context.Context, model Ho
 		return model, err
 	}
 	if !exists {
-		if err := gitClone(ctx, r.gitPath, spec); err != nil {
+		if err := gitClone(ctx, gitPath, spec); err != nil {
 			return model, err
 		}
 	} else if empty, err := directoryEmpty(spec.PathResolved); err != nil {
 		return model, err
 	} else if empty {
-		if err := gitClone(ctx, r.gitPath, spec); err != nil {
+		if err := gitClone(ctx, gitPath, spec); err != nil {
 			return model, err
 		}
-	} else if err := ensureGitRepositoryMatches(ctx, r.gitPath, spec); err != nil {
+	} else if err := ensureGitRepositoryMatches(ctx, gitPath, spec); err != nil {
 		return model, err
 	}
 
-	if err := syncGitRepositoryCheckout(ctx, r.gitPath, spec); err != nil {
+	if err := syncGitRepositoryCheckout(ctx, gitPath, spec); err != nil {
 		return model, err
 	}
 
@@ -380,8 +386,9 @@ func (r *HostGitRepositoryResource) syncRepository(ctx context.Context, model Ho
 }
 
 func (r *HostGitRepositoryResource) readRepository(ctx context.Context, model HostGitRepositoryResourceModel) (HostGitRepositoryResourceModel, bool, error) {
-	if r.gitPath == "" {
-		return model, false, fmt.Errorf("git executable not found in PATH")
+	gitPath, err := r.resolveGitExecutablePath("Git repository read")
+	if err != nil {
+		return model, false, err
 	}
 
 	spec, err := hostGitRepositorySpecFromModelForHome(model, r.homeDir)
@@ -396,15 +403,15 @@ func (r *HostGitRepositoryResource) readRepository(ctx context.Context, model Ho
 	if !exists {
 		return model, false, nil
 	}
-	if err := ensureGitRepositoryMatches(ctx, r.gitPath, spec); err != nil {
+	if err := ensureGitRepositoryMatches(ctx, gitPath, spec); err != nil {
 		return model, false, err
 	}
 
-	commit, err := gitCurrentCommit(ctx, r.gitPath, spec.PathResolved)
+	commit, err := gitCurrentCommit(ctx, gitPath, spec.PathResolved)
 	if err != nil {
 		return model, false, err
 	}
-	dirty, err := gitCheckoutDirty(ctx, r.gitPath, spec.PathResolved)
+	dirty, err := gitCheckoutDirty(ctx, gitPath, spec.PathResolved)
 	if err != nil {
 		return model, false, err
 	}
@@ -415,7 +422,7 @@ func (r *HostGitRepositoryResource) readRepository(ctx context.Context, model Ho
 	model.Commit = types.StringValue(commit)
 	model.Dirty = types.BoolValue(dirty)
 	if spec.TrackRemote {
-		remoteCommit, err := gitResolveRemoteRef(ctx, r.gitPath, spec.URL, spec.Ref)
+		remoteCommit, err := gitResolveRemoteRef(ctx, gitPath, spec.URL, spec.Ref)
 		if err != nil {
 			return model, false, err
 		}
@@ -443,14 +450,39 @@ func (r *HostGitRepositoryResource) deleteRepository(ctx context.Context, model 
 	if !exists {
 		return nil
 	}
-	if r.gitPath == "" {
-		return fmt.Errorf("git executable not found in PATH")
+	gitPath, err := r.resolveGitExecutablePath("Git repository deletion")
+	if err != nil {
+		return err
 	}
-	if err := ensureGitRepositoryMatches(ctx, r.gitPath, spec); err != nil {
+	if err := ensureGitRepositoryMatches(ctx, gitPath, spec); err != nil {
 		return err
 	}
 
 	return os.RemoveAll(spec.PathResolved)
+}
+
+func (r *HostGitRepositoryResource) resolveGitExecutablePath(operation string) (string, error) {
+	return r.gitExecutablePathResolver().resolve(operation)
+}
+
+func (r *HostGitRepositoryResource) tryGitExecutablePath() (string, bool) {
+	return r.gitExecutablePathResolver().tryResolve()
+}
+
+func (r *HostGitRepositoryResource) gitExecutablePathResolver() *lazyExecutablePath {
+	r.gitExecutableMu.Lock()
+	defer r.gitExecutableMu.Unlock()
+	if r.gitExecutable == nil {
+		r.gitExecutable = newLazyExecutablePath("git", r.gitPath)
+	}
+	return r.gitExecutable
+}
+
+func (r *HostGitRepositoryResource) setConfiguredGitPath(path string) {
+	r.gitExecutableMu.Lock()
+	defer r.gitExecutableMu.Unlock()
+	r.gitPath = path
+	r.gitExecutable = newLazyExecutablePath("git", path)
 }
 
 type hostGitRepositorySpec struct {

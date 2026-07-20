@@ -8,6 +8,7 @@ type HostProviderData struct {
 	PackageManager        PackageManager
 	PacmanManager         PackageManager
 	AURManager            AURPackageManager
+	AURHelperManager      AURHelperManager
 	BrewManager           BrewPackageManager
 	HostnameManager       HostnameManager
 	TimezoneManager       TimezoneManager

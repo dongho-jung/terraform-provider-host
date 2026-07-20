@@ -549,7 +549,7 @@ func (m *CLIIdentityManager) run(ctx context.Context, mutate bool, name string, 
 }
 
 func (m *CLIIdentityManager) authenticateSudo(ctx context.Context, name string, args ...string) error {
-	check := exec.CommandContext(ctx, m.sudoPath, "-n", "true")
+	check := exec.CommandContext(ctx, m.sudoPath, "-n", "-v")
 	if err := check.Run(); err == nil {
 		return nil
 	}

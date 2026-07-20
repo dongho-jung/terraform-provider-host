@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -32,6 +33,7 @@ type AURPackageResourceModel struct {
 	Version          types.String `tfsdk:"version"`
 	IgnoreVersion    types.Bool   `tfsdk:"ignore_version"`
 	Autoremove       types.Bool   `tfsdk:"autoremove"`
+	InstallReason    types.String `tfsdk:"install_reason"`
 	InstalledVersion types.String `tfsdk:"installed_version"`
 	CandidateVersion types.String `tfsdk:"candidate_version"`
 }
@@ -79,6 +81,12 @@ func (r *AURPackageResource) Schema(ctx context.Context, req resource.SchemaRequ
 				Computed:            true,
 				Default:             booldefault.StaticBool(false),
 				MarkdownDescription: "Remove unused dependencies recursively with `pacman -Rns` when this package is removed. Defaults to false.",
+			},
+			"install_reason": schema.StringAttribute{
+				Optional:            true,
+				Computed:            true,
+				Default:             stringdefault.StaticString(packageInstallReasonExplicit),
+				MarkdownDescription: "Desired and observed Pacman install reason. The only supported desired value is `explicit`; refresh records `dependency` when external package operations change the installed package to a dependency, causing the next plan to restore `explicit`.",
 			},
 			"installed_version": schema.StringAttribute{
 				Computed:            true,
@@ -149,25 +157,37 @@ func (r *AURPackageResource) ModifyPlan(ctx context.Context, req resource.Modify
 		resp.Diagnostics.AddError("Invalid AUR package version policy", err.Error())
 		return
 	}
+	if err := validateInstallReasonPolicy(plan.InstallReason.ValueString()); err != nil {
+		resp.Diagnostics.AddError("Invalid AUR package install reason", err.Error())
+		return
+	}
 
 	if plan.Name.IsNull() || plan.Name.IsUnknown() {
 		return
 	}
 
 	status, err := r.manager.PackageStatus(ctx, plan.Name.ValueString(), !aurPackageIgnoresVersion(plan))
-	if err != nil {
+	remoteUnavailable := errors.Is(err, errAURHelperUnavailable)
+	if err != nil && !remoteUnavailable {
 		resp.Diagnostics.AddError("Failed to read AUR package", err.Error())
 		return
 	}
 
-	hydrateAURPackageVersionState(&plan, status)
+	hydrateAURPackageInstalledVersionState(&plan, status)
 	if aurPackageIgnoresVersion(plan) {
 		plan.CandidateVersion = types.StringNull()
+	} else if remoteUnavailable {
+		resp.Diagnostics.AddWarning(
+			"AUR helper unavailable during planning",
+			"Remote AUR version information is deferred until an AUR helper is available. Package installation and upgrade operations still require a working helper; declare a host_aur_helper dependency for fresh-host applies.",
+		)
+	} else {
+		hydrateAURPackageCandidateVersionState(&plan, status)
 	}
 	if !status.Installed {
 		plan.InstalledVersion = types.StringUnknown()
 		r.addPrivilegeWarning(&resp.Diagnostics)
-	} else if !aurPackageIgnoresVersion(plan) && shouldUpgradeToLatest(plan.Version.ValueString(), status) {
+	} else if !remoteUnavailable && !aurPackageIgnoresVersion(plan) && shouldUpgradeToLatest(plan.Version.ValueString(), status) {
 		plan.InstalledVersion = types.StringValue(status.UpgradeVersion)
 		r.addPrivilegeWarning(&resp.Diagnostics)
 	} else if !status.ReasonUser {
@@ -192,6 +212,10 @@ func (r *AURPackageResource) Create(ctx context.Context, req resource.CreateRequ
 
 	if err := validateVersionPolicy(plan.Version.ValueString()); err != nil {
 		resp.Diagnostics.AddError("Invalid AUR package version policy", err.Error())
+		return
+	}
+	if err := validateInstallReasonPolicy(plan.InstallReason.ValueString()); err != nil {
+		resp.Diagnostics.AddError("Invalid AUR package install reason", err.Error())
 		return
 	}
 
@@ -241,6 +265,10 @@ func (r *AURPackageResource) Update(ctx context.Context, req resource.UpdateRequ
 		resp.Diagnostics.AddError("Invalid AUR package version policy", err.Error())
 		return
 	}
+	if err := validateInstallReasonPolicy(plan.InstallReason.ValueString()); err != nil {
+		resp.Diagnostics.AddError("Invalid AUR package install reason", err.Error())
+		return
+	}
 
 	if err := r.syncPackage(ctx, plan); err != nil {
 		resp.Diagnostics.AddError("Failed to sync AUR package", err.Error())
@@ -287,7 +315,8 @@ func (r *AURPackageResource) refreshState(ctx context.Context, model AURPackageR
 	name := model.Name.ValueString()
 
 	status, err := r.manager.PackageStatus(ctx, name, !aurPackageIgnoresVersion(model))
-	if err != nil {
+	remoteUnavailable := errors.Is(err, errAURHelperUnavailable)
+	if err != nil && !remoteUnavailable {
 		return model, false, err
 	}
 
@@ -301,9 +330,12 @@ func (r *AURPackageResource) refreshState(ctx context.Context, model AURPackageR
 	if model.Autoremove.IsNull() || model.Autoremove.IsUnknown() {
 		model.Autoremove = types.BoolValue(false)
 	}
-	hydrateAURPackageVersionState(&model, status)
+	hydratePackageInstallReason(&model.InstallReason, status)
+	hydrateAURPackageInstalledVersionState(&model, status)
 	if aurPackageIgnoresVersion(model) {
 		model.CandidateVersion = types.StringNull()
+	} else if !remoteUnavailable {
+		hydrateAURPackageCandidateVersionState(&model, status)
 	}
 
 	return model, status.Installed, nil
@@ -340,13 +372,15 @@ func aurPackageIgnoresVersion(model AURPackageResourceModel) bool {
 	return model.IgnoreVersion.IsNull() || model.IgnoreVersion.IsUnknown() || model.IgnoreVersion.ValueBool()
 }
 
-func hydrateAURPackageVersionState(model *AURPackageResourceModel, status PackageStatus) {
+func hydrateAURPackageInstalledVersionState(model *AURPackageResourceModel, status PackageStatus) {
 	if status.InstalledVersion == "" {
 		model.InstalledVersion = types.StringNull()
 	} else {
 		model.InstalledVersion = types.StringValue(status.InstalledVersion)
 	}
+}
 
+func hydrateAURPackageCandidateVersionState(model *AURPackageResourceModel, status PackageStatus) {
 	if status.CandidateVersion == "" {
 		model.CandidateVersion = types.StringNull()
 	} else {

@@ -46,29 +46,9 @@ func (m *CLIAURPackageManager) PackageStatus(ctx context.Context, name string, i
 		return PackageStatus{}, err
 	}
 
-	status := PackageStatus{Name: name}
-
-	installedOut, installed, err := m.pacman.runOptional(ctx, m.pacman.pacmanPath, "-Q", name)
+	status, err := m.pacman.localPackageStatus(ctx, name)
 	if err != nil {
 		return PackageStatus{}, err
-	}
-	if installed {
-		packageName, version, ok := parsePacmanPackageLine(strings.TrimSpace(string(installedOut)))
-		if ok && packageName == name {
-			status.Installed = true
-			status.InstalledVersion = version
-		}
-	}
-
-	explicitOut, err := m.pacman.run(ctx, false, m.pacman.pacmanPath, "-Qqe")
-	if err != nil {
-		return PackageStatus{}, err
-	}
-	for _, explicitName := range parsePackageNames(explicitOut) {
-		if explicitName == name {
-			status.ReasonUser = true
-			break
-		}
 	}
 
 	if !includeRemote {
@@ -170,6 +150,7 @@ func (m *CLIAURPackageManager) runHelperMutate(ctx context.Context, args ...stri
 
 	pacmanMutateMutex.Lock()
 	defer pacmanMutateMutex.Unlock()
+	defer m.pacman.invalidateStatusCache()
 
 	if m.pacman.sudoPath != "" {
 		if err := m.pacman.authenticateSudo(ctx, m.helperPath, args...); err != nil {

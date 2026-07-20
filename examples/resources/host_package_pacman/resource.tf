@@ -3,7 +3,8 @@ resource "host_package_pacman" "git" {
 }
 
 resource "host_package_pacman" "neovim" {
-  name = "neovim"
+  name           = "neovim"
+  install_reason = "explicit"
 }
 
 resource "host_package_pacman" "ripgrep" {
