@@ -176,9 +176,7 @@ func (r *HostGitRepositoryResource) ModifyPlan(ctx context.Context, req resource
 
 	plan.ID = types.StringValue(spec.Path)
 	plan.PathResolved = types.StringValue(spec.PathResolved)
-	requireReplaceIfResolvedPathChanged(req, resp, tfpath.Root("path"), state.Path, state.PathResolved, spec.PathResolved, func(value string) (string, error) {
-		return expandHostPathWithHome(value, r.homeDir)
-	})
+	requireReplaceIfResolvedPathChanged(req, resp, tfpath.Root("path"), state.PathResolved, spec.PathResolved)
 	if resp.Diagnostics.HasError() {
 		return
 	}

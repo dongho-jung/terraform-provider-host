@@ -1,50 +1,36 @@
 package provider
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-func TestCurrentResolvedPathPrefersStoredResolvedPath(t *testing.T) {
+func TestResolvedPathChanged(t *testing.T) {
 	t.Parallel()
 
-	got, ok, err := currentResolvedPath(
-		types.StringValue("~/projects"),
-		types.StringValue("/Users/alice/projects"),
-		func(path string) (string, error) {
-			return "", fmt.Errorf("resolve should not be called for %q", path)
-		},
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %s", err)
+	tests := []struct {
+		name    string
+		state   types.String
+		plan    string
+		changed bool
+		wantErr bool
+	}{
+		{name: "same", state: types.StringValue("/Users/alice/projects"), plan: "/Users/alice/projects"},
+		{name: "changed", state: types.StringValue("/Users/alice/old"), plan: "/Users/alice/projects", changed: true},
+		{name: "null", state: types.StringNull(), plan: "/Users/alice/projects"},
+		{name: "unknown", state: types.StringUnknown(), plan: "/Users/alice/projects"},
+		{name: "empty", state: types.StringValue(""), plan: "/Users/alice/projects", wantErr: true},
 	}
-	if !ok {
-		t.Fatalf("expected resolved path")
-	}
-	if got != "/Users/alice/projects" {
-		t.Fatalf("got %q, want /Users/alice/projects", got)
-	}
-}
-
-func TestCurrentResolvedPathFallsBackToRawPath(t *testing.T) {
-	t.Parallel()
-
-	got, ok, err := currentResolvedPath(
-		types.StringValue("~/projects"),
-		types.StringNull(),
-		func(path string) (string, error) {
-			return expandHostPathWithHome(path, "/Users/alice")
-		},
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %s", err)
-	}
-	if !ok {
-		t.Fatalf("expected resolved path")
-	}
-	if got != "/Users/alice/projects" {
-		t.Fatalf("got %q, want /Users/alice/projects", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			changed, err := resolvedPathChanged(tt.state, tt.plan)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error got %v, wantErr %t", err, tt.wantErr)
+			}
+			if changed != tt.changed {
+				t.Fatalf("changed got %t, want %t", changed, tt.changed)
+			}
+		})
 	}
 }

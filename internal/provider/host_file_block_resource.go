@@ -64,7 +64,6 @@ func (r *HostFileBlockResource) Configure(ctx context.Context, req resource.Conf
 
 func (r *HostFileBlockResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Version:             2,
 		MarkdownDescription: "Manages one Terraform-owned content block inside a named `host_file` block.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
@@ -273,10 +272,8 @@ func (r *HostFileBlockResource) Delete(ctx context.Context, req resource.DeleteR
 
 // ImportState imports one managed content block as `<path>:<block name>:<block id>`.
 // The block ID is the `hfb-…` identifier recorded for the block in the provider
-// runtime state under `<runtime_dir>/host_files/` (normally
-// `~/.local/state/terraform-provider-host/host_files/` for a new
-// configuration, or the legacy `./.terraform-provider-host/host_files/`). Content and
-// ordering are hydrated by the follow-up Read.
+// runtime state under `<runtime_dir>/host_files/`. Content and ordering are
+// hydrated by the follow-up Read.
 func (r *HostFileBlockResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	filePath, blockName, blockID, err := parseHostFileBlockImportID(req.ID)
 	if err != nil {
@@ -303,7 +300,7 @@ func (r *HostFileBlockResource) ImportState(ctx context.Context, req resource.Im
 // on the last two separators, so file paths containing `:` still parse. Block
 // names containing `:` cannot be imported with this format.
 func parseHostFileBlockImportID(importID string) (string, string, string, error) {
-	formatErr := fmt.Errorf("import ID must be `<path>:<block name>:<block id>`, where the block ID is the `hfb-…` identifier recorded under `<runtime_dir>/host_files/` (normally `~/.local/state/terraform-provider-host/host_files/`, or the legacy `./.terraform-provider-host/host_files/`); got %q", importID)
+	formatErr := fmt.Errorf("import ID must be `<path>:<block name>:<block id>`, where the block ID is the `hfb-…` identifier recorded under `<runtime_dir>/host_files/`; got %q", importID)
 
 	idSep := strings.LastIndex(importID, ":")
 	if idSep < 0 {

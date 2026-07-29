@@ -615,10 +615,6 @@ func readHostSSHConfigManagedBlock(path string, blockID string) (string, bool, e
 	return strings.Join(lines[start+1:end], ""), true, nil
 }
 
-func removeHostSSHConfigManagedBlock(path string, blockID string) error {
-	return removeHostSSHConfigHostBlock(path, blockID, "", false)
-}
-
 func readUnmanagedSSHConfigHostBlock(path string, host string) (string, bool, error) {
 	content, err := readSSHConfigFileIfExists(path)
 	if err != nil || content == "" {

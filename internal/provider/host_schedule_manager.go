@@ -119,7 +119,7 @@ func hostScheduleRuntimeDirForRuntime(id string, runtimeDir string) (string, err
 		return "", err
 	}
 
-	scheduleDir, err := providerRuntimeSubdirForRuntime(runtimeDir, hostScheduleRuntimeDirName)
+	scheduleDir, err := providerRuntimeSubdir(runtimeDir, hostScheduleRuntimeDirName)
 	if err != nil {
 		return "", err
 	}
@@ -375,14 +375,11 @@ func chmodHostScheduleRuntimeDirsForRuntime(spec HostScheduleSpec, runtimeDir st
 		return nil
 	}
 
-	runtimeRoot, err := providerRuntimeDirForRuntime(configuredRuntimeDir)
+	schedulesRoot, err := providerRuntimeSubdir(configuredRuntimeDir, hostScheduleRuntimeDirName)
 	if err != nil {
 		return err
 	}
-	schedulesRoot, err := providerRuntimeSubdirForRuntime(configuredRuntimeDir, hostScheduleRuntimeDirName)
-	if err != nil {
-		return err
-	}
+	runtimeRoot := filepath.Dir(schedulesRoot)
 	for _, path := range []string{runtimeRoot, schedulesRoot} {
 		if err := os.Chmod(path, mode); err != nil {
 			return fmt.Errorf("chmod schedule runtime directory %q: %w", path, err)
@@ -636,7 +633,7 @@ func filterHostScheduleCronEntry(lines []string, id string, scriptPath string) [
 			}
 			continue
 		}
-		if (scriptPath != "" && strings.Contains(lines[i], scriptPath)) || hostScheduleCronLineReferencesID(lines[i], id) {
+		if scriptPath != "" && strings.Contains(lines[i], scriptPath) {
 			continue
 		}
 		next = append(next, lines[i])
@@ -662,7 +659,7 @@ func inspectHostScheduleCronEntry(lines []string, spec HostScheduleSpec, status 
 				matchingEntryCount++
 			}
 		}
-		if (status.ScriptPath != "" && strings.Contains(line, status.ScriptPath)) || hostScheduleCronLineReferencesID(line, spec.ID) {
+		if status.ScriptPath != "" && strings.Contains(line, status.ScriptPath) {
 			scriptReferenceCount++
 		}
 	}
@@ -674,14 +671,6 @@ func inspectHostScheduleCronEntry(lines []string, spec HostScheduleSpec, status 
 
 	matches := markerCount == 1 && matchingEntryCount == 1 && scriptReferenceCount == 1
 	return present, matches, nil
-}
-
-func hostScheduleCronLineReferencesID(line string, id string) bool {
-	if validateHostScheduleID(id) != nil {
-		return false
-	}
-	providerScriptSuffix := "/" + hostScheduleRuntimeDirName + "/" + id + "/run.sh"
-	return strings.Contains(filepath.ToSlash(line), providerScriptSuffix)
 }
 
 func splitCronLines(content string) []string {
@@ -943,10 +932,6 @@ func cronExpressionFromEvery(value string) (string, error) {
 	default:
 		return "", fmt.Errorf("every duration %q cannot be represented exactly by cron; use `schedule` instead", value)
 	}
-}
-
-func renderHostScheduleScript(spec HostScheduleSpec) (string, error) {
-	return renderHostScheduleScriptForHome(spec, "")
 }
 
 func renderHostScheduleScriptForHome(spec HostScheduleSpec, homeDir string) (string, error) {

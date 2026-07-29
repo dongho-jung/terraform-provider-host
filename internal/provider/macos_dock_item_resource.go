@@ -700,7 +700,7 @@ func writeMacOSDockManagedStateForRuntime(state macOSDockManagedState, runtimeDi
 }
 
 func macOSDockManagedStatePathForRuntime(runtimeDir string) (string, error) {
-	stateDir, err := providerRuntimeSubdirForRuntime(runtimeDir, "mac_dock")
+	stateDir, err := providerRuntimeSubdir(runtimeDir, "mac_dock")
 	if err != nil {
 		return "", err
 	}

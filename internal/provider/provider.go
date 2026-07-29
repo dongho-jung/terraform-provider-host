@@ -36,7 +36,7 @@ func (p *HostProvider) Schema(ctx context.Context, req provider.SchemaRequest, r
 		Attributes: map[string]schema.Attribute{
 			"runtime_dir": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "Directory where provider runtime metadata is stored. New configurations default to `~/.local/state/terraform-provider-host` under the configured target user's home directory. When the legacy `./.terraform-provider-host` directory exists, the provider keeps using it for compatibility; set `runtime_dir` after copying its metadata, or move the legacy directory, to opt into the stable path.",
+				MarkdownDescription: "Directory where provider runtime metadata is stored. Defaults to `~/.local/state/terraform-provider-host` under the configured target user's home directory.",
 			},
 			"home_dir": schema.StringAttribute{
 				Optional:            true,
@@ -99,7 +99,7 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		}
 		data.RuntimeDir = runtimeDir
 	} else {
-		runtimeDir, err := providerDefaultRuntimeDirForHome(data.HomeDir)
+		runtimeDir, err := providerRuntimeDirForHome(data.HomeDir)
 		if err != nil {
 			resp.Diagnostics.AddError("Invalid runtime_dir", err.Error())
 			return

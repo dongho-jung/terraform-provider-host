@@ -90,7 +90,7 @@ func TestHostSSHConfigManagedBlockPreservesUnmanagedContent(t *testing.T) {
 		t.Fatalf("managed block got:\n%s\nwant:\n%s", got, rendered)
 	}
 
-	if err := removeHostSSHConfigManagedBlock(configPath, spec.ID); err != nil {
+	if err := removeHostSSHConfigHostBlock(configPath, spec.ID, "", false); err != nil {
 		t.Fatalf("remove managed block: %s", err)
 	}
 	content, err = os.ReadFile(configPath)

@@ -15,9 +15,9 @@ func TestResolveHostLinkSourceRelativeToWorkingDirectory(t *testing.T) {
 		t.Fatalf("getwd after chdir: %s", err)
 	}
 
-	got, err := resolveHostLinkSource("./nvim")
+	got, err := resolveHostLinkSourceForHome("./nvim", t.TempDir())
 	if err != nil {
-		t.Fatalf("resolveHostLinkSource: %s", err)
+		t.Fatalf("resolveHostLinkSourceForHome: %s", err)
 	}
 	want := filepath.Join(resolvedWorkingDir, "nvim")
 	if got != want {

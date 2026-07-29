@@ -57,7 +57,6 @@ func (r *HostLinkResource) Configure(ctx context.Context, req resource.Configure
 
 func (r *HostLinkResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Version:             1,
 		MarkdownDescription: "Manages a symbolic link from a destination host path to a source file or directory.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
@@ -115,9 +114,7 @@ func (r *HostLinkResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 	plan.ID = types.StringValue(plan.Destination.ValueString())
 	plan.SourcePath = types.StringValue(link.SourcePath)
 	plan.DestinationPath = types.StringValue(link.DestinationPath)
-	requireReplaceIfResolvedPathChanged(req, resp, path.Root("destination"), state.Destination, state.DestinationPath, link.DestinationPath, func(value string) (string, error) {
-		return resolveHostLinkDestinationForHome(value, r.homeDir)
-	})
+	requireReplaceIfResolvedPathChanged(req, resp, path.Root("destination"), state.DestinationPath, link.DestinationPath)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -275,10 +272,6 @@ func resolveHostLinkDestinationForHome(value string, homeDir string) (string, er
 		return "", fmt.Errorf("resolve current working directory: %w", err)
 	}
 	return filepath.Clean(filepath.Join(workingDir, value)), nil
-}
-
-func resolveHostLinkSource(value string) (string, error) {
-	return resolveHostLinkSourceForHome(value, "")
 }
 
 func resolveHostLinkSourceForHome(value string, homeDir string) (string, error) {

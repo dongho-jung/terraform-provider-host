@@ -119,9 +119,7 @@ func (r *HostDirResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 
 	plan.ID = types.StringValue(plan.Path.ValueString())
 	plan.PathResolved = types.StringValue(resolvedPath)
-	requireReplaceIfResolvedPathChanged(req, resp, tfpath.Root("path"), state.Path, state.PathResolved, resolvedPath, func(value string) (string, error) {
-		return resolveHostDirPathForHome(value, r.homeDir)
-	})
+	requireReplaceIfResolvedPathChanged(req, resp, tfpath.Root("path"), state.PathResolved, resolvedPath)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -196,10 +194,6 @@ func (r *HostDirResource) ImportState(ctx context.Context, req resource.ImportSt
 	resource.ImportStatePassthroughID(ctx, tfpath.Root("path"), req, resp)
 }
 
-func syncHostDir(model HostDirResourceModel) (HostDirResourceModel, error) {
-	return syncHostDirForHome(model, "")
-}
-
 func syncHostDirForHome(model HostDirResourceModel, homeDir string) (HostDirResourceModel, error) {
 	resolvedPath, err := resolveHostDirPathForHome(model.Path.ValueString(), homeDir)
 	if err != nil {
@@ -256,10 +250,6 @@ func readExistingHostDir(model HostDirResourceModel, resolvedPath string) (HostD
 		model.RecursiveDelete = types.BoolValue(false)
 	}
 	return model, nil
-}
-
-func deleteHostDir(model HostDirResourceModel) error {
-	return deleteHostDirForHome(model, "")
 }
 
 func deleteHostDirForHome(model HostDirResourceModel, homeDir string) error {

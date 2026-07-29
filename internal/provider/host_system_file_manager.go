@@ -211,10 +211,6 @@ func NewCLIHostSystemFileManager(sudoPath string) *CLIHostSystemFileManager {
 	}
 }
 
-func newCLIHostSystemFileManagerWithRunner(runner hostSystemFileCommandRunner, goos string) *CLIHostSystemFileManager {
-	return &CLIHostSystemFileManager{runner: runner, goos: goos}
-}
-
 func (m *CLIHostSystemFileManager) File(ctx context.Context, destination string) (HostSystemFileStatus, bool, error) {
 	if err := validateHostSystemFileDestination(destination); err != nil {
 		return HostSystemFileStatus{}, false, err

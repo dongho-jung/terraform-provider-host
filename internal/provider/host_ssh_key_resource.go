@@ -237,9 +237,7 @@ func (r *HostSSHKeyResource) ModifyPlan(ctx context.Context, req resource.Modify
 	plan.PathResolved = types.StringValue(pathResolved)
 	plan.PublicKeyPath = types.StringValue(publicSSHKeyPath(plan.Path.ValueString()))
 	plan.PublicKeyPathResolved = types.StringValue(publicSSHKeyPath(pathResolved))
-	requireReplaceIfResolvedPathChanged(req, resp, tfpath.Root("path"), state.Path, state.PathResolved, pathResolved, func(value string) (string, error) {
-		return resolveSSHKeyPathForHome(value, r.homeDir)
-	})
+	requireReplaceIfResolvedPathChanged(req, resp, tfpath.Root("path"), state.PathResolved, pathResolved)
 	if resp.Diagnostics.HasError() {
 		return
 	}

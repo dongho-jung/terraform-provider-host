@@ -10,12 +10,12 @@ IMPROVEMENTS:
 
 - Share cached Pacman installed/explicit-package snapshots across concurrent resources, coalesce duplicate status queries, invalidate caches after mutations, and skip sync-database version queries when `ignore_version = true`.
 - Add desired and observed `install_reason` state to Pacman packages, AUR packages, and AUR helpers. Managed packages converge to `explicit`, while refresh reports external drift to `dependency` so the next apply can repair it.
-- Store runtime metadata for new configurations under `~/.local/state/terraform-provider-host` in the provider target user's home. Existing working-directory `.terraform-provider-host` runtimes remain the default when detected, allowing an explicit migration without silently abandoning stateful artifacts.
+- Store runtime metadata under `~/.local/state/terraform-provider-host` in the provider target user's home.
 - Resolve `git`, `ssh-keygen`, and AUR helper executables when an operation needs them instead of only during provider configuration. Package resources can therefore install those tools earlier in the same dependency-ordered apply; AUR remote version lookup is deferred during planning until a verified helper is available.
 
 FIXES:
 
-- Detect missing, corrupt, or mismatched schedule scripts, metadata, and cron entries and produce an in-place repair on the next apply. Runtime files are replaced atomically; migration removes a previous schedule runtime only when it is under the provider-computed legacy root for the current working directory and its metadata verifies the same schedule, leaving explicit, unknown, or corrupt previous locations untouched.
+- Detect missing, corrupt, or mismatched schedule scripts, metadata, and cron entries and produce an in-place repair on the next apply. Runtime files are replaced atomically.
 - Serialize each target crontab read/modify/write transaction within the provider process so parallel `host_schedule` resources do not overwrite one another.
 
 SECURITY:

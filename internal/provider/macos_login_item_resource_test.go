@@ -13,7 +13,7 @@ func TestParseMacOSLoginItems(t *testing.T) {
 	t.Parallel()
 
 	output := "Itsycal\t/Applications/Itsycal.app\tfalse\nShottr\t/Applications/Shottr.app\ttrue\n"
-	items, err := parseMacOSLoginItems(output)
+	items, err := parseMacOSLoginItemsForHome(output, t.TempDir())
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
@@ -35,7 +35,7 @@ func TestMacOSLoginItemSpecFromModel(t *testing.T) {
 		Path:   types.StringValue("/Applications/Hammerspoon.app"),
 		Hidden: types.BoolValue(true),
 	}
-	spec, err := macOSLoginItemSpecFromModel(model)
+	spec, err := macOSLoginItemSpecFromModelForHome(model, t.TempDir())
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
@@ -51,7 +51,7 @@ func TestMacOSLoginItemSpecRejectsNonAppPath(t *testing.T) {
 		Path:   types.StringValue("/Applications/Hammerspoon"),
 		Hidden: types.BoolValue(false),
 	}
-	if _, err := macOSLoginItemSpecFromModel(model); err == nil {
+	if _, err := macOSLoginItemSpecFromModelForHome(model, t.TempDir()); err == nil {
 		t.Fatal("expected non-app path error")
 	}
 }

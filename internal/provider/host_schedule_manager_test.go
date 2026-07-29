@@ -107,22 +107,6 @@ func TestFilterHostScheduleCronEntry(t *testing.T) {
 	}
 }
 
-func TestFilterHostScheduleCronEntryRemovesLegacyPathWithoutMarker(t *testing.T) {
-	t.Parallel()
-
-	id := "0123456789abcdef"
-	lines := []string{
-		"0 1 * * * '/old/checkout/.terraform-provider-host/schedules/" + id + "/run.sh'",
-		"0 9 * * * /usr/bin/true",
-	}
-
-	got := filterHostScheduleCronEntry(lines, id, "/home/terraform/.local/state/terraform-provider-host/schedules/"+id+"/run.sh")
-	want := []string{"0 9 * * * /usr/bin/true"}
-	if len(got) != len(want) || got[0] != want[0] {
-		t.Fatalf("got %#v, want %#v", got, want)
-	}
-}
-
 func TestInspectHostScheduleCronEntryRequiresExactManagedEntry(t *testing.T) {
 	t.Parallel()
 
@@ -150,7 +134,6 @@ func TestInspectHostScheduleCronEntryRequiresExactManagedEntry(t *testing.T) {
 		{name: "marker only", lines: expected[:1], present: true, matches: false},
 		{name: "wrong expression", lines: []string{expected[0], "0 1 * * * '/tmp/provider schedules/run.sh'"}, present: true, matches: false},
 		{name: "script only", lines: expected[1:], present: true, matches: false},
-		{name: "legacy script only", lines: []string{"0 1 * * * '/old/.terraform-provider-host/schedules/0123456789abcdef/run.sh'"}, present: true, matches: false},
 		{name: "duplicate", lines: append(append([]string{}, expected...), expected...), present: true, matches: false},
 		{name: "absent", lines: []string{"0 9 * * * /usr/bin/true"}, present: false, matches: false},
 	}
@@ -200,7 +183,7 @@ func TestInspectHostScheduleCronEntryDisabledRequiresAbsence(t *testing.T) {
 func TestRenderHostScheduleScript(t *testing.T) {
 	t.Parallel()
 
-	script, err := renderHostScheduleScript(HostScheduleSpec{
+	script, err := renderHostScheduleScriptForHome(HostScheduleSpec{
 		ID:         "0123456789abcdef",
 		Command:    "echo '$HELLO'",
 		Schedule:   "0 * * * *",
@@ -210,7 +193,7 @@ func TestRenderHostScheduleScript(t *testing.T) {
 		Environment: map[string]string{
 			"HELLO": "hello world",
 		},
-	})
+	}, t.TempDir())
 	if err != nil {
 		t.Fatalf("render script: %s", err)
 	}

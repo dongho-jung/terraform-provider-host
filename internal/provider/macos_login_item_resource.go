@@ -158,9 +158,7 @@ func (r *MacOSLoginItemResource) ModifyPlan(ctx context.Context, req resource.Mo
 
 	plan.ID = types.StringValue(plan.Path.ValueString())
 	plan.PathResolved = types.StringValue(spec.PathResolved)
-	requireReplaceIfResolvedPathChanged(req, resp, tfpath.Root("path"), state.Path, state.PathResolved, spec.PathResolved, func(value string) (string, error) {
-		return resolveMacOSLoginItemPathForHome(value, r.homeDir)
-	})
+	requireReplaceIfResolvedPathChanged(req, resp, tfpath.Root("path"), state.PathResolved, spec.PathResolved)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -396,10 +394,6 @@ func (m *CLIMacOSLoginItemManager) runOSAScript(ctx context.Context, scriptLines
 	return out, nil
 }
 
-func macOSLoginItemSpecFromModel(model MacOSLoginItemResourceModel) (MacOSLoginItemSpec, error) {
-	return macOSLoginItemSpecFromModelForHome(model, "")
-}
-
 func macOSLoginItemSpecFromModelForHome(model MacOSLoginItemResourceModel, homeDir string) (MacOSLoginItemSpec, error) {
 	if model.Path.IsNull() || model.Path.IsUnknown() {
 		return MacOSLoginItemSpec{}, fmt.Errorf("path must be known")
@@ -429,10 +423,6 @@ func macOSLoginItemModelFromStatus(model MacOSLoginItemResourceModel, status Mac
 	model.Name = types.StringValue(status.Name)
 	model.Hidden = types.BoolValue(status.Hidden)
 	return model
-}
-
-func parseMacOSLoginItems(output string) ([]MacOSLoginItemStatus, error) {
-	return parseMacOSLoginItemsForHome(output, "")
 }
 
 func parseMacOSLoginItemsForHome(output string, homeDir string) ([]MacOSLoginItemStatus, error) {

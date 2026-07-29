@@ -126,7 +126,7 @@ func TestCLIHostSystemFileManagerInstallAndSafeDelete(t *testing.T) {
 	}
 
 	runner := &recordingDirectHostSystemFileCommandRunner{}
-	manager := newCLIHostSystemFileManagerWithRunner(runner, "linux")
+	manager := &CLIHostSystemFileManager{runner: runner, goos: "linux"}
 	destinationRoot := t.TempDir()
 	// A privileged install must not create or reopen anything in TMPDIR.
 	t.Setenv("TMPDIR", filepath.Join(destinationRoot, "missing-untrusted-tmp"))
@@ -216,7 +216,7 @@ func TestCLIHostSystemFileManagerPrivilegedRead(t *testing.T) {
 		{Stdout: []byte("440\t0\t0\n")},
 		{Stdout: []byte("dongho ALL=(root) NOPASSWD: /usr/bin/true\n")},
 	}}
-	manager := newCLIHostSystemFileManagerWithRunner(runner, "linux")
+	manager := &CLIHostSystemFileManager{runner: runner, goos: "linux"}
 	status, exists, err := manager.readFilePrivileged(t.Context(), "/etc/sudoers.d/test")
 	if err != nil || !exists {
 		t.Fatalf("privileged read: exists=%t err=%v", exists, err)
@@ -244,7 +244,7 @@ func TestCLIHostSystemFileManagerFreeBSDPrivilegedReadUsesBSDStat(t *testing.T) 
 		{Stdout: []byte("440\t0\t0\n")},
 		{Stdout: []byte("root ALL=(root) /usr/bin/true\n")},
 	}}
-	manager := newCLIHostSystemFileManagerWithRunner(runner, "freebsd")
+	manager := &CLIHostSystemFileManager{runner: runner, goos: "freebsd"}
 	_, exists, err := manager.readFilePrivileged(t.Context(), "/usr/local/etc/sudoers.d/test")
 	if err != nil || !exists {
 		t.Fatalf("FreeBSD privileged read: exists=%t err=%v", exists, err)

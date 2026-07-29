@@ -12,15 +12,6 @@ import (
 	"strings"
 )
 
-const (
-	hostFileBlockBeginPrefix        = "# BEGIN Terraform host_file block "
-	hostFileBlockEndPrefix          = "# END Terraform host_file block "
-	hostFileManagedBlockBeginPrefix = "# BEGIN Terraform host_file_block "
-	hostFileManagedBlockEndPrefix   = "# END Terraform host_file_block "
-	hostFileManagedBlockBefore      = "# Terraform host_file_block before "
-	hostFileManagedBlockAfter       = "# Terraform host_file_block after "
-)
-
 type hostFileManagedBlock struct {
 	id     string
 	before []string
@@ -66,49 +57,6 @@ func withLockedHostFileForHome(ctx context.Context, homeDir string, path string,
 	}
 
 	return fn(resolvedPath)
-}
-
-func readHostFileBlockSpecs(path string, specs []hostFileBlockSpec) ([]hostFileBlockSpec, bool, error) {
-	content, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, fmt.Errorf("read %q: %w", path, err)
-	}
-
-	lines := splitHostFileLines(string(content))
-	next := append([]hostFileBlockSpec(nil), specs...)
-	for i, spec := range next {
-		if err := validateHostFileBlockName(spec.Name); err != nil {
-			return nil, false, err
-		}
-
-		fileStart, fileEnd, ok, err := findFileBlockRange(lines, spec.Name)
-		if err != nil {
-			return nil, false, err
-		}
-		if !ok {
-			return nil, false, nil
-		}
-		if spec.Content == nil {
-			continue
-		}
-
-		inlineContent, err := extractHostFileBlockInlineContent(lines[fileStart+1 : fileEnd])
-		if err != nil {
-			return nil, false, err
-		}
-		if inlineContent != canonicalHostFileInlineContent(*spec.Content) {
-			content := trimRenderedManagedBlockBody(inlineContent)
-			if *spec.Content == "" && inlineContent != "" {
-				content = inlineContent
-			}
-			next[i].Content = &content
-		}
-	}
-
-	return next, true, nil
 }
 
 func readHostFile(path string) (string, error) {
@@ -178,10 +126,6 @@ func deleteHostFile(path string) error {
 	return nil
 }
 
-func syncCleanHostFileBlocks(path string, specs []hostFileBlockSpec) error {
-	return syncCleanHostFileBlocksForRuntime(path, specs, "")
-}
-
 func syncCleanHostFileBlocksForRuntime(path string, specs []hostFileBlockSpec, runtimeDir string) error {
 	if err := validateHostFileBlockSpecs(specs); err != nil {
 		return err
@@ -193,14 +137,6 @@ func syncCleanHostFileBlocksForRuntime(path string, specs []hostFileBlockSpec, r
 	}
 
 	return writeCleanHostFileStateAndContentForRuntime(path, state, runtimeDir)
-}
-
-func plannedCleanHostFileContent(path string, specs []hostFileBlockSpec) (string, error) {
-	return plannedCleanHostFileContentForHome(path, specs, "")
-}
-
-func plannedCleanHostFileContentForHome(path string, specs []hostFileBlockSpec, homeDir string) (string, error) {
-	return plannedCleanHostFileContentForProvider(path, specs, homeDir, "")
 }
 
 func plannedCleanHostFileContentForProvider(path string, specs []hostFileBlockSpec, homeDir string, runtimeDir string) (string, error) {
@@ -291,14 +227,6 @@ func deleteCleanHostFileForRuntime(path string, runtimeDir string) error {
 	return nil
 }
 
-func upsertCleanHostFileManagedBlock(path string, fileBlockName string, blockID string, content string) error {
-	return upsertCleanHostFileManagedBlockWithOrder(path, fileBlockName, blockID, nil, nil, content)
-}
-
-func upsertCleanHostFileManagedBlockWithOrder(path string, fileBlockName string, blockID string, before []string, after []string, content string) error {
-	return upsertCleanHostFileManagedBlockWithOrderForRuntime(path, fileBlockName, blockID, before, after, content, "")
-}
-
 func upsertCleanHostFileManagedBlockWithOrderForRuntime(path string, fileBlockName string, blockID string, before []string, after []string, content string, runtimeDir string) error {
 	if err := validateHostFileBlockName(fileBlockName); err != nil {
 		return err
@@ -330,10 +258,6 @@ func upsertCleanHostFileManagedBlockWithOrderForRuntime(path string, fileBlockNa
 	return writeCleanHostFileStateAndContentForRuntime(path, state, runtimeDir)
 }
 
-func removeCleanHostFileManagedBlock(path string, fileBlockName string, blockID string) error {
-	return removeCleanHostFileManagedBlockForRuntime(path, fileBlockName, blockID, "")
-}
-
 func removeCleanHostFileManagedBlockForRuntime(path string, fileBlockName string, blockID string, runtimeDir string) error {
 	if err := validateHostFileBlockName(fileBlockName); err != nil {
 		return err
@@ -358,19 +282,6 @@ func removeCleanHostFileManagedBlockForRuntime(path string, fileBlockName string
 	state.Blocks[fileBlockName] = block
 
 	return writeCleanHostFileStateAndContentForRuntime(path, state, runtimeDir)
-}
-
-func readCleanManagedBlockBody(path string, fileBlockName string, blockID string) (string, bool, error) {
-	block, ok, err := readCleanManagedBlock(path, fileBlockName, blockID)
-	if err != nil || !ok {
-		return "", ok, err
-	}
-
-	return block.body, true, nil
-}
-
-func readCleanManagedBlock(path string, fileBlockName string, blockID string) (hostFileManagedBlock, bool, error) {
-	return readCleanManagedBlockForRuntime(path, fileBlockName, blockID, "")
 }
 
 func readCleanManagedBlockForRuntime(path string, fileBlockName string, blockID string, runtimeDir string) (hostFileManagedBlock, bool, error) {
@@ -647,7 +558,7 @@ func sortCleanHostFileBlockStateItems(blocks []struct {
 }
 
 func cleanHostFileStatePathForRuntime(path string, runtimeDir string) (string, error) {
-	stateDir, err := providerRuntimeSubdirForRuntime(runtimeDir, "host_files")
+	stateDir, err := providerRuntimeSubdir(runtimeDir, "host_files")
 	if err != nil {
 		return "", err
 	}
@@ -657,131 +568,6 @@ func cleanHostFileStatePathForRuntime(path string, runtimeDir string) (string, e
 	return filepath.Join(stateDir, hex.EncodeToString(sum[:])+".json"), nil
 }
 
-func reconcileHostFileBlocks(content string, specs []hostFileBlockSpec) (string, error) {
-	desired := make(map[string]struct{}, len(specs))
-	for _, spec := range specs {
-		desired[spec.Name] = struct{}{}
-	}
-
-	next, err := filterHostFileBlocks(content, desired)
-	if err != nil {
-		return "", err
-	}
-
-	for _, spec := range sortedHostFileBlockSpecs(specs) {
-		lines := splitHostFileLines(next)
-		_, _, ok, err := findFileBlockRange(lines, spec.Name)
-		if err != nil {
-			return "", err
-		}
-		if !ok {
-			next = appendHostFileBlock(next, spec.Name)
-		}
-	}
-
-	for _, spec := range sortedHostFileBlockSpecs(specs) {
-		if spec.Content == nil {
-			continue
-		}
-
-		next, err = setHostFileBlockContent(next, spec.Name, *spec.Content)
-		if err != nil {
-			return "", err
-		}
-	}
-
-	return next, nil
-}
-
-func ensureHostFileBlock(content string, name string) (string, error) {
-	lines := splitHostFileLines(content)
-	_, _, ok, err := findFileBlockRange(lines, name)
-	if err != nil {
-		return "", err
-	}
-	if ok {
-		return content, nil
-	}
-
-	return appendHostFileBlock(content, name), nil
-}
-
-func filterHostFileBlocks(content string, desired map[string]struct{}) (string, error) {
-	lines := splitHostFileLines(content)
-	if len(lines) == 0 {
-		return "", nil
-	}
-
-	next := make([]string, 0, len(lines))
-	for i := 0; i < len(lines); {
-		name, ok := parseFileBlockBegin(lineBody(lines[i]))
-		if !ok {
-			next = append(next, lines[i])
-			i++
-			continue
-		}
-
-		end := findMarkerLine(lines, i+1, fileBlockEndMarker(name))
-		if end == -1 {
-			return "", fmt.Errorf("managed file block %q is missing its end marker", name)
-		}
-
-		if _, keep := desired[name]; keep {
-			next = append(next, lines[i:end+1]...)
-		}
-		i = end + 1
-	}
-
-	return strings.Join(next, ""), nil
-}
-
-func appendHostFileBlock(content string, name string) string {
-	var builder strings.Builder
-	builder.WriteString(content)
-	if content != "" && !strings.HasSuffix(content, "\n") {
-		builder.WriteString("\n")
-	}
-	if content != "" && !strings.HasSuffix(content, "\n\n") {
-		builder.WriteString("\n")
-	}
-	builder.WriteString(fileBlockBeginMarker(name))
-	builder.WriteString("\n")
-	builder.WriteString(fileBlockEndMarker(name))
-	builder.WriteString("\n")
-
-	return builder.String()
-}
-
-func setHostFileBlockContent(content string, name string, blockContent string) (string, error) {
-	lines := splitHostFileLines(content)
-	fileStart, fileEnd, ok, err := findFileBlockRange(lines, name)
-	if err != nil {
-		return "", err
-	}
-	if !ok {
-		return "", fmt.Errorf("managed file block %q was not found", name)
-	}
-
-	managed, err := sortedManagedBlockLines(lines[fileStart+1 : fileEnd])
-	if err != nil {
-		return "", err
-	}
-
-	nextInner := hostFileInlineContentLines(blockContent)
-	nextInner = append(nextInner, managed...)
-	lines = replaceLines(lines, fileStart+1, fileEnd, nextInner)
-
-	return strings.Join(lines, ""), nil
-}
-
-func hostFileInlineContentLines(content string) []string {
-	if content == "" {
-		return nil
-	}
-
-	return splitHostFileLines(canonicalHostFileInlineContent(content))
-}
-
 func canonicalHostFileInlineContent(content string) string {
 	content = strings.TrimSpace(content)
 	if content == "" || strings.HasSuffix(content, "\n") {
@@ -789,215 +575,6 @@ func canonicalHostFileInlineContent(content string) string {
 	}
 
 	return content + "\n"
-}
-
-func upsertManagedBlock(content string, fileBlockName string, blockID string, blockContent string) (string, error) {
-	return upsertManagedBlockWithOrder(content, fileBlockName, blockID, nil, nil, blockContent)
-}
-
-func upsertManagedBlockWithOrder(content string, fileBlockName string, blockID string, before []string, after []string, blockContent string) (string, error) {
-	lines := splitHostFileLines(content)
-	fileStart, fileEnd, ok, err := findFileBlockRange(lines, fileBlockName)
-	if err != nil {
-		return "", err
-	}
-	if !ok {
-		return "", fmt.Errorf("managed file block %q was not found", fileBlockName)
-	}
-
-	managedStart, managedEnd, ok, err := findManagedBlockRange(lines[fileStart+1:fileEnd], blockID)
-	if err != nil {
-		return "", err
-	}
-
-	rendered := splitHostFileLines(renderManagedBlockWithOrder(blockID, before, after, blockContent))
-	if ok {
-		managedStart += fileStart + 1
-		managedEnd += fileStart + 1
-		lines = replaceLines(lines, managedStart, managedEnd+1, rendered)
-	} else {
-		lines = replaceLines(lines, fileEnd, fileEnd, rendered)
-	}
-
-	lines, err = sortManagedBlocksInFileBlock(lines, fileBlockName)
-	if err != nil {
-		return "", err
-	}
-
-	return strings.Join(lines, ""), nil
-}
-
-func removeManagedBlock(content string, fileBlockName string, blockID string) (string, error) {
-	lines := splitHostFileLines(content)
-	fileStart, fileEnd, ok, err := findFileBlockRange(lines, fileBlockName)
-	if err != nil {
-		return "", err
-	}
-	if !ok {
-		return content, nil
-	}
-
-	managedStart, managedEnd, ok, err := findManagedBlockRange(lines[fileStart+1:fileEnd], blockID)
-	if err != nil {
-		return "", err
-	}
-	if !ok {
-		return content, nil
-	}
-
-	managedStart += fileStart + 1
-	managedEnd += fileStart + 1
-	lines = replaceLines(lines, managedStart, managedEnd+1, nil)
-
-	lines, err = sortManagedBlocksInFileBlock(lines, fileBlockName)
-	if err != nil {
-		return "", err
-	}
-
-	return strings.Join(lines, ""), nil
-}
-
-func extractManagedBlockBody(content string, fileBlockName string, blockID string) (string, bool, error) {
-	block, ok, err := extractManagedBlock(content, fileBlockName, blockID)
-	if err != nil || !ok {
-		return "", ok, err
-	}
-
-	return block.body, true, nil
-}
-
-func extractManagedBlock(content string, fileBlockName string, blockID string) (hostFileManagedBlock, bool, error) {
-	lines := splitHostFileLines(content)
-	fileStart, fileEnd, ok, err := findFileBlockRange(lines, fileBlockName)
-	if err != nil || !ok {
-		return hostFileManagedBlock{}, ok, err
-	}
-
-	managedStart, managedEnd, ok, err := findManagedBlockRange(lines[fileStart+1:fileEnd], blockID)
-	if err != nil || !ok {
-		return hostFileManagedBlock{}, ok, err
-	}
-
-	block, err := parseManagedBlockLines(lines[fileStart+1+managedStart : fileStart+1+managedEnd+1])
-	if err != nil {
-		return hostFileManagedBlock{}, false, err
-	}
-
-	return block, true, nil
-}
-
-func extractHostFileBlockInlineContent(lines []string) (string, error) {
-	unmanaged := []string{}
-	for i := 0; i < len(lines); {
-		blockID, ok := parseManagedBlockBegin(lineBody(lines[i]))
-		if !ok {
-			unmanaged = append(unmanaged, lines[i])
-			i++
-			continue
-		}
-
-		end := findMarkerLine(lines, i+1, managedBlockEndMarker(blockID))
-		if end == -1 {
-			return "", fmt.Errorf("managed content block %q is missing its end marker", blockID)
-		}
-		i = end + 1
-	}
-
-	return strings.Join(unmanaged, ""), nil
-}
-
-func sortManagedBlocksInFileBlock(lines []string, fileBlockName string) ([]string, error) {
-	fileStart, fileEnd, ok, err := findFileBlockRange(lines, fileBlockName)
-	if err != nil || !ok {
-		return lines, err
-	}
-
-	sortedInner, err := sortManagedBlocks(lines[fileStart+1 : fileEnd])
-	if err != nil {
-		return nil, err
-	}
-
-	return replaceLines(lines, fileStart+1, fileEnd, sortedInner), nil
-}
-
-func sortManagedBlocks(lines []string) ([]string, error) {
-	unmanaged := make([]string, 0, len(lines))
-	blocks := []hostFileManagedBlock{}
-
-	for i := 0; i < len(lines); {
-		blockID, ok := parseManagedBlockBegin(lineBody(lines[i]))
-		if !ok {
-			unmanaged = append(unmanaged, lines[i])
-			i++
-			continue
-		}
-
-		end := findMarkerLine(lines, i+1, managedBlockEndMarker(blockID))
-		if end == -1 {
-			return nil, fmt.Errorf("managed content block %q is missing its end marker", blockID)
-		}
-
-		block, err := parseManagedBlockLines(lines[i : end+1])
-		if err != nil {
-			return nil, err
-		}
-		blocks = append(blocks, block)
-		i = end + 1
-	}
-
-	if err := sortHostFileManagedBlocks(blocks); err != nil {
-		return nil, err
-	}
-
-	next := append([]string(nil), unmanaged...)
-	for _, block := range blocks {
-		next = append(next, splitHostFileLines(renderManagedBlockWithOrder(block.id, block.before, block.after, block.body))...)
-	}
-
-	return next, nil
-}
-
-func sortedManagedBlockLines(lines []string) ([]string, error) {
-	blocks, err := managedBlocksFromLines(lines)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := sortHostFileManagedBlocks(blocks); err != nil {
-		return nil, err
-	}
-
-	next := []string{}
-	for _, block := range blocks {
-		next = append(next, splitHostFileLines(renderManagedBlockWithOrder(block.id, block.before, block.after, block.body))...)
-	}
-
-	return next, nil
-}
-
-func managedBlocksFromLines(lines []string) ([]hostFileManagedBlock, error) {
-	blocks := []hostFileManagedBlock{}
-	for i := 0; i < len(lines); {
-		blockID, ok := parseManagedBlockBegin(lineBody(lines[i]))
-		if !ok {
-			i++
-			continue
-		}
-
-		end := findMarkerLine(lines, i+1, managedBlockEndMarker(blockID))
-		if end == -1 {
-			return nil, fmt.Errorf("managed content block %q is missing its end marker", blockID)
-		}
-
-		block, err := parseManagedBlockLines(lines[i : end+1])
-		if err != nil {
-			return nil, err
-		}
-		blocks = append(blocks, block)
-		i = end + 1
-	}
-
-	return blocks, nil
 }
 
 func sortHostFileManagedBlocks(blocks []hostFileManagedBlock) error {
@@ -1083,77 +660,6 @@ func sortHostFileManagedBlocks(blocks []hostFileManagedBlock) error {
 	return nil
 }
 
-func parseManagedBlockLines(lines []string) (hostFileManagedBlock, error) {
-	if len(lines) < 2 {
-		return hostFileManagedBlock{}, fmt.Errorf("managed content block is missing markers")
-	}
-
-	blockID, ok := parseManagedBlockBegin(lineBody(lines[0]))
-	if !ok {
-		return hostFileManagedBlock{}, fmt.Errorf("managed content block is missing its begin marker")
-	}
-	if lineBody(lines[len(lines)-1]) != managedBlockEndMarker(blockID) {
-		return hostFileManagedBlock{}, fmt.Errorf("managed content block %q is missing its end marker", blockID)
-	}
-
-	bodyStart := 1
-	var before []string
-	var after []string
-	for bodyStart < len(lines)-1 {
-		line := lineBody(lines[bodyStart])
-		parsedBefore, ok := parseManagedBlockReferenceMarker(line, hostFileManagedBlockBefore)
-		if ok {
-			before = parsedBefore
-			bodyStart++
-			continue
-		}
-
-		parsedAfter, ok := parseManagedBlockReferenceMarker(line, hostFileManagedBlockAfter)
-		if ok {
-			after = parsedAfter
-			bodyStart++
-			continue
-		}
-
-		break
-	}
-
-	return hostFileManagedBlock{
-		id:     blockID,
-		before: before,
-		after:  after,
-		body:   strings.Join(lines[bodyStart:len(lines)-1], ""),
-	}, nil
-}
-
-func findFileBlockRange(lines []string, name string) (int, int, bool, error) {
-	start := findMarkerLine(lines, 0, fileBlockBeginMarker(name))
-	if start == -1 {
-		return 0, 0, false, nil
-	}
-
-	end := findMarkerLine(lines, start+1, fileBlockEndMarker(name))
-	if end == -1 {
-		return 0, 0, false, fmt.Errorf("managed file block %q is missing its end marker", name)
-	}
-
-	return start, end, true, nil
-}
-
-func findManagedBlockRange(lines []string, blockID string) (int, int, bool, error) {
-	start := findMarkerLine(lines, 0, managedBlockBeginMarker(blockID))
-	if start == -1 {
-		return 0, 0, false, nil
-	}
-
-	end := findMarkerLine(lines, start+1, managedBlockEndMarker(blockID))
-	if end == -1 {
-		return 0, 0, false, fmt.Errorf("managed content block %q is missing its end marker", blockID)
-	}
-
-	return start, end, true, nil
-}
-
 func findMarkerLine(lines []string, start int, marker string) int {
 	for i := start; i < len(lines); i++ {
 		if lineBody(lines[i]) == marker {
@@ -1193,32 +699,6 @@ func lineBody(line string) string {
 	return line
 }
 
-func renderManagedBlock(blockID string, content string) string {
-	return renderManagedBlockWithOrder(blockID, nil, nil, content)
-}
-
-func renderManagedBlockWithOrder(blockID string, before []string, after []string, content string) string {
-	var builder strings.Builder
-	builder.WriteString(managedBlockBeginMarker(blockID))
-	builder.WriteString("\n")
-	if len(before) > 0 {
-		builder.WriteString(managedBlockBeforeMarker(before))
-		builder.WriteString("\n")
-	}
-	if len(after) > 0 {
-		builder.WriteString(managedBlockAfterMarker(after))
-		builder.WriteString("\n")
-	}
-	builder.WriteString(content)
-	if !strings.HasSuffix(content, "\n") {
-		builder.WriteString("\n")
-	}
-	builder.WriteString(managedBlockEndMarker(blockID))
-	builder.WriteString("\n")
-
-	return builder.String()
-}
-
 func canonicalManagedBlockBody(content string) string {
 	content = strings.TrimSpace(content)
 	if strings.HasSuffix(content, "\n") {
@@ -1239,60 +719,6 @@ func canonicalHostFileContent(content string) string {
 
 func trimRenderedManagedBlockBody(content string) string {
 	return strings.TrimSuffix(content, "\n")
-}
-
-func fileBlockBeginMarker(name string) string {
-	return hostFileBlockBeginPrefix + name
-}
-
-func fileBlockEndMarker(name string) string {
-	return hostFileBlockEndPrefix + name
-}
-
-func managedBlockBeginMarker(blockID string) string {
-	return hostFileManagedBlockBeginPrefix + blockID
-}
-
-func managedBlockEndMarker(blockID string) string {
-	return hostFileManagedBlockEndPrefix + blockID
-}
-
-func managedBlockBeforeMarker(before []string) string {
-	return hostFileManagedBlockBefore + strings.Join(before, ",")
-}
-
-func managedBlockAfterMarker(after []string) string {
-	return hostFileManagedBlockAfter + strings.Join(after, ",")
-}
-
-func parseFileBlockBegin(line string) (string, bool) {
-	name, ok := strings.CutPrefix(line, hostFileBlockBeginPrefix)
-	if !ok {
-		return "", false
-	}
-
-	return name, true
-}
-
-func parseManagedBlockBegin(line string) (string, bool) {
-	blockID, ok := strings.CutPrefix(line, hostFileManagedBlockBeginPrefix)
-	if !ok {
-		return "", false
-	}
-
-	return blockID, true
-}
-
-func parseManagedBlockReferenceMarker(line string, prefix string) ([]string, bool) {
-	references, ok := strings.CutPrefix(line, prefix)
-	if !ok {
-		return nil, false
-	}
-	if references == "" {
-		return nil, true
-	}
-
-	return strings.Split(references, ","), true
 }
 
 func sortedHostFileBlockNames(names []string) []string {

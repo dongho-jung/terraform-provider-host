@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 )
@@ -31,85 +30,26 @@ func TestProviderRuntimeDirForHomeRejectsInvalidHome(t *testing.T) {
 	}
 }
 
-func TestProviderDefaultRuntimeDirUsesStablePathForNewConfiguration(t *testing.T) {
-	workingDir := t.TempDir()
-	t.Chdir(workingDir)
-	homeDir := filepath.Join(t.TempDir(), "target-home")
+func TestProviderRuntimeSubdir(t *testing.T) {
+	t.Parallel()
 
-	got, err := providerDefaultRuntimeDirForHome(homeDir)
+	runtimeDir := filepath.Join(t.TempDir(), "host-runtime")
+	got, err := providerRuntimeSubdir(runtimeDir, "schedules")
 	if err != nil {
-		t.Fatalf("provider default runtime dir: %s", err)
+		t.Fatalf("provider runtime subdirectory: %s", err)
 	}
-	want := filepath.Join(homeDir, ".local", "state", providerRuntimeDirName)
-	if got != want {
-		t.Fatalf("got %q, want stable path %q", got, want)
-	}
-}
-
-func TestProviderDefaultRuntimeDirPreservesExistingLegacyRuntime(t *testing.T) {
-	workingDir := t.TempDir()
-	t.Chdir(workingDir)
-	homeDir := filepath.Join(t.TempDir(), "target-home")
-	legacyRuntimeDir := filepath.Join(workingDir, providerLegacyRuntimeDirName)
-	if err := os.MkdirAll(legacyRuntimeDir, 0o700); err != nil {
-		t.Fatalf("create legacy runtime: %s", err)
-	}
-
-	got, err := providerDefaultRuntimeDirForHome(homeDir)
-	if err != nil {
-		t.Fatalf("provider default runtime dir: %s", err)
-	}
-	if got != legacyRuntimeDir {
-		t.Fatalf("got %q, want legacy path %q", got, legacyRuntimeDir)
-	}
-}
-
-func TestProviderDefaultRuntimeDirPrefersLegacyWhenBothExist(t *testing.T) {
-	workingDir := t.TempDir()
-	t.Chdir(workingDir)
-	homeDir := filepath.Join(t.TempDir(), "target-home")
-	legacyRuntimeDir := filepath.Join(workingDir, providerLegacyRuntimeDirName)
-	stableRuntimeDir := filepath.Join(homeDir, ".local", "state", providerRuntimeDirName)
-	for _, path := range []string{legacyRuntimeDir, stableRuntimeDir} {
-		if err := os.MkdirAll(path, 0o700); err != nil {
-			t.Fatalf("create runtime %q: %s", path, err)
-		}
-	}
-
-	got, err := providerDefaultRuntimeDirForHome(homeDir)
-	if err != nil {
-		t.Fatalf("provider default runtime dir: %s", err)
-	}
-	if got != legacyRuntimeDir {
-		t.Fatalf("got %q, want compatibility path %q", got, legacyRuntimeDir)
-	}
-}
-
-func TestProviderLegacyRuntimeDirUsesWorkingDirectory(t *testing.T) {
-	workingDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("get working directory: %s", err)
-	}
-
-	got, err := providerRuntimeDirForRuntime("")
-	if err != nil {
-		t.Fatalf("provider runtime dir: %s", err)
-	}
-
-	want := filepath.Join(workingDir, providerLegacyRuntimeDirName)
+	want := filepath.Join(runtimeDir, "schedules")
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 
-func TestProviderRuntimeDirUsesOverride(t *testing.T) {
-	override := filepath.Join(t.TempDir(), "host-runtime")
+func TestProviderRuntimeSubdirRejectsInvalidRuntime(t *testing.T) {
+	t.Parallel()
 
-	got, err := providerRuntimeDirForRuntime(override)
-	if err != nil {
-		t.Fatalf("provider runtime dir: %s", err)
-	}
-	if got != override {
-		t.Fatalf("got %q, want %q", got, override)
+	for _, runtimeDir := range []string{"", "relative/runtime", " /tmp/runtime", "/tmp/runtime\x00"} {
+		if _, err := providerRuntimeSubdir(runtimeDir, "schedules"); err == nil {
+			t.Fatalf("providerRuntimeSubdir(%q) unexpectedly succeeded", runtimeDir)
+		}
 	}
 }

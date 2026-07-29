@@ -23,8 +23,7 @@ terraform {
 provider "host" {
   target_user = "dongho"
 
-  # runtime_dir defaults to ~/.local/state/terraform-provider-host for this
-  # target user unless a legacy ./.terraform-provider-host directory exists.
+  # runtime_dir defaults to ~/.local/state/terraform-provider-host for this user.
 }
 ```
 
@@ -53,9 +52,7 @@ The provider manages one local user per configuration. Set `target_user` to that
 
 ## Runtime Metadata
 
-For a new configuration, generated metadata such as file-block state and schedule scripts defaults to `~/.local/state/terraform-provider-host` under the target user's home directory. This stable location does not depend on the Terraform working directory.
-
-For compatibility, if `./.terraform-provider-host` already exists in the current Terraform working directory, the provider continues using that legacy directory. To migrate, copy its metadata to the stable location and set `runtime_dir` explicitly, or move the legacy directory so it no longer takes precedence. Schedule refresh detects runtime or cron drift, and the next apply rewrites the generated artifacts. Cleanup removes an old schedule runtime only from the provider-computed legacy root for the current working directory and only when its metadata verifies the same schedule; explicit, unknown, or corrupt previous locations are left for manual review.
+Generated metadata such as file-block state and schedule scripts defaults to `~/.local/state/terraform-provider-host` under the target user's home directory. This stable location does not depend on the Terraform working directory.
 
 ## AUR Trust Boundary
 

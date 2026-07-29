@@ -30,13 +30,13 @@ func TestSyncHostDirCreatesDirectory(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "nested", "dir")
-	state, err := syncHostDir(HostDirResourceModel{
+	state, err := syncHostDirForHome(HostDirResourceModel{
 		Path:            types.StringValue(path),
 		Mode:            types.StringValue("0750"),
 		RecursiveDelete: types.BoolValue(false),
-	})
+	}, t.TempDir())
 	if err != nil {
-		t.Fatalf("syncHostDir: %s", err)
+		t.Fatalf("syncHostDirForHome: %s", err)
 	}
 
 	info, err := os.Lstat(path)
@@ -62,10 +62,10 @@ func TestDeleteHostDirRefusesNonEmptyDirectoryByDefault(t *testing.T) {
 		t.Fatalf("write file: %s", err)
 	}
 
-	err := deleteHostDir(HostDirResourceModel{
+	err := deleteHostDirForHome(HostDirResourceModel{
 		Path:            types.StringValue(path),
 		RecursiveDelete: types.BoolValue(false),
-	})
+	}, t.TempDir())
 	if err == nil {
 		t.Fatal("expected non-empty directory error")
 	}

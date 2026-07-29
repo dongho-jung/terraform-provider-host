@@ -10,9 +10,9 @@ description: |-
 
 Manages a schedule through the provider target user's crontab. The configured command is stored in a generated `run.sh`; cron invokes that script instead of embedding the command directly in the crontab.
 
-For new configurations, schedule scripts and metadata live under `~/.local/state/terraform-provider-host/schedules/<id>` in the target user's home. An explicit provider `runtime_dir` changes that root. If the legacy `./.terraform-provider-host` directory exists, the provider continues using it until you explicitly migrate the metadata or move the legacy directory.
+Schedule scripts and metadata live under `~/.local/state/terraform-provider-host/schedules/<id>` in the target user's home. An explicit provider `runtime_dir` changes that root.
 
-Refresh verifies the generated script, metadata, modes, and exact cron entry. Missing, modified, corrupt, duplicated, or stale artifacts create an in-place diff, and the next apply atomically rewrites the runtime and cron entry. During migration, cleanup removes a previous runtime only when it is under the provider-computed legacy root for the current working directory and its metadata verifies the same schedule ID, cron backend, and exact legacy script path. Explicit, unknown, corrupt, or otherwise unverified previous locations are left for manual review.
+Refresh verifies the generated script, metadata, modes, and exact cron entry. Missing, modified, corrupt, duplicated, or stale artifacts create an in-place diff, and the next apply atomically rewrites the runtime and cron entry.
 
 Parallel schedule resources in one provider process serialize the target crontab read/modify/write transaction so they cannot overwrite one another. This does not coordinate separate Terraform processes or unrelated external crontab writers; avoid changing the same target user's crontab concurrently outside this provider.
 
