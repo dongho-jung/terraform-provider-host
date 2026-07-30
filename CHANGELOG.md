@@ -18,6 +18,7 @@ FIXES:
 - Hydrate whole-file content and symbolic-link source state during `host_file` and `host_link` imports so the first refresh can adopt the existing object instead of dropping it from state or failing on a missing required attribute.
 - Atomically replace managed files and runtime metadata, including privileged fstab, sysctl, and systemd files, instead of truncating destinations in place.
 - Serialize complete fstab and crontab read/modify/write transactions plus DNF, Pacman, AUR, and Homebrew package mutations across provider instances, and make macOS Dock refresh detect live deletion and ordering drift.
+- Retry transient executable-busy errors when starting a newly compiled CoreAudio helper.
 - Preserve command errors during systemd status reads and use a stable C locale when parsing human-readable package and host-management command output.
 
 ## 0.14.0 (2026-07-30)

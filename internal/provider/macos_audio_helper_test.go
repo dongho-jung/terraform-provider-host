@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCLIMacOSAudioManagerCompilesHelperOnceAndCachesDeviceList(t *testing.T) {
@@ -65,6 +66,38 @@ func TestCLIMacOSAudioManagerCompilesHelperOnceAndCachesDeviceList(t *testing.T)
 	}
 	if got := len(splitNonEmptyLines(string(runLog))); got != 2 {
 		t.Fatalf("helper runs got %d, want 2 (one per manager cache)", got)
+	}
+}
+
+func TestRunMacOSAudioHelperRetriesExecutableBusy(t *testing.T) {
+	t.Parallel()
+
+	helperPath := filepath.Join(t.TempDir(), "helper")
+	contents := `#!/bin/sh
+printf '%s\n' '[{"uid":"device-1","name":"Output","manufacturer":"Test","input_channels":0,"output_channels":2}]'
+`
+	if err := os.WriteFile(helperPath, []byte(contents), 0o700); err != nil {
+		t.Fatalf("write helper: %s", err)
+	}
+
+	writer, err := os.OpenFile(helperPath, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("hold helper open for writing: %s", err)
+	}
+	writerClosed := make(chan error, 1)
+	time.AfterFunc(40*time.Millisecond, func() {
+		writerClosed <- writer.Close()
+	})
+
+	var devices []MacOSAudioDevice
+	if err := runMacOSAudioHelper(t.Context(), helperPath, "list-devices", nil, &devices); err != nil {
+		t.Fatalf("run helper after executable-busy retry: %s", err)
+	}
+	if err := <-writerClosed; err != nil {
+		t.Fatalf("close helper writer: %s", err)
+	}
+	if len(devices) != 1 || devices[0].UID != "device-1" {
+		t.Fatalf("unexpected devices: %#v", devices)
 	}
 }
 

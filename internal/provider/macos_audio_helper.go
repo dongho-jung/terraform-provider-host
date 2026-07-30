@@ -19,7 +19,11 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-const macOSAudioDeviceCacheTTL = 500 * time.Millisecond
+const (
+	macOSAudioDeviceCacheTTL       = 500 * time.Millisecond
+	macOSAudioHelperExecAttempts   = 10
+	macOSAudioHelperExecRetryDelay = 20 * time.Millisecond
+)
 
 type MacOSAudioDevice struct {
 	UID            string `json:"uid"`
@@ -149,16 +153,32 @@ func runMacOSAudioHelper(ctx context.Context, helperPath string, command string,
 		args = append(args, base64.StdEncoding.EncodeToString(payloadBytes))
 	}
 
-	cmd := exec.CommandContext(ctx, helperPath, args...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		if stderr.Len() > 0 {
-			return fmt.Errorf("%w: %s", err, stderr.String())
+	for attempt := 1; ; attempt++ {
+		stdout.Reset()
+		stderr.Reset()
+
+		cmd := exec.CommandContext(ctx, helperPath, args...)
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			if attempt < macOSAudioHelperExecAttempts && isExecutableBusyError(err) {
+				timer := time.NewTimer(macOSAudioHelperExecRetryDelay)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return ctx.Err()
+				case <-timer.C:
+					continue
+				}
+			}
+			if stderr.Len() > 0 {
+				return fmt.Errorf("%w: %s", err, stderr.String())
+			}
+			return err
 		}
-		return err
+		break
 	}
 	if output == nil {
 		return nil
