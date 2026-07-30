@@ -12,11 +12,13 @@ import (
 )
 
 type convergingPackageManager struct {
-	status PackageStatus
-	marked []string
+	status      PackageStatus
+	statusCalls int
+	marked      []string
 }
 
 func (m *convergingPackageManager) PackageStatus(ctx context.Context, name string) (PackageStatus, error) {
+	m.statusCalls++
 	return m.status, nil
 }
 
@@ -153,6 +155,9 @@ func TestPacmanPackageResourceInstalledDependencyPlansAndAppliesExplicitReason(t
 	if stateModel.InstallReason.Equal(modifiedPlan.InstallReason) {
 		t.Fatal("expected observed dependency reason to differ from desired explicit reason")
 	}
+	if manager.statusCalls != 1 {
+		t.Fatalf("ModifyPlan performed a live package lookup; status calls = %d, want 1 from refresh only", manager.statusCalls)
+	}
 
 	updateResp := frameworkresource.UpdateResponse{
 		State: tfsdk.State{Schema: schemaResp.Schema, Raw: modifyResp.Plan.Raw},
@@ -171,6 +176,74 @@ func TestPacmanPackageResourceInstalledDependencyPlansAndAppliesExplicitReason(t
 	}
 	if appliedState.InstallReason.ValueString() != packageInstallReasonExplicit {
 		t.Fatalf("applied install reason %q, want explicit", appliedState.InstallReason.ValueString())
+	}
+}
+
+func TestPacmanPackageResourceIgnoredVersionPlanRespectsPriorState(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	manager := &convergingPackageManager{
+		status: PackageStatus{
+			Name:             "git",
+			Installed:        true,
+			ReasonUser:       true,
+			InstalledVersion: "2.51.0-1",
+		},
+	}
+	r := &PacmanPackageResource{manager: manager}
+
+	var schemaResp frameworkresource.SchemaResponse
+	r.Schema(ctx, frameworkresource.SchemaRequest{}, &schemaResp)
+	if schemaResp.Diagnostics.HasError() {
+		t.Fatalf("unexpected schema diagnostics: %v", schemaResp.Diagnostics)
+	}
+
+	stateModel := PacmanPackageResourceModel{
+		ID:               types.StringValue("git"),
+		Name:             types.StringValue("git"),
+		Version:          types.StringValue(versionLatest),
+		IgnoreVersion:    types.BoolValue(true),
+		Autoremove:       types.BoolValue(false),
+		InstallReason:    types.StringValue(packageInstallReasonExplicit),
+		InstalledVersion: types.StringValue("2.50.1-1"),
+		CandidateVersion: types.StringNull(),
+	}
+	state := tfsdk.State{
+		Schema: schemaResp.Schema,
+		Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(ctx), nil),
+	}
+	if diags := state.Set(ctx, &stateModel); diags.HasError() {
+		t.Fatalf("encode state: %v", diags)
+	}
+
+	planModel := stateModel
+	plan := tfsdk.Plan{
+		Schema: schemaResp.Schema,
+		Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(ctx), nil),
+	}
+	if diags := plan.Set(ctx, &planModel); diags.HasError() {
+		t.Fatalf("encode plan: %v", diags)
+	}
+
+	modifyResp := frameworkresource.ModifyPlanResponse{Plan: plan}
+	r.ModifyPlan(ctx, frameworkresource.ModifyPlanRequest{State: state, Plan: plan}, &modifyResp)
+	if modifyResp.Diagnostics.HasError() {
+		t.Fatalf("modify plan: %v", modifyResp.Diagnostics)
+	}
+
+	var got PacmanPackageResourceModel
+	if diags := modifyResp.Plan.Get(ctx, &got); diags.HasError() {
+		t.Fatalf("decode modified plan: %v", diags)
+	}
+	if got.InstalledVersion.ValueString() != "2.50.1-1" {
+		t.Fatalf("installed version %q, want prior state version", got.InstalledVersion.ValueString())
+	}
+	if !got.CandidateVersion.IsNull() {
+		t.Fatalf("candidate version should remain null, got %#v", got.CandidateVersion)
+	}
+	if manager.statusCalls != 0 {
+		t.Fatalf("ModifyPlan performed %d live package lookups, want none", manager.statusCalls)
 	}
 }
 

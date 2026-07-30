@@ -1,3 +1,15 @@
+## 0.14.0 (2026-07-30)
+
+BREAKING CHANGES:
+
+- Remove automatic fallback to the working-directory `./.terraform-provider-host` runtime. Before upgrading a configuration that still relies on that directory, either set `runtime_dir` to its absolute path or copy its metadata to `~/.local/state/terraform-provider-host` and set that stable path explicitly. Previous schedule runtime directories are no longer migrated or removed automatically when `runtime_dir` changes.
+
+FIXES:
+
+- Respect Terraform's refresh boundary for version-ignored Pacman and AUR packages. In particular, `terraform plan -refresh=false` no longer bypasses state and reports computed-only `installed_version` changes.
+- Update an existing `host_git_repo` remote URL or name in place instead of replacing the checkout. Updates first verify that the current remote still matches Terraform state and refuse to overwrite unexpected external drift.
+- Preserve the released schema versions for `host_package_dnf`, `host_file_block`, `host_file`, and `host_link`, so states written by v0.13.0 remain readable by later provider builds.
+
 ## 0.13.0 (2026-07-20)
 
 FEATURES:
@@ -10,12 +22,12 @@ IMPROVEMENTS:
 
 - Share cached Pacman installed/explicit-package snapshots across concurrent resources, coalesce duplicate status queries, invalidate caches after mutations, and skip sync-database version queries when `ignore_version = true`.
 - Add desired and observed `install_reason` state to Pacman packages, AUR packages, and AUR helpers. Managed packages converge to `explicit`, while refresh reports external drift to `dependency` so the next apply can repair it.
-- Store runtime metadata under `~/.local/state/terraform-provider-host` in the provider target user's home.
+- Store runtime metadata for new configurations under `~/.local/state/terraform-provider-host` in the provider target user's home. Existing working-directory `.terraform-provider-host` runtimes remain the default when detected, allowing an explicit migration without silently abandoning stateful artifacts.
 - Resolve `git`, `ssh-keygen`, and AUR helper executables when an operation needs them instead of only during provider configuration. Package resources can therefore install those tools earlier in the same dependency-ordered apply; AUR remote version lookup is deferred during planning until a verified helper is available.
 
 FIXES:
 
-- Detect missing, corrupt, or mismatched schedule scripts, metadata, and cron entries and produce an in-place repair on the next apply. Runtime files are replaced atomically.
+- Detect missing, corrupt, or mismatched schedule scripts, metadata, and cron entries and produce an in-place repair on the next apply. Runtime files are replaced atomically; migration removes a previous schedule runtime only when it is under the provider-computed legacy root for the current working directory and its metadata verifies the same schedule, leaving explicit, unknown, or corrupt previous locations untouched.
 - Serialize each target crontab read/modify/write transaction within the provider process so parallel `host_schedule` resources do not overwrite one another.
 
 SECURITY:

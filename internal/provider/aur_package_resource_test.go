@@ -205,6 +205,76 @@ func TestAURPackageResourceRefreshAndSyncDependencyInstallReason(t *testing.T) {
 	}
 }
 
+func TestAURPackageResourceIgnoredVersionPlanRespectsPriorState(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	manager := &fakeAURPackageManager{
+		statuses: map[string]PackageStatus{
+			"claude-code": {
+				Name:             "claude-code",
+				Installed:        true,
+				ReasonUser:       true,
+				InstalledVersion: "2.1.205-1",
+			},
+		},
+	}
+	r := &AURPackageResource{manager: manager}
+
+	var schemaResp frameworkresource.SchemaResponse
+	r.Schema(ctx, frameworkresource.SchemaRequest{}, &schemaResp)
+	if schemaResp.Diagnostics.HasError() {
+		t.Fatalf("unexpected schema diagnostics: %v", schemaResp.Diagnostics)
+	}
+
+	stateModel := AURPackageResourceModel{
+		ID:               types.StringValue("claude-code"),
+		Name:             types.StringValue("claude-code"),
+		Version:          types.StringValue(versionLatest),
+		IgnoreVersion:    types.BoolValue(true),
+		Autoremove:       types.BoolValue(false),
+		InstallReason:    types.StringValue(packageInstallReasonExplicit),
+		InstalledVersion: types.StringValue("2.1.201-1"),
+		CandidateVersion: types.StringNull(),
+	}
+	state := tfsdk.State{
+		Schema: schemaResp.Schema,
+		Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(ctx), nil),
+	}
+	if diags := state.Set(ctx, &stateModel); diags.HasError() {
+		t.Fatalf("encode state: %v", diags)
+	}
+
+	planModel := stateModel
+	plan := tfsdk.Plan{
+		Schema: schemaResp.Schema,
+		Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(ctx), nil),
+	}
+	if diags := plan.Set(ctx, &planModel); diags.HasError() {
+		t.Fatalf("encode plan: %v", diags)
+	}
+
+	modifyResp := frameworkresource.ModifyPlanResponse{Plan: plan}
+	r.ModifyPlan(ctx, frameworkresource.ModifyPlanRequest{State: state, Plan: plan}, &modifyResp)
+	if modifyResp.Diagnostics.HasError() {
+		t.Fatalf("modify plan: %v", modifyResp.Diagnostics)
+	}
+
+	var got AURPackageResourceModel
+	if diags := modifyResp.Plan.Get(ctx, &got); diags.HasError() {
+		t.Fatalf("decode modified plan: %v", diags)
+	}
+	if got.InstalledVersion.ValueString() != "2.1.201-1" {
+		t.Fatalf("installed version %q, want prior state version", got.InstalledVersion.ValueString())
+	}
+	if !got.CandidateVersion.IsNull() {
+		t.Fatalf("candidate version should remain null, got %#v", got.CandidateVersion)
+	}
+	if len(manager.remoteLookups) != 0 {
+		t.Fatalf("ModifyPlan performed remote/local package lookups: %#v", manager.remoteLookups)
+	}
+}
+
 func TestAURPackageResourceSyncUpgradesWhenVersionIsNotIgnored(t *testing.T) {
 	t.Parallel()
 

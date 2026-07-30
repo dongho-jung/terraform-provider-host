@@ -5,11 +5,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	frameworkresource "github.com/hashicorp/terraform-plugin-framework/resource"
+	resourceschema "github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
@@ -25,6 +28,28 @@ func TestHostGitRepositoryConfigureAllowsMissingGit(t *testing.T) {
 	}, &resp)
 	if resp.Diagnostics.HasError() {
 		t.Fatalf("configure diagnostics: %v", resp.Diagnostics)
+	}
+}
+
+func TestHostGitRepositoryURLChangesDoNotRequireReplacement(t *testing.T) {
+	t.Parallel()
+
+	resource := &HostGitRepositoryResource{}
+	var resp frameworkresource.SchemaResponse
+	resource.Schema(t.Context(), frameworkresource.SchemaRequest{}, &resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", resp.Diagnostics)
+	}
+
+	urlAttribute, ok := resp.Schema.Attributes["url"].(resourceschema.StringAttribute)
+	if !ok {
+		t.Fatalf("url attribute has type %T, want schema.StringAttribute", resp.Schema.Attributes["url"])
+	}
+	requiresReplaceType := reflect.TypeOf(stringplanmodifier.RequiresReplace())
+	for _, modifier := range urlAttribute.PlanModifiers {
+		if reflect.TypeOf(modifier) == requiresReplaceType {
+			t.Fatal("url changes must update the existing checkout instead of requiring replacement")
+		}
 	}
 }
 
@@ -168,6 +193,102 @@ func TestHostGitRepositorySyncClonesTrackedRef(t *testing.T) {
 	}
 }
 
+func TestHostGitRepositoryUpdateChangesRemoteURLInPlace(t *testing.T) {
+	t.Parallel()
+
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+
+	sourceBefore := initTestGitRepository(t, gitPath, "before\n")
+	sourceAfter := initTestGitRepository(t, gitPath, "after\n")
+	destination := filepath.Join(t.TempDir(), "checkout")
+	resource := &HostGitRepositoryResource{gitPath: gitPath}
+
+	priorState, err := resource.syncRepository(t.Context(), HostGitRepositoryResourceModel{
+		URL:             types.StringValue(sourceBefore),
+		Path:            types.StringValue(destination),
+		Ref:             types.StringNull(),
+		RemoteName:      types.StringValue("origin"),
+		TrackRemote:     types.BoolValue(false),
+		Recursive:       types.BoolValue(false),
+		Force:           types.BoolValue(false),
+		DeleteOnDestroy: types.BoolValue(false),
+	})
+	if err != nil {
+		t.Fatalf("initial sync: %s", err)
+	}
+	localFile := filepath.Join(destination, "local-only.txt")
+	if err := os.WriteFile(localFile, []byte("keep me\n"), 0o644); err != nil {
+		t.Fatalf("write local file: %s", err)
+	}
+
+	plan := priorState
+	plan.URL = types.StringValue(sourceAfter)
+	state, err := resource.syncRepositoryUpdate(t.Context(), priorState, plan)
+	if err != nil {
+		t.Fatalf("update remote URL: %s", err)
+	}
+
+	gotURL := stringTrimSpace(runTestGit(t, gitPath, destination, "remote", "get-url", "origin"))
+	if gotURL != sourceAfter {
+		t.Fatalf("remote URL got %q, want %q", gotURL, sourceAfter)
+	}
+	if _, err := os.Stat(localFile); err != nil {
+		t.Fatalf("in-place update removed local file: %s", err)
+	}
+	if !state.Dirty.ValueBool() {
+		t.Fatal("expected preserved local file to keep checkout dirty")
+	}
+	if state.URL.ValueString() != sourceAfter {
+		t.Fatalf("state URL got %q, want %q", state.URL.ValueString(), sourceAfter)
+	}
+}
+
+func TestHostGitRepositoryUpdateRefusesUnexpectedRemoteDrift(t *testing.T) {
+	t.Parallel()
+
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+
+	sourceInState := initTestGitRepository(t, gitPath, "state\n")
+	sourceFromDrift := initTestGitRepository(t, gitPath, "drift\n")
+	sourcePlanned := initTestGitRepository(t, gitPath, "planned\n")
+	destination := filepath.Join(t.TempDir(), "checkout")
+	resource := &HostGitRepositoryResource{gitPath: gitPath}
+
+	priorState, err := resource.syncRepository(t.Context(), HostGitRepositoryResourceModel{
+		URL:             types.StringValue(sourceInState),
+		Path:            types.StringValue(destination),
+		Ref:             types.StringNull(),
+		RemoteName:      types.StringValue("origin"),
+		TrackRemote:     types.BoolValue(false),
+		Recursive:       types.BoolValue(false),
+		Force:           types.BoolValue(false),
+		DeleteOnDestroy: types.BoolValue(false),
+	})
+	if err != nil {
+		t.Fatalf("initial sync: %s", err)
+	}
+	runTestGit(t, gitPath, destination, "remote", "set-url", "origin", sourceFromDrift)
+
+	plan := priorState
+	plan.URL = types.StringValue(sourcePlanned)
+	if _, err := resource.syncRepositoryUpdate(t.Context(), priorState, plan); err == nil {
+		t.Fatal("update unexpectedly replaced a remotely drifted URL")
+	} else if !strings.Contains(err.Error(), "changed outside Terraform") {
+		t.Fatalf("unexpected drift error: %s", err)
+	}
+
+	gotURL := stringTrimSpace(runTestGit(t, gitPath, destination, "remote", "get-url", "origin"))
+	if gotURL != sourceFromDrift {
+		t.Fatalf("failed update changed remote URL to %q, want drifted value %q preserved", gotURL, sourceFromDrift)
+	}
+}
+
 func TestHostGitRepositorySyncRetriesGitInstalledAfterConfigure(t *testing.T) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
@@ -262,6 +383,21 @@ func TestHostGitRepositoryImportStateReadsExistingCheckout(t *testing.T) {
 	if state.DeleteOnDestroy.ValueBool() {
 		t.Fatal("delete_on_destroy should default to false on import")
 	}
+}
+
+func initTestGitRepository(t *testing.T, gitPath string, contents string) string {
+	t.Helper()
+
+	source := t.TempDir()
+	runTestGit(t, gitPath, source, "init", "-b", "main")
+	runTestGit(t, gitPath, source, "config", "user.email", "test@example.com")
+	runTestGit(t, gitPath, source, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(source, "README.md"), []byte(contents), 0o644); err != nil {
+		t.Fatalf("write README: %s", err)
+	}
+	runTestGit(t, gitPath, source, "add", "README.md")
+	runTestGit(t, gitPath, source, "commit", "-m", "initial")
+	return source
 }
 
 func runTestGit(t *testing.T, gitPath string, workDir string, args ...string) []byte {

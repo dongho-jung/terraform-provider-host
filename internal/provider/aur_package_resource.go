@@ -166,6 +166,26 @@ func (r *AURPackageResource) ModifyPlan(ctx context.Context, req resource.Modify
 		return
 	}
 
+	// Preserve Terraform's refresh boundary. A live lookup from ModifyPlan
+	// would otherwise discover local version changes even with -refresh=false.
+	// Version-ignored resources can plan entirely from their prior state.
+	var priorState AURPackageResourceModel
+	if !req.State.Raw.IsNull() {
+		resp.Diagnostics.Append(req.State.Get(ctx, &priorState)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		if aurPackageCanPlanFromPriorState(plan, priorState) {
+			plan.InstalledVersion = priorState.InstalledVersion
+			plan.CandidateVersion = types.StringNull()
+			if priorState.InstallReason.ValueString() == packageInstallReasonDependency {
+				r.addPrivilegeWarning(&resp.Diagnostics)
+			}
+			resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+			return
+		}
+	}
+
 	status, err := r.manager.PackageStatus(ctx, plan.Name.ValueString(), !aurPackageIgnoresVersion(plan))
 	remoteUnavailable := errors.Is(err, errAURHelperUnavailable)
 	if err != nil && !remoteUnavailable {
@@ -370,6 +390,20 @@ func (r *AURPackageResource) syncPackage(ctx context.Context, model AURPackageRe
 
 func aurPackageIgnoresVersion(model AURPackageResourceModel) bool {
 	return model.IgnoreVersion.IsNull() || model.IgnoreVersion.IsUnknown() || model.IgnoreVersion.ValueBool()
+}
+
+func aurPackageCanPlanFromPriorState(plan AURPackageResourceModel, state AURPackageResourceModel) bool {
+	return !plan.Name.IsNull() &&
+		!plan.Name.IsUnknown() &&
+		!state.Name.IsNull() &&
+		!state.Name.IsUnknown() &&
+		plan.Name.Equal(state.Name) &&
+		!plan.IgnoreVersion.IsNull() &&
+		!plan.IgnoreVersion.IsUnknown() &&
+		plan.IgnoreVersion.ValueBool() &&
+		!state.IgnoreVersion.IsNull() &&
+		!state.IgnoreVersion.IsUnknown() &&
+		state.IgnoreVersion.ValueBool()
 }
 
 func hydrateAURPackageInstalledVersionState(model *AURPackageResourceModel, status PackageStatus) {

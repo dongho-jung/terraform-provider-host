@@ -57,6 +57,7 @@ func (r *HostLinkResource) Configure(ctx context.Context, req resource.Configure
 
 func (r *HostLinkResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
+		Version:             1,
 		MarkdownDescription: "Manages a symbolic link from a destination host path to a source file or directory.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{

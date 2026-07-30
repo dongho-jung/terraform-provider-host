@@ -90,10 +90,7 @@ func (r *HostGitRepositoryResource) Schema(ctx context.Context, req resource.Sch
 			},
 			"url": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Git remote URL, such as an HTTPS URL, SSH URL, or local path accepted by `git clone`.",
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
+				MarkdownDescription: "Git remote URL, such as an HTTPS URL, SSH URL, or local path accepted by `git clone`. Changes update the existing remote in place after verifying that it still matches Terraform state.",
 			},
 			"path": schema.StringAttribute{
 				Required:            true,
@@ -241,12 +238,14 @@ func (r *HostGitRepositoryResource) Read(ctx context.Context, req resource.ReadR
 
 func (r *HostGitRepositoryResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan HostGitRepositoryResourceModel
+	var priorState HostGitRepositoryResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &priorState)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	state, err := r.syncRepository(ctx, plan)
+	state, err := r.syncRepositoryUpdate(ctx, priorState, plan)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to sync Git repository", err.Error())
 		return
@@ -379,6 +378,66 @@ func (r *HostGitRepositoryResource) syncRepository(ctx context.Context, model Ho
 	}
 	if !exists {
 		return model, fmt.Errorf("repository %q was not found after sync", spec.PathResolved)
+	}
+	return state, nil
+}
+
+func (r *HostGitRepositoryResource) syncRepositoryUpdate(
+	ctx context.Context,
+	priorModel HostGitRepositoryResourceModel,
+	plannedModel HostGitRepositoryResourceModel,
+) (HostGitRepositoryResourceModel, error) {
+	gitPath, err := r.resolveGitExecutablePath("Git repository sync")
+	if err != nil {
+		return plannedModel, err
+	}
+
+	priorSpec, err := hostGitRepositorySpecFromModelForHome(priorModel, r.homeDir)
+	if err != nil {
+		return plannedModel, fmt.Errorf("read prior repository state: %w", err)
+	}
+	plannedSpec, err := hostGitRepositorySpecFromModelForHome(plannedModel, r.homeDir)
+	if err != nil {
+		return plannedModel, err
+	}
+	if priorSpec.PathResolved != plannedSpec.PathResolved {
+		return plannedModel, fmt.Errorf(
+			"repository path changed from %q to %q without replacement",
+			priorSpec.PathResolved,
+			plannedSpec.PathResolved,
+		)
+	}
+
+	exists, err := pathExists(plannedSpec.PathResolved)
+	if err != nil {
+		return plannedModel, err
+	}
+	if !exists {
+		if err := gitClone(ctx, gitPath, plannedSpec); err != nil {
+			return plannedModel, err
+		}
+	} else if empty, err := directoryEmpty(plannedSpec.PathResolved); err != nil {
+		return plannedModel, err
+	} else if empty {
+		if err := gitClone(ctx, gitPath, plannedSpec); err != nil {
+			return plannedModel, err
+		}
+	} else {
+		if err := updateGitRepositoryRemote(ctx, gitPath, priorSpec, plannedSpec); err != nil {
+			return plannedModel, err
+		}
+	}
+
+	if err := syncGitRepositoryCheckout(ctx, gitPath, plannedSpec); err != nil {
+		return plannedModel, err
+	}
+
+	state, exists, err := r.readRepository(ctx, plannedModel)
+	if err != nil {
+		return plannedModel, err
+	}
+	if !exists {
+		return plannedModel, fmt.Errorf("repository %q was not found after sync", plannedSpec.PathResolved)
 	}
 	return state, nil
 }
@@ -648,6 +707,81 @@ func ensureGitRepositoryMatches(ctx context.Context, gitPath string, spec hostGi
 	return nil
 }
 
+func updateGitRepositoryRemote(
+	ctx context.Context,
+	gitPath string,
+	priorSpec hostGitRepositorySpec,
+	plannedSpec hostGitRepositorySpec,
+) error {
+	if err := ensureGitRepositoryMatches(ctx, gitPath, priorSpec); err != nil {
+		return fmt.Errorf("repository changed outside Terraform; refusing to update its remote: %w", err)
+	}
+
+	remoteName := priorSpec.RemoteName
+	renamed := false
+	if priorSpec.RemoteName != plannedSpec.RemoteName {
+		names, err := gitRemoteNames(ctx, gitPath, priorSpec.PathResolved)
+		if err != nil {
+			return err
+		}
+		for _, name := range names {
+			if name == plannedSpec.RemoteName {
+				return fmt.Errorf(
+					"repository %q already has remote %q; refusing to replace it",
+					priorSpec.PathResolved,
+					plannedSpec.RemoteName,
+				)
+			}
+		}
+		if _, err := runGit(
+			ctx,
+			gitPath,
+			priorSpec.PathResolved,
+			"remote",
+			"rename",
+			priorSpec.RemoteName,
+			plannedSpec.RemoteName,
+		); err != nil {
+			return err
+		}
+		remoteName = plannedSpec.RemoteName
+		renamed = true
+	}
+
+	if priorSpec.URL != plannedSpec.URL {
+		if _, err := runGit(
+			ctx,
+			gitPath,
+			priorSpec.PathResolved,
+			"remote",
+			"set-url",
+			remoteName,
+			plannedSpec.URL,
+		); err != nil {
+			if renamed {
+				if _, rollbackErr := runGit(
+					ctx,
+					gitPath,
+					priorSpec.PathResolved,
+					"remote",
+					"rename",
+					plannedSpec.RemoteName,
+					priorSpec.RemoteName,
+				); rollbackErr != nil {
+					return fmt.Errorf(
+						"update remote URL: %w; additionally failed to restore remote name: %v",
+						err,
+						rollbackErr,
+					)
+				}
+			}
+			return err
+		}
+	}
+
+	return ensureGitRepositoryMatches(ctx, gitPath, plannedSpec)
+}
+
 func ensureGitRepositoryPath(ctx context.Context, gitPath string, repoPath string) error {
 	info, err := os.Lstat(repoPath)
 	if err != nil {
@@ -687,6 +821,21 @@ func gitRemoteURL(ctx context.Context, gitPath string, repoPath string, remoteNa
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func gitRemoteNames(ctx context.Context, gitPath string, repoPath string) ([]string, error) {
+	out, err := runGit(ctx, gitPath, repoPath, "remote")
+	if err != nil {
+		return nil, err
+	}
+
+	var names []string
+	for _, name := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if name = strings.TrimSpace(name); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names, nil
 }
 
 func gitResolveRemoteRef(ctx context.Context, gitPath string, url string, ref string) (string, error) {

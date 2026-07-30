@@ -64,6 +64,7 @@ func (r *HostFileBlockResource) Configure(ctx context.Context, req resource.Conf
 
 func (r *HostFileBlockResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
+		Version:             2,
 		MarkdownDescription: "Manages one Terraform-owned content block inside a named `host_file` block.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{

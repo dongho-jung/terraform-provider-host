@@ -52,6 +52,7 @@ func (r *DNFPackageResource) Metadata(ctx context.Context, req resource.Metadata
 
 func (r *DNFPackageResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
+		Version:             2,
 		MarkdownDescription: "Manages a single DNF package and keeps its DNF install reason marked as `User`.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{

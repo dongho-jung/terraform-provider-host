@@ -169,6 +169,28 @@ func (r *PacmanPackageResource) ModifyPlan(ctx context.Context, req resource.Mod
 		return
 	}
 
+	// Terraform refreshes resource state before planning unless the caller
+	// explicitly disables refresh. Re-reading the host here would bypass
+	// -refresh=false and can produce a plan made up only of computed version
+	// changes. For version-ignored packages, the refreshed (or deliberately
+	// unrefreshed) state already contains everything needed to build the plan.
+	var priorState PacmanPackageResourceModel
+	if !req.State.Raw.IsNull() {
+		resp.Diagnostics.Append(req.State.Get(ctx, &priorState)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		if pacmanPackageCanPlanFromPriorState(plan, priorState) {
+			plan.InstalledVersion = priorState.InstalledVersion
+			plan.CandidateVersion = types.StringNull()
+			if priorState.InstallReason.ValueString() == packageInstallReasonDependency {
+				r.addPrivilegeWarning(&resp.Diagnostics)
+			}
+			resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+			return
+		}
+	}
+
 	status, err := r.packageStatus(ctx, plan.Name.ValueString(), !pacmanPackageIgnoresVersion(plan))
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read Pacman package", err.Error())
@@ -362,6 +384,20 @@ func (r *PacmanPackageResource) syncPackage(ctx context.Context, model PacmanPac
 
 func pacmanPackageIgnoresVersion(model PacmanPackageResourceModel) bool {
 	return model.IgnoreVersion.IsNull() || model.IgnoreVersion.IsUnknown() || model.IgnoreVersion.ValueBool()
+}
+
+func pacmanPackageCanPlanFromPriorState(plan PacmanPackageResourceModel, state PacmanPackageResourceModel) bool {
+	return !plan.Name.IsNull() &&
+		!plan.Name.IsUnknown() &&
+		!state.Name.IsNull() &&
+		!state.Name.IsUnknown() &&
+		plan.Name.Equal(state.Name) &&
+		!plan.IgnoreVersion.IsNull() &&
+		!plan.IgnoreVersion.IsUnknown() &&
+		plan.IgnoreVersion.ValueBool() &&
+		!state.IgnoreVersion.IsNull() &&
+		!state.IgnoreVersion.IsUnknown() &&
+		state.IgnoreVersion.ValueBool()
 }
 
 func (r *PacmanPackageResource) packageStatus(ctx context.Context, name string, includeVersions bool) (PackageStatus, error) {
