@@ -376,6 +376,8 @@ func TestValidateHostSystemFileDestination(t *testing.T) {
 }
 
 func TestTrustedHostSystemExecutableIgnoresCallerPATH(t *testing.T) {
+	wantResolved, wantErr := trustedHostSystemExecutable("install")
+
 	maliciousDirectory := t.TempDir()
 	maliciousInstall := filepath.Join(maliciousDirectory, "install")
 	if err := os.WriteFile(maliciousInstall, []byte("#!/bin/sh\nexit 99\n"), 0o700); err != nil {
@@ -384,15 +386,27 @@ func TestTrustedHostSystemExecutableIgnoresCallerPATH(t *testing.T) {
 	t.Setenv("PATH", maliciousDirectory)
 
 	resolved, err := trustedHostSystemExecutable("install")
-	if err != nil {
-		t.Fatalf("resolve trusted install: %s", err)
+	if (err == nil) != (wantErr == nil) {
+		t.Fatalf("resolution changed after PATH update: before=%v after=%v", wantErr, err)
 	}
-	if resolved == maliciousInstall || !filepath.IsAbs(resolved) {
+	if err != nil {
+		if err.Error() != wantErr.Error() {
+			t.Fatalf("resolution error changed after PATH update: before=%q after=%q", wantErr, err)
+		}
+	} else if resolved != wantResolved {
+		t.Fatalf("resolved utility changed after PATH update: before=%q after=%q", wantResolved, resolved)
+	}
+	if resolved == maliciousInstall {
 		t.Fatalf("resolved untrusted utility %q", resolved)
 	}
-	canonical, err := filepath.EvalSymlinks(resolved)
-	if err != nil || canonical != resolved {
-		t.Fatalf("resolved utility is not canonical: resolved=%q canonical=%q err=%v", resolved, canonical, err)
+	if err == nil {
+		if !filepath.IsAbs(resolved) {
+			t.Fatalf("resolved utility is not absolute: %q", resolved)
+		}
+		canonical, canonicalErr := filepath.EvalSymlinks(resolved)
+		if canonicalErr != nil || canonical != resolved {
+			t.Fatalf("resolved utility is not canonical: resolved=%q canonical=%q err=%v", resolved, canonical, canonicalErr)
+		}
 	}
 	if _, err := trustedHostSystemExecutable("sh"); err == nil {
 		t.Fatal("unexpectedly resolved non-allowlisted utility")
@@ -400,11 +414,11 @@ func TestTrustedHostSystemExecutableIgnoresCallerPATH(t *testing.T) {
 }
 
 func TestValidateHostSystemFileProtectedParents(t *testing.T) {
-	// Hosted CI images may intentionally make /usr/local/bin writable by the
-	// runner user. /usr/bin remains a protected system directory and exercises
-	// the same parent-chain validation without relying on that image policy.
-	if err := validateHostSystemFileProtectedParents("/usr/bin/terraform-provider-host-test"); err != nil {
-		t.Fatalf("trusted system destination: %s", err)
+	// The filesystem root is the only system directory whose ownership and mode
+	// are stable across hosted runner images. Deeper system paths can
+	// intentionally be writable while images are being provisioned.
+	if err := validateHostSystemFileProtectedParents("/terraform-provider-host-test"); err != nil {
+		t.Fatalf("protected root destination: %s", err)
 	}
 	untrustedDestination := filepath.Join(t.TempDir(), "system-file")
 	if err := validateHostSystemFileProtectedParents(untrustedDestination); err == nil || !strings.Contains(err.Error(), "root-owned") {
