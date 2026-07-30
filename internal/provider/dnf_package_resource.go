@@ -17,6 +17,11 @@ import (
 
 const versionLatest = "latest"
 
+const (
+	dnfPackageInstallReasonUser       = "user"
+	dnfPackageInstallReasonDependency = "dependency"
+)
+
 var (
 	_ resource.Resource                = &DNFPackageResource{}
 	_ resource.ResourceWithConfigure   = &DNFPackageResource{}
@@ -38,6 +43,7 @@ type DNFPackageResourceModel struct {
 	Version          types.String `tfsdk:"version"`
 	IgnoreVersion    types.Bool   `tfsdk:"ignore_version"`
 	Autoremove       types.Bool   `tfsdk:"autoremove"`
+	InstallReason    types.String `tfsdk:"install_reason"`
 	InstalledVersion types.String `tfsdk:"installed_version"`
 	CandidateVersion types.String `tfsdk:"candidate_version"`
 }
@@ -86,6 +92,12 @@ func (r *DNFPackageResource) Schema(ctx context.Context, req resource.SchemaRequ
 				Computed:            true,
 				Default:             booldefault.StaticBool(true),
 				MarkdownDescription: "Allow DNF to remove dependencies that become unused when this package is removed.",
+			},
+			"install_reason": schema.StringAttribute{
+				Optional:            true,
+				Computed:            true,
+				Default:             stringdefault.StaticString(dnfPackageInstallReasonUser),
+				MarkdownDescription: "Desired and observed DNF install reason. The only supported desired value is `user`; refresh records the normalized DNF reason after external drift so the next apply restores `user`.",
 			},
 			"installed_version": schema.StringAttribute{
 				Computed:            true,
@@ -156,12 +168,36 @@ func (r *DNFPackageResource) ModifyPlan(ctx context.Context, req resource.Modify
 		resp.Diagnostics.AddError("Invalid DNF package version policy", err.Error())
 		return
 	}
+	if err := validateDNFInstallReasonPolicy(plan.InstallReason.ValueString()); err != nil {
+		resp.Diagnostics.AddError("Invalid DNF package install reason", err.Error())
+		return
+	}
 
 	if plan.Name.IsNull() || plan.Name.IsUnknown() {
 		return
 	}
 
-	status, err := r.manager.PackageStatus(ctx, plan.Name.ValueString())
+	// Preserve Terraform's refresh boundary. Version-ignored resources can
+	// plan package metadata and install-reason repair from refreshed (or
+	// deliberately unrefreshed) prior state without another live DNF query.
+	var priorState DNFPackageResourceModel
+	if !req.State.Raw.IsNull() {
+		resp.Diagnostics.Append(req.State.Get(ctx, &priorState)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		if dnfPackageCanPlanFromPriorState(plan, priorState) {
+			plan.InstalledVersion = priorState.InstalledVersion
+			plan.CandidateVersion = types.StringNull()
+			if dnfInstallReasonNeedsRepair(priorState.InstallReason) {
+				r.addPrivilegeWarning(&resp.Diagnostics)
+			}
+			resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+			return
+		}
+	}
+
+	status, err := r.packageStatus(ctx, plan.Name.ValueString(), !dnfPackageIgnoresVersion(plan))
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read DNF package", err.Error())
 		return
@@ -199,6 +235,10 @@ func (r *DNFPackageResource) Create(ctx context.Context, req resource.CreateRequ
 
 	if err := validateVersionPolicy(plan.Version.ValueString()); err != nil {
 		resp.Diagnostics.AddError("Invalid DNF package version policy", err.Error())
+		return
+	}
+	if err := validateDNFInstallReasonPolicy(plan.InstallReason.ValueString()); err != nil {
+		resp.Diagnostics.AddError("Invalid DNF package install reason", err.Error())
 		return
 	}
 
@@ -248,6 +288,10 @@ func (r *DNFPackageResource) Update(ctx context.Context, req resource.UpdateRequ
 		resp.Diagnostics.AddError("Invalid DNF package version policy", err.Error())
 		return
 	}
+	if err := validateDNFInstallReasonPolicy(plan.InstallReason.ValueString()); err != nil {
+		resp.Diagnostics.AddError("Invalid DNF package install reason", err.Error())
+		return
+	}
 
 	if err := r.syncPackage(ctx, plan); err != nil {
 		resp.Diagnostics.AddError("Failed to sync DNF package", err.Error())
@@ -293,7 +337,7 @@ func (r *DNFPackageResource) ImportState(ctx context.Context, req resource.Impor
 func (r *DNFPackageResource) refreshState(ctx context.Context, model DNFPackageResourceModel) (DNFPackageResourceModel, bool, error) {
 	name := model.Name.ValueString()
 
-	status, err := r.manager.PackageStatus(ctx, name)
+	status, err := r.packageStatus(ctx, name, !dnfPackageIgnoresVersion(model))
 	if err != nil {
 		return model, false, err
 	}
@@ -308,6 +352,7 @@ func (r *DNFPackageResource) refreshState(ctx context.Context, model DNFPackageR
 	if model.Autoremove.IsNull() || model.Autoremove.IsUnknown() {
 		model.Autoremove = types.BoolValue(true)
 	}
+	hydrateDNFPackageInstallReason(&model.InstallReason, status)
 	hydrateVersionState(&model, status)
 	if dnfPackageIgnoresVersion(model) {
 		model.CandidateVersion = types.StringNull()
@@ -319,7 +364,7 @@ func (r *DNFPackageResource) refreshState(ctx context.Context, model DNFPackageR
 func (r *DNFPackageResource) syncPackage(ctx context.Context, model DNFPackageResourceModel) error {
 	name := model.Name.ValueString()
 
-	status, err := r.manager.PackageStatus(ctx, name)
+	status, err := r.packageStatus(ctx, name, !dnfPackageIgnoresVersion(model))
 	if err != nil {
 		return err
 	}
@@ -345,6 +390,56 @@ func (r *DNFPackageResource) syncPackage(ctx context.Context, model DNFPackageRe
 
 func dnfPackageIgnoresVersion(model DNFPackageResourceModel) bool {
 	return model.IgnoreVersion.IsNull() || model.IgnoreVersion.IsUnknown() || model.IgnoreVersion.ValueBool()
+}
+
+func dnfPackageCanPlanFromPriorState(plan DNFPackageResourceModel, state DNFPackageResourceModel) bool {
+	return !plan.Name.IsNull() &&
+		!plan.Name.IsUnknown() &&
+		!state.Name.IsNull() &&
+		!state.Name.IsUnknown() &&
+		plan.Name.Equal(state.Name) &&
+		!plan.IgnoreVersion.IsNull() &&
+		!plan.IgnoreVersion.IsUnknown() &&
+		plan.IgnoreVersion.ValueBool() &&
+		!state.IgnoreVersion.IsNull() &&
+		!state.IgnoreVersion.IsUnknown() &&
+		state.IgnoreVersion.ValueBool()
+}
+
+func (r *DNFPackageResource) packageStatus(ctx context.Context, name string, includeVersions bool) (PackageStatus, error) {
+	if manager, ok := r.manager.(packageManagerWithStatusOptions); ok {
+		return manager.PackageStatusWithOptions(ctx, name, includeVersions)
+	}
+	return r.manager.PackageStatus(ctx, name)
+}
+
+func validateDNFInstallReasonPolicy(reason string) error {
+	if reason == "" || reason == dnfPackageInstallReasonUser {
+		return nil
+	}
+	return fmt.Errorf("unsupported install reason %q; only %q can be configured", reason, dnfPackageInstallReasonUser)
+}
+
+func hydrateDNFPackageInstallReason(installReason *types.String, status PackageStatus) {
+	if !status.Installed {
+		*installReason = types.StringNull()
+		return
+	}
+	if status.InstallReason != "" {
+		*installReason = types.StringValue(status.InstallReason)
+		return
+	}
+	if status.ReasonUser {
+		*installReason = types.StringValue(dnfPackageInstallReasonUser)
+		return
+	}
+	*installReason = types.StringValue(dnfPackageInstallReasonDependency)
+}
+
+func dnfInstallReasonNeedsRepair(reason types.String) bool {
+	return !reason.IsNull() &&
+		!reason.IsUnknown() &&
+		reason.ValueString() != dnfPackageInstallReasonUser
 }
 
 func hydrateVersionState(model *DNFPackageResourceModel, status PackageStatus) {

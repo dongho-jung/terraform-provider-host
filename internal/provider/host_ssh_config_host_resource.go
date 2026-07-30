@@ -94,6 +94,9 @@ func (r *HostSSHConfigHostResource) Configure(ctx context.Context, req resource.
 		resp.Diagnostics.AddError("Unexpected provider data", fmt.Sprintf("Expected HostProviderData, got %T.", req.ProviderData))
 		return
 	}
+	if !requireHostUserScope(data, "host_ssh_config_host", &resp.Diagnostics) {
+		return
+	}
 	r.homeDir = data.HomeDir
 }
 
@@ -495,7 +498,7 @@ func withLockedSSHConfigForHome(ctx context.Context, homeDir string, path string
 		return err
 	}
 
-	lock, err := lockHostFile(resolvedPath)
+	lock, err := lockHostFileContext(ctx, resolvedPath)
 	if err != nil {
 		return err
 	}
@@ -683,7 +686,7 @@ func writeSSHConfigFile(path string, content string) error {
 	if content != "" && !strings.HasSuffix(content, "\n") {
 		content += "\n"
 	}
-	if err := os.WriteFile(path, []byte(content), hostSSHConfigDefaultFilePermission); err != nil {
+	if err := writeHostFileAtomically(path, []byte(content), hostSSHConfigDefaultFilePermission); err != nil {
 		return fmt.Errorf("write SSH config %q: %w", path, err)
 	}
 	return nil

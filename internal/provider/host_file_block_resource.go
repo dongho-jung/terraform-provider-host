@@ -58,6 +58,9 @@ func (r *HostFileBlockResource) Configure(ctx context.Context, req resource.Conf
 		resp.Diagnostics.AddError("Unexpected provider data", fmt.Sprintf("Expected HostProviderData, got %T.", req.ProviderData))
 		return
 	}
+	if !requireHostUserScope(data, "host_file_block", &resp.Diagnostics) {
+		return
+	}
 	r.homeDir = data.HomeDir
 	r.runtimeDir = data.RuntimeDir
 }

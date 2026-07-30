@@ -1,8 +1,15 @@
 package provider
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestValidateHostSysctlKey(t *testing.T) {
@@ -112,5 +119,78 @@ func TestValidateHostFstabEntry(t *testing.T) {
 	entry.MountPoint = "relative"
 	if err := validateHostFstabEntry(entry); err == nil {
 		t.Fatal("expected relative mount point to be invalid")
+	}
+}
+
+func TestHostFstabManagerSerializesConcurrentUpdates(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "fstab")
+	if err := os.WriteFile(path, []byte("# existing\n"), 0o644); err != nil {
+		t.Fatalf("write fstab fixture: %s", err)
+	}
+
+	var activeWriters atomic.Int32
+	var maxActiveWriters atomic.Int32
+	manager := &HostFstabManager{
+		path:     path,
+		readFile: readProtectedFile,
+		writeFile: func(ctx context.Context, _ string, path string, content []byte, mode os.FileMode) error {
+			active := activeWriters.Add(1)
+			defer activeWriters.Add(-1)
+			for {
+				previous := maxActiveWriters.Load()
+				if active <= previous || maxActiveWriters.CompareAndSwap(previous, active) {
+					break
+				}
+			}
+			time.Sleep(2 * time.Millisecond)
+			return writeHostFileAtomically(path, content, mode)
+		},
+	}
+
+	const entryCount = 12
+	start := make(chan struct{})
+	errs := make(chan error, entryCount)
+	var wg sync.WaitGroup
+	for index := range entryCount {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			name := fmt.Sprintf("data-%02d", index)
+			errs <- manager.SyncEntry(t.Context(), FstabEntry{
+				Name:       name,
+				Device:     "UUID=" + name,
+				MountPoint: "/mnt/" + name,
+				FSType:     "ext4",
+				Options:    "defaults",
+				Pass:       2,
+			})
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("sync fstab entry: %s", err)
+		}
+	}
+
+	if maxActiveWriters.Load() != 1 {
+		t.Fatalf("concurrent fstab writers got %d, want 1", maxActiveWriters.Load())
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read final fstab: %s", err)
+	}
+	for index := range entryCount {
+		name := fmt.Sprintf("data-%02d", index)
+		if _, exists, err := readFstabManagedEntry(string(content), name); err != nil {
+			t.Fatalf("read %s: %s", name, err)
+		} else if !exists {
+			t.Fatalf("final fstab lost managed entry %q", name)
+		}
 	}
 }

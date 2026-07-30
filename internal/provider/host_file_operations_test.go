@@ -28,6 +28,25 @@ func TestSyncHostFileContentWritesWholeFileWithoutMarkers(t *testing.T) {
 	}
 }
 
+func TestSyncHostFileContentPreservesExistingMode(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "private.conf")
+	if err := os.WriteFile(path, []byte("before\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %s", err)
+	}
+	if err := syncHostFileContent(path, "after"); err != nil {
+		t.Fatalf("sync host file: %s", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat host file: %s", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode got %04o, want 0600", info.Mode().Perm())
+	}
+}
+
 func TestCleanHostFileBlocksRenderWithoutMarkers(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".zshrc")
 	runtimeDir := t.TempDir()

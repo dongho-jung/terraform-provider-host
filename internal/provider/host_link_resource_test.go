@@ -4,6 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 )
 
 func TestResolveHostLinkSourceRelativeToWorkingDirectory(t *testing.T) {
@@ -88,5 +92,89 @@ func TestDeleteHostLinkRefusesRegularDirectory(t *testing.T) {
 
 	if err := deleteHostLink(link); err == nil {
 		t.Fatal("expected existing directory error")
+	}
+}
+
+func TestHostLinkResourceImportStateHydratesSourceBeforeRead(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	homeDir := t.TempDir()
+	target := filepath.Join(homeDir, "target")
+	if err := os.WriteFile(target, []byte("content"), 0o600); err != nil {
+		t.Fatalf("write target: %s", err)
+	}
+	link := filepath.Join(homeDir, ".config", "current")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatalf("create link parent: %s", err)
+	}
+	if err := os.Symlink("../target", link); err != nil {
+		t.Fatalf("create symbolic link: %s", err)
+	}
+
+	r := &HostLinkResource{homeDir: homeDir}
+	var schemaResp resource.SchemaResponse
+	r.Schema(ctx, resource.SchemaRequest{}, &schemaResp)
+	if schemaResp.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", schemaResp.Diagnostics)
+	}
+
+	importResp := resource.ImportStateResponse{
+		State: tfsdk.State{
+			Schema: schemaResp.Schema,
+			Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(ctx), nil),
+		},
+	}
+	r.ImportState(ctx, resource.ImportStateRequest{ID: "~/.config/current"}, &importResp)
+	if importResp.Diagnostics.HasError() {
+		t.Fatalf("import diagnostics: %v", importResp.Diagnostics)
+	}
+
+	var imported HostLinkResourceModel
+	if diags := importResp.State.Get(ctx, &imported); diags.HasError() {
+		t.Fatalf("decode imported state: %v", diags)
+	}
+	if imported.Source.ValueString() != target {
+		t.Fatalf("imported source got %q, want %q", imported.Source.ValueString(), target)
+	}
+
+	readResp := resource.ReadResponse{State: importResp.State}
+	r.Read(ctx, resource.ReadRequest{State: importResp.State}, &readResp)
+	if readResp.Diagnostics.HasError() {
+		t.Fatalf("read diagnostics: %v", readResp.Diagnostics)
+	}
+
+	var got HostLinkResourceModel
+	if diags := readResp.State.Get(ctx, &got); diags.HasError() {
+		t.Fatalf("decode refreshed state: %v", diags)
+	}
+	if got.ID.ValueString() != "~/.config/current" {
+		t.Fatalf("id got %q", got.ID.ValueString())
+	}
+	if got.SourcePath.ValueString() != target {
+		t.Fatalf("source_path got %q, want %q", got.SourcePath.ValueString(), target)
+	}
+	if got.DestinationPath.ValueString() != link {
+		t.Fatalf("destination_path got %q, want %q", got.DestinationPath.ValueString(), link)
+	}
+}
+
+func TestHostLinkResourceImportStateRejectsMissingLink(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	r := &HostLinkResource{homeDir: t.TempDir()}
+	var schemaResp resource.SchemaResponse
+	r.Schema(ctx, resource.SchemaRequest{}, &schemaResp)
+
+	importResp := resource.ImportStateResponse{
+		State: tfsdk.State{
+			Schema: schemaResp.Schema,
+			Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(ctx), nil),
+		},
+	}
+	r.ImportState(ctx, resource.ImportStateRequest{ID: "~/.config/missing"}, &importResp)
+	if !importResp.Diagnostics.HasError() {
+		t.Fatal("expected missing link import error")
 	}
 }

@@ -8,14 +8,20 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 const (
 	brewPackageTypeFormula = "formula"
 	brewPackageTypeCask    = "cask"
+
+	brewPackageInstallReasonOnRequest  = "on_request"
+	brewPackageInstallReasonDependency = "dependency"
 )
 
 type BrewPackageManager interface {
@@ -44,6 +50,13 @@ type BrewPackageStatus struct {
 type CLIBrewPackageManager struct {
 	brewPath string
 	sudoPath string
+
+	cacheMu         sync.RWMutex
+	cacheGeneration uint64
+	taps            map[string]struct{}
+	statuses        map[string]BrewPackageStatus
+	tapLoad         singleflight.Group
+	statusLoad      singleflight.Group
 }
 
 type commandTTY struct {
@@ -51,11 +64,15 @@ type commandTTY struct {
 }
 
 type brewSudoLeaseState struct {
-	mu     sync.Mutex
-	active bool
+	mu         sync.Mutex
+	active     bool
+	generation uint64
+	cancel     context.CancelFunc
 }
 
 var brewSudoLease brewSudoLeaseState
+
+var brewOperationMutex sync.RWMutex
 
 type brewInfoOutput struct {
 	Formulae []brewFormulaInfo `json:"formulae"`
@@ -107,22 +124,17 @@ func NewCLIBrewPackageManager(brewPath string, sudoPathOverride ...string) *CLIB
 	return &CLIBrewPackageManager{
 		brewPath: brewPath,
 		sudoPath: sudoPath,
+		statuses: make(map[string]BrewPackageStatus),
 	}
 }
 
 func (m *CLIBrewPackageManager) TapInstalled(ctx context.Context, name string) (bool, error) {
-	out, err := m.run(ctx, "tap")
+	taps, err := m.installedTaps(ctx)
 	if err != nil {
 		return false, err
 	}
-
-	for _, tap := range strings.Fields(string(out)) {
-		if tap == name {
-			return true, nil
-		}
-	}
-
-	return false, nil
+	_, installed := taps[name]
+	return installed, nil
 }
 
 func (m *CLIBrewPackageManager) Tap(ctx context.Context, name string) error {
@@ -133,13 +145,47 @@ func (m *CLIBrewPackageManager) Tap(ctx context.Context, name string) error {
 }
 
 func (m *CLIBrewPackageManager) PackageStatus(ctx context.Context, name string, packageType string) (BrewPackageStatus, error) {
-	args := []string{"info", "--json=v2", brewPackageTypeFlag(packageType), name}
-	out, err := m.run(ctx, args...)
+	key := packageType + ":" + name
+	m.cacheMu.RLock()
+	generation := m.cacheGeneration
+	if status, ok := m.statuses[key]; ok {
+		m.cacheMu.RUnlock()
+		return cloneBrewPackageStatus(status), nil
+	}
+	m.cacheMu.RUnlock()
+
+	value, err, _ := m.statusLoad.Do(strconv.FormatUint(generation, 10)+":"+key, func() (any, error) {
+		brewOperationMutex.RLock()
+		defer brewOperationMutex.RUnlock()
+
+		args := []string{"info", "--json=v2", brewPackageTypeFlag(packageType), name}
+		out, err := m.run(ctx, args...)
+		if err != nil {
+			return BrewPackageStatus{}, err
+		}
+		status, err := parseBrewPackageStatus(name, packageType, out)
+		if err != nil {
+			return BrewPackageStatus{}, err
+		}
+
+		m.cacheMu.Lock()
+		if m.cacheGeneration == generation {
+			if m.statuses == nil {
+				m.statuses = make(map[string]BrewPackageStatus)
+			}
+			m.statuses[key] = cloneBrewPackageStatus(status)
+		}
+		m.cacheMu.Unlock()
+		return status, nil
+	})
 	if err != nil {
 		return BrewPackageStatus{}, err
 	}
-
-	return parseBrewPackageStatus(name, packageType, out)
+	status, ok := value.(BrewPackageStatus)
+	if !ok {
+		return BrewPackageStatus{}, fmt.Errorf("unexpected Homebrew package status result %T", value)
+	}
+	return cloneBrewPackageStatus(status), nil
 }
 
 func (m *CLIBrewPackageManager) InstallPackage(ctx context.Context, name string, packageType string) error {
@@ -261,11 +307,15 @@ func (m *CLIBrewPackageManager) runInteractive(ctx context.Context, extraEnv []s
 }
 
 func (m *CLIBrewPackageManager) withMutationLock(ctx context.Context, fn func() error) error {
-	lock, err := lockHostFile("brew:" + m.brewPath)
+	brewOperationMutex.Lock()
+	defer brewOperationMutex.Unlock()
+
+	lock, err := lockHostFileContext(ctx, "brew:"+m.brewPath)
 	if err != nil {
 		return err
 	}
 	defer lock.close()
+	defer m.invalidateStatusCache()
 
 	select {
 	case <-ctx.Done():
@@ -276,11 +326,64 @@ func (m *CLIBrewPackageManager) withMutationLock(ctx context.Context, fn func() 
 	return fn()
 }
 
+func (m *CLIBrewPackageManager) installedTaps(ctx context.Context) (map[string]struct{}, error) {
+	m.cacheMu.RLock()
+	generation := m.cacheGeneration
+	if m.taps != nil {
+		taps := m.taps
+		m.cacheMu.RUnlock()
+		return taps, nil
+	}
+	m.cacheMu.RUnlock()
+
+	value, err, _ := m.tapLoad.Do(strconv.FormatUint(generation, 10), func() (any, error) {
+		brewOperationMutex.RLock()
+		defer brewOperationMutex.RUnlock()
+
+		out, err := m.run(ctx, "tap")
+		if err != nil {
+			return nil, err
+		}
+		taps := make(map[string]struct{})
+		for _, tap := range strings.Fields(string(out)) {
+			taps[tap] = struct{}{}
+		}
+
+		m.cacheMu.Lock()
+		if m.cacheGeneration == generation {
+			m.taps = taps
+		}
+		m.cacheMu.Unlock()
+		return taps, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	taps, ok := value.(map[string]struct{})
+	if !ok {
+		return nil, fmt.Errorf("unexpected Homebrew tap result %T", value)
+	}
+	return taps, nil
+}
+
+func (m *CLIBrewPackageManager) invalidateStatusCache() {
+	m.cacheMu.Lock()
+	m.cacheGeneration++
+	m.taps = nil
+	m.statuses = make(map[string]BrewPackageStatus)
+	m.cacheMu.Unlock()
+}
+
+func cloneBrewPackageStatus(status BrewPackageStatus) BrewPackageStatus {
+	status.AppPaths = append([]string(nil), status.AppPaths...)
+	return status
+}
+
 func (m *CLIBrewPackageManager) NeedsPrivilegeEscalation() bool {
 	return os.Geteuid() != 0 && m.sudoPath != ""
 }
 
-func (m *CLIBrewPackageManager) keepSudoAlive(ctx context.Context) {
+func (m *CLIBrewPackageManager) keepSudoAlive(ctx context.Context, generation uint64) {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
@@ -289,7 +392,10 @@ func (m *CLIBrewPackageManager) keepSudoAlive(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_ = m.validateSudo(ctx)
+			if err := m.validateSudo(ctx); err != nil {
+				deactivateBrewSudoLease(generation)
+				return
+			}
 		}
 	}
 }
@@ -306,7 +412,10 @@ func (m *CLIBrewPackageManager) ensureCaskSudoLease(ctx context.Context, reason 
 	defer brewSudoLease.mu.Unlock()
 
 	if brewSudoLease.active {
-		return nil
+		if err := m.validateSudo(ctx); err == nil {
+			return nil
+		}
+		stopBrewSudoLeaseLocked()
 	}
 
 	if err := m.validateSudo(ctx); err == nil {
@@ -327,8 +436,30 @@ func (m *CLIBrewPackageManager) startSudoKeepAliveLocked() {
 		return
 	}
 
+	keepAliveCtx, cancel := context.WithCancel(context.Background())
+	brewSudoLease.generation++
+	generation := brewSudoLease.generation
 	brewSudoLease.active = true
-	go m.keepSudoAlive(context.Background())
+	brewSudoLease.cancel = cancel
+	go m.keepSudoAlive(keepAliveCtx, generation)
+}
+
+func stopBrewSudoLeaseLocked() {
+	if brewSudoLease.cancel != nil {
+		brewSudoLease.cancel()
+	}
+	brewSudoLease.active = false
+	brewSudoLease.cancel = nil
+	brewSudoLease.generation++
+}
+
+func deactivateBrewSudoLease(generation uint64) {
+	brewSudoLease.mu.Lock()
+	defer brewSudoLease.mu.Unlock()
+	if !brewSudoLease.active || brewSudoLease.generation != generation {
+		return
+	}
+	stopBrewSudoLeaseLocked()
 }
 
 func (m *CLIBrewPackageManager) validateSudo(ctx context.Context) error {

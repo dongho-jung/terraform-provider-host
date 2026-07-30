@@ -135,7 +135,7 @@ func TestHostSudoersCreateRejectsUnsafeCommandBeforePrivilegedCalls(t *testing.T
 	}
 	manager := &recordingHostSystemFileManager{}
 	validator := &recordingHostSudoersValidator{}
-	r := &HostSudoersRuleResource{manager: manager, validator: validator, targetUser: "dongho"}
+	r := &HostSudoersRuleResource{manager: manager, validator: validator}
 	var schemaResp frameworkresource.SchemaResponse
 	r.Schema(ctx, frameworkresource.SchemaRequest{}, &schemaResp)
 	if schemaResp.Diagnostics.HasError() {
@@ -205,7 +205,7 @@ func TestHostSudoersReadWarnsOnUnsafeCommandWithoutBlockingStateRefresh(t *testi
 			Group:          hostSystemRootGroup(),
 		},
 	}
-	r := &HostSudoersRuleResource{manager: manager, validator: &recordingHostSudoersValidator{}, targetUser: "dongho"}
+	r := &HostSudoersRuleResource{manager: manager, validator: &recordingHostSudoersValidator{}}
 	var schemaResp frameworkresource.SchemaResponse
 	r.Schema(ctx, frameworkresource.SchemaRequest{}, &schemaResp)
 	if schemaResp.Diagnostics.HasError() {
@@ -242,16 +242,6 @@ func TestHostSudoersReadWarnsOnUnsafeCommandWithoutBlockingStateRefresh(t *testi
 	}
 	if manager.fileCalls != 1 {
 		t.Fatalf("read file calls got %d, want 1", manager.fileCalls)
-	}
-}
-
-func TestHostSudoersRuleRequiresProviderTargetUser(t *testing.T) {
-	resource := &HostSudoersRuleResource{targetUser: "dongho"}
-	if err := resource.validateTargetUser(HostSudoersRuleResourceModel{User: types.StringValue("dongho")}); err != nil {
-		t.Fatalf("target user rejected: %s", err)
-	}
-	if err := resource.validateTargetUser(HostSudoersRuleResourceModel{User: types.StringValue("other")}); err == nil {
-		t.Fatal("non-target sudoers user was accepted")
 	}
 }
 

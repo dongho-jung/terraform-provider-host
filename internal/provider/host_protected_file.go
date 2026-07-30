@@ -3,12 +3,14 @@ package provider
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 func readProtectedFile(path string) ([]byte, bool, error) {
@@ -27,10 +29,7 @@ func writeProtectedFile(ctx context.Context, sudoPath string, path string, conte
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(path, content, mode); err != nil {
-			return err
-		}
-		return os.Chmod(path, mode)
+		return writeHostFileAtomically(path, content, mode)
 	}
 	if sudoPath == "" {
 		return fmt.Errorf("writing %s requires root privileges, but sudo was not found in PATH", path)
@@ -38,13 +37,69 @@ func writeProtectedFile(ctx context.Context, sudoPath string, path string, conte
 	if err := authenticateHostSystemSudo(ctx, sudoPath, "write", path); err != nil {
 		return err
 	}
-	if err := runProtectedFileCommand(ctx, sudoPath, nil, "mkdir", "-p", filepath.Dir(path)); err != nil {
+	if err := runProtectedFileCommand(ctx, sudoPath, "mkdir", "-p", filepath.Dir(path)); err != nil {
 		return err
 	}
-	if err := runProtectedFileCommand(ctx, sudoPath, bytes.NewReader(content), "tee", path); err != nil {
+
+	localTemp, err := os.CreateTemp("", ".terraform-provider-host-protected-*")
+	if err != nil {
+		return fmt.Errorf("create temporary protected file for %q: %w", path, err)
+	}
+	localTempPath := localTemp.Name()
+	defer func() {
+		_ = localTemp.Close()
+		_ = os.Remove(localTempPath)
+	}()
+	if _, err := localTemp.Write(content); err != nil {
+		return fmt.Errorf("write temporary protected file for %q: %w", path, err)
+	}
+	if err := localTemp.Sync(); err != nil {
+		return fmt.Errorf("sync temporary protected file for %q: %w", path, err)
+	}
+	if err := localTemp.Close(); err != nil {
+		return fmt.Errorf("close temporary protected file for %q: %w", path, err)
+	}
+
+	stageName, err := protectedFileStageName(path)
+	if err != nil {
 		return err
 	}
-	return runProtectedFileCommand(ctx, sudoPath, nil, "chmod", fmt.Sprintf("%04o", mode.Perm()), path)
+	staged := false
+	defer func() {
+		if staged {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = runProtectedFileCommand(cleanupCtx, sudoPath, "rm", "-f", stageName)
+		}
+	}()
+	if err := runProtectedFileCommand(
+		ctx,
+		sudoPath,
+		"install",
+		"-m",
+		fmt.Sprintf("%04o", mode.Perm()),
+		localTempPath,
+		stageName,
+	); err != nil {
+		return err
+	}
+	staged = true
+	if err := runProtectedFileCommand(ctx, sudoPath, "mv", "-f", stageName, path); err != nil {
+		return err
+	}
+	staged = false
+	return nil
+}
+
+func protectedFileStageName(path string) (string, error) {
+	var suffix [16]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", fmt.Errorf("read random bytes for protected file staging: %w", err)
+	}
+	return filepath.Join(
+		filepath.Dir(path),
+		"."+filepath.Base(path)+".terraform-provider-host-"+hex.EncodeToString(suffix[:]),
+	), nil
 }
 
 func removeProtectedFile(ctx context.Context, sudoPath string, path string) error {
@@ -60,13 +115,12 @@ func removeProtectedFile(ctx context.Context, sudoPath string, path string) erro
 	if err := authenticateHostSystemSudo(ctx, sudoPath, "remove", path); err != nil {
 		return err
 	}
-	return runProtectedFileCommand(ctx, sudoPath, nil, "rm", "-f", path)
+	return runProtectedFileCommand(ctx, sudoPath, "rm", "-f", path)
 }
 
-func runProtectedFileCommand(ctx context.Context, sudoPath string, stdin io.Reader, name string, args ...string) error {
-	commandArgs := append([]string{name}, args...)
+func runProtectedFileCommand(ctx context.Context, sudoPath string, name string, args ...string) error {
+	commandArgs := append([]string{"-n", "--", name}, args...)
 	cmd := exec.CommandContext(ctx, sudoPath, commandArgs...)
-	cmd.Stdin = stdin
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

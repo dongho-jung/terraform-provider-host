@@ -7,7 +7,7 @@ description: |-
 
 # host Provider
 
-The Host provider manages local machine configuration with Terraform. It is aimed at personal workstations, development hosts, and small systems where files, packages, schedules, Git checkouts, local user bootstrap, and macOS preferences for one target user should be described in HCL.
+The Host provider manages local machine configuration with Terraform. It is aimed at personal workstations, development hosts, and small systems where host-wide state and one or more users' local state should be described in HCL.
 
 ## Example Usage
 
@@ -29,33 +29,30 @@ provider "host" {
 
 ## What It Manages
 
-- Local packages through DNF, Pacman, Homebrew, and an AUR helper on Arch Linux
-- Hostname, timezone, locale, and virtual console keymap
-- Linux sysctl keys, systemd unit files, systemd service state, fstab entries, and validated sudoers drop-ins
-- Directories, whole files, file blocks, and symbolic links
-- Privileged regular files installed atomically with protected root ownership and mode
-- Git repositories checked out to host paths
-- SSH keypairs and OpenSSH client config host blocks
-- One local user and local groups for target-user bootstrap
-- Target-user cron schedules
-- macOS `defaults` keys, Dock persistent items, Login Items, CoreAudio device lookups, and CoreAudio multi-output devices
+### Common
 
-## Platform Notes
+- Host state: [hostname](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/hostname), [timezone](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/timezone), [users](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/user), [groups](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/group), [system files](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/system_file), and [sudoers rules](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/sudoers_rule)
+- User state: [directories](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/dir), [files](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/file), [file blocks](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/file_block), [symbolic links](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/link), [Git repositories](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/git_repo), [SSH keys](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/ssh_key), [SSH config hosts](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/ssh_config_host), and [cron schedules](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/schedule)
+- [Homebrew packages](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/package_brew) and their [data source](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/data-sources/package_brew)
 
-Resources use tools available on the machine running Terraform, such as `hostnamectl`, `timedatectl`, `localectl`, `systemctl`, `sysctl`, `dnf`, `pacman`, `brew`, `git`, `ssh-keygen`, `crontab`, `defaults`, `killall`, `osascript`, `swift`, and platform account-management commands. Resources that mutate protected host state may prompt through `sudo` when Terraform is not already running with the required privileges.
+### Linux
 
-`git`, `ssh-keygen`, and AUR helper executables are resolved when the corresponding operation needs them. This allows a package resource to install the executable earlier in the same apply when an explicit Terraform dependency establishes the order. Pacman itself must already be available before configuring Pacman or AUR resources.
+- Packages: [DNF](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/package_dnf) ([data source](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/data-sources/package_dnf)), [Pacman](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/package_pacman) ([data source](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/data-sources/package_pacman)), and [AUR](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/package_aur) ([helper](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/aur_helper), [data source](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/data-sources/package_aur))
+- System configuration: [locale](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/locale), [console keymap](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/keymap), [sysctl](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/sysctl), [fstab entries](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/fstab_entry), [systemd units](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/systemd_unit), and [systemd service state](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/systemd_service)
 
-Privileged `host_system_file` and `host_sudoers_rule` operations do not resolve commands from the caller's `PATH`. Their small utility allowlist is resolved from protected system directories and requires root-owned, non-writable executables and parent directories.
+### macOS
 
-The provider manages one local user per configuration. Set `target_user` to that user; user-scoped resources expand leading `~` against that user's home directory and schedules use that user's crontab. If the target user already exists, `home_dir` is discovered automatically. If you are bootstrapping the target user with `host_user`, set `home_dir` explicitly, apply `host_user` first, then run a normal apply.
+- Desktop configuration: [individual preferences](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/mac_setting), [grouped preferences](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/mac_settings), [Dock apps](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/mac_dock_app), [Dock folders](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/mac_dock_folder), and [Login Items](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/mac_login_item)
+- CoreAudio: [multi-output devices](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/resources/mac_audio_multi_output) and the [audio device data source](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/data-sources/mac_audio_device)
 
-## Runtime Metadata
+## Ownership Scopes
 
-Generated metadata such as file-block state and schedule scripts defaults to `~/.local/state/terraform-provider-host` under the target user's home directory. This stable location does not depend on the Terraform working directory.
+[System-scoped objects](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts#scope-reference) manage host-wide state. [User-scoped objects](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts#user-context) require a [`target_user`](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts#user-context); a provider configured with it can manage both scopes.
 
-## AUR Trust Boundary
+See [Scopes and user contexts](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts) for the full classification, multi-user operation, bootstrap flow, and macOS desktop-session requirements.
 
-`host_aur_helper` bootstraps `yay` or `paru` from the current AUR Git HEAD, and `host_package_aur` executes the selected helper as the invoking user. AUR repositories and `PKGBUILD` files are user-contributed and mutable; builds execute unsandboxed code. Review and trust each package before applying it. The provider verifies Pacman ownership of helper executables, but that verification is not a source-code audit.
+## Further Guidance
 
-Available provider arguments are `runtime_dir`, `target_user`, and `home_dir`.
+- [Runtime and security](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/runtime-and-security)
+
+Provider arguments are [`target_user`](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts#user-context), [`home_dir`](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts#user-context), and [`runtime_dir`](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/runtime-and-security#runtime-metadata).

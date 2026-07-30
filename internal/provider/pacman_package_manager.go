@@ -13,10 +13,9 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// pacmanMutateMutex serializes mutating pacman invocations across the whole
-// provider process. pacman takes an exclusive database lock (db.lck), so
-// concurrent -S/-D/-R calls (which Terraform issues in parallel for
-// independent resources) would otherwise fail with "unable to lock database".
+// pacmanMutateMutex serializes mutating pacman invocations across the provider
+// process. Each mutation also takes a file lock for coordination with other
+// Terraform provider processes before Pacman reaches its exclusive db.lck.
 // Read-only queries do not take the lock and are left unserialized.
 var pacmanMutateMutex sync.Mutex
 
@@ -293,10 +292,21 @@ func (m *CLIPacmanPackageManager) runOptional(ctx context.Context, name string, 
 }
 
 func (m *CLIPacmanPackageManager) run(ctx context.Context, mutate bool, name string, args ...string) ([]byte, error) {
+	var mutationLock *lockedHostFile
 	if mutate {
 		pacmanMutateMutex.Lock()
 		defer pacmanMutateMutex.Unlock()
+
+		var err error
+		mutationLock, err = m.lockMutation(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer mutationLock.close()
 		defer m.invalidateStatusCache()
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 	}
 
 	commandName := name
@@ -315,6 +325,7 @@ func (m *CLIPacmanPackageManager) run(ctx context.Context, mutate bool, name str
 	}
 
 	cmd := exec.CommandContext(ctx, commandName, commandArgs...)
+	cmd.Env = environmentWithCLocale(cmd.Environ())
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -326,6 +337,10 @@ func (m *CLIPacmanPackageManager) run(ctx context.Context, mutate bool, name str
 	}
 
 	return stdout.Bytes(), nil
+}
+
+func (m *CLIPacmanPackageManager) lockMutation(ctx context.Context) (*lockedHostFile, error) {
+	return lockHostFileContext(ctx, "pacman:"+m.pacmanPath)
 }
 
 func (m *CLIPacmanPackageManager) authenticateSudo(ctx context.Context, name string, args ...string) error {

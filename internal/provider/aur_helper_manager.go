@@ -180,7 +180,15 @@ func (m *CLIAURHelperManager) ensureHelper(ctx context.Context, spec AURHelperSp
 	err = func() error {
 		pacmanMutateMutex.Lock()
 		defer pacmanMutateMutex.Unlock()
+		mutationLock, err := m.pacman.lockMutation(ctx)
+		if err != nil {
+			return err
+		}
+		defer mutationLock.close()
 		defer m.pacman.invalidateStatusCache()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return runAURHelperBootstrapCommand(ctx, repositoryPath, makepkgPath, makepkgArgs...)
 	}()
 	if err != nil {
@@ -348,6 +356,7 @@ func validateAURHelperName(name string) error {
 
 func runAURHelperBootstrapCommand(ctx context.Context, dir string, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = environmentWithCLocale(cmd.Environ())
 	cmd.Dir = dir
 
 	var stdout bytes.Buffer

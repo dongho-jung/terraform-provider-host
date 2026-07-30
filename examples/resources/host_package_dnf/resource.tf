@@ -4,7 +4,8 @@ resource "host_package_dnf" "git" {
 }
 
 resource "host_package_dnf" "neovim" {
-  name = "neovim"
+  name           = "neovim"
+  install_reason = "user"
 }
 
 resource "host_package_dnf" "ripgrep" {

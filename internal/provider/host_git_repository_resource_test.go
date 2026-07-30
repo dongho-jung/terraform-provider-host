@@ -24,7 +24,7 @@ func TestHostGitRepositoryConfigureAllowsMissingGit(t *testing.T) {
 	resource := &HostGitRepositoryResource{}
 	var resp frameworkresource.ConfigureResponse
 	resource.Configure(t.Context(), frameworkresource.ConfigureRequest{
-		ProviderData: HostProviderData{HomeDir: t.TempDir()},
+		ProviderData: HostProviderData{TargetUser: "test", HomeDir: t.TempDir()},
 	}, &resp)
 	if resp.Diagnostics.HasError() {
 		t.Fatalf("configure diagnostics: %v", resp.Diagnostics)
@@ -109,6 +109,67 @@ func TestHostGitRepositoryModifyPlanDefersMissingGit(t *testing.T) {
 	}
 }
 
+func TestHostGitRepositoryModifyPlanReusesRefreshedRemoteCommit(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	resource := &HostGitRepositoryResource{gitPath: filepath.Join(t.TempDir(), "must-not-run")}
+	var schemaResp frameworkresource.SchemaResponse
+	resource.Schema(ctx, frameworkresource.SchemaRequest{}, &schemaResp)
+	if schemaResp.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", schemaResp.Diagnostics)
+	}
+
+	path := filepath.Join(t.TempDir(), "checkout")
+	const remoteCommit = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	stateModel := HostGitRepositoryResourceModel{
+		ID:              types.StringValue(path),
+		URL:             types.StringValue("https://example.com/repository.git"),
+		Path:            types.StringValue(path),
+		PathResolved:    types.StringValue(path),
+		Ref:             types.StringValue("main"),
+		RemoteName:      types.StringValue("origin"),
+		TrackRemote:     types.BoolValue(true),
+		Recursive:       types.BoolValue(false),
+		Force:           types.BoolValue(false),
+		DeleteOnDestroy: types.BoolValue(true),
+		Commit:          types.StringValue("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+		RemoteCommit:    types.StringValue(remoteCommit),
+		Dirty:           types.BoolValue(false),
+	}
+	state := tfsdk.State{
+		Schema: schemaResp.Schema,
+		Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(ctx), nil),
+	}
+	if diags := state.Set(ctx, &stateModel); diags.HasError() {
+		t.Fatalf("encode state: %v", diags)
+	}
+
+	planModel := stateModel
+	planModel.Commit = types.StringUnknown()
+	planModel.RemoteCommit = types.StringUnknown()
+	plan := tfsdk.Plan{
+		Schema: schemaResp.Schema,
+		Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(ctx), nil),
+	}
+	if diags := plan.Set(ctx, &planModel); diags.HasError() {
+		t.Fatalf("encode plan: %v", diags)
+	}
+
+	resp := frameworkresource.ModifyPlanResponse{Plan: plan}
+	resource.ModifyPlan(ctx, frameworkresource.ModifyPlanRequest{State: state, Plan: plan}, &resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("modify plan unexpectedly tried the remote: %v", resp.Diagnostics)
+	}
+	var got HostGitRepositoryResourceModel
+	if diags := resp.Plan.Get(ctx, &got); diags.HasError() {
+		t.Fatalf("decode plan: %v", diags)
+	}
+	if got.RemoteCommit.ValueString() != remoteCommit || got.Commit.ValueString() != remoteCommit {
+		t.Fatalf("planned commits got commit=%#v remote=%#v", got.Commit, got.RemoteCommit)
+	}
+}
+
 func TestSelectGitRemoteRefCommitPrefersBranch(t *testing.T) {
 	t.Parallel()
 
@@ -119,6 +180,14 @@ func TestSelectGitRemoteRefCommitPrefersBranch(t *testing.T) {
 	}
 	if got != "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestSelectGitRemoteRefCommitRejectsInvalidObjectID(t *testing.T) {
+	t.Parallel()
+
+	if commit, ok := selectGitRemoteRefCommit("--upload-pack=malicious\trefs/heads/main\n", "main"); ok {
+		t.Fatalf("accepted invalid remote object ID %q", commit)
 	}
 }
 
@@ -171,7 +240,8 @@ func TestHostGitRepositorySyncClonesTrackedRef(t *testing.T) {
 	want := stringTrimSpace(runTestGit(t, gitPath, source, "rev-parse", "HEAD"))
 
 	destination := filepath.Join(t.TempDir(), "checkout")
-	resource := &HostGitRepositoryResource{gitPath: gitPath}
+	recordingGitPath := writeRecordingGit(t, gitPath)
+	resource := &HostGitRepositoryResource{gitPath: recordingGitPath}
 	state, err := resource.syncRepository(t.Context(), HostGitRepositoryResourceModel{
 		URL:             types.StringValue(source),
 		Path:            types.StringValue(destination),
@@ -181,6 +251,7 @@ func TestHostGitRepositorySyncClonesTrackedRef(t *testing.T) {
 		Recursive:       types.BoolValue(false),
 		Force:           types.BoolValue(false),
 		DeleteOnDestroy: types.BoolValue(true),
+		RemoteCommit:    types.StringValue(want),
 	})
 	if err != nil {
 		t.Fatalf("syncRepository: %s", err)
@@ -190,6 +261,19 @@ func TestHostGitRepositorySyncClonesTrackedRef(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(destination, ".git")); err != nil {
 		t.Fatalf("expected clone: %s", err)
+	}
+	log, err := os.ReadFile(recordingGitPath + ".log")
+	if err != nil {
+		t.Fatalf("read recording Git log: %s", err)
+	}
+	remoteQueries := 0
+	for _, line := range splitNonEmptyLines(string(log)) {
+		if strings.HasPrefix(line, "ls-remote ") {
+			remoteQueries++
+		}
+	}
+	if remoteQueries != 0 {
+		t.Fatalf("ls-remote calls got %d, want 0 for a planned remote commit: %s", remoteQueries, log)
 	}
 }
 
@@ -426,4 +510,17 @@ func bytesTrimSpace(value []byte) []byte {
 		value = value[:len(value)-1]
 	}
 	return value
+}
+
+func writeRecordingGit(t *testing.T, gitPath string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "git")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> \"${0}.log\"\n" +
+		"exec " + shellQuote(gitPath) + " \"$@\"\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write recording Git: %s", err)
+	}
+	return path
 }

@@ -18,7 +18,7 @@ func TestHostSSHKeyConfigureAllowsMissingSSHKeygen(t *testing.T) {
 	resource := &HostSSHKeyResource{}
 	var resp frameworkresource.ConfigureResponse
 	resource.Configure(t.Context(), frameworkresource.ConfigureRequest{
-		ProviderData: HostProviderData{HomeDir: t.TempDir()},
+		ProviderData: HostProviderData{TargetUser: "test", HomeDir: t.TempDir()},
 	}, &resp)
 	if resp.Diagnostics.HasError() {
 		t.Fatalf("configure diagnostics: %v", resp.Diagnostics)

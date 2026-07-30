@@ -8,16 +8,16 @@ description: |-
 
 # {{.Name}} ({{.Type}})
 
-Manages one local host user without managing its password.
+Manages one local host user without managing its password. This is a system-scoped resource and may manage any literal local user; provider `target_user` is not required and does not restrict `name`.
 
-Use this resource to bootstrap the same user configured as the provider `target_user`. The provider cannot depend on a resource from its own configuration, so a fresh machine needs a two-step bootstrap when the target user does not exist yet:
+To bootstrap a user that will later own user-scoped resources, use a two-step apply because provider configuration cannot depend on a resource from the same configuration:
 
 ```shell
 terraform apply -target=host_user.target
 terraform apply
 ```
 
-For that first apply, set provider `home_dir` explicitly so user-scoped paths can resolve before the account exists.
+For the first apply, either use a system-only provider and add `target_user` afterward, or configure both `target_user` and an explicit `home_dir` so the provider can initialize before the account exists.
 
 ## Example Usage
 

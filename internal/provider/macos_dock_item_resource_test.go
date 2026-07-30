@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
 type fakeMacOSDockManager struct {
@@ -131,5 +133,54 @@ func TestMacOSDockItemImportModelRejectsMissingLiveItem(t *testing.T) {
 
 	if _, err := resource.importModel(t.Context(), chromePath); err == nil {
 		t.Fatal("expected missing live Dock item to fail")
+	}
+}
+
+func TestMacOSDockItemRefreshDetectsLiveDriftWithoutDiscardingManagedID(t *testing.T) {
+	t.Parallel()
+
+	runtimeDir := t.TempDir()
+	id := "hdi-11111111111111111111111111111111"
+	appPath := "/Applications/Test.app"
+	if err := writeMacOSDockManagedStateForRuntime(macOSDockManagedState{
+		Apps: map[string]macOSDockManagedItemState{
+			id: {Path: appPath, Priority: 10},
+		},
+	}, runtimeDir); err != nil {
+		t.Fatalf("write managed state: %s", err)
+	}
+
+	manager := &fakeMacOSDockManager{}
+	resource := MacOSDockItemResource{
+		kind:       macOSDockItemKindApp,
+		manager:    manager,
+		runtimeDir: runtimeDir,
+	}
+	state := MacOSDockItemResourceModel{
+		ID:           types.StringValue(id),
+		Path:         types.StringValue(appPath),
+		PathResolved: types.StringValue(appPath),
+		Priority:     types.Int64Value(10),
+		Restart:      types.BoolValue(true),
+	}
+
+	drifted, exists, err := resource.refreshModel(t.Context(), state)
+	if err != nil {
+		t.Fatalf("refresh drifted item: %s", err)
+	}
+	if !exists {
+		t.Fatal("managed item should retain its stable ID while live Dock is repaired")
+	}
+	if !drifted.PathResolved.IsNull() {
+		t.Fatalf("drifted path_resolved got %#v, want null", drifted.PathResolved)
+	}
+
+	manager.dock.Apps = []string{appPath}
+	converged, exists, err := resource.refreshModel(t.Context(), state)
+	if err != nil {
+		t.Fatalf("refresh converged item: %s", err)
+	}
+	if !exists || converged.PathResolved.ValueString() != appPath {
+		t.Fatalf("converged item got exists=%t state=%#v", exists, converged)
 	}
 }

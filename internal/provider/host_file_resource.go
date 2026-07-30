@@ -77,6 +77,9 @@ func (r *HostFileResource) Configure(ctx context.Context, req resource.Configure
 		resp.Diagnostics.AddError("Unexpected provider data", fmt.Sprintf("Expected HostProviderData, got %T.", req.ProviderData))
 		return
 	}
+	if !requireHostUserScope(data, "host_file", &resp.Diagnostics) {
+		return
+	}
 	r.homeDir = data.HomeDir
 	r.runtimeDir = data.RuntimeDir
 }
@@ -447,6 +450,33 @@ func (r *HostFileResource) Delete(ctx context.Context, req resource.DeleteReques
 
 func (r *HostFileResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, tfpath.Root("path"), req, resp)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	var content string
+	var exists bool
+	if err := withLockedHostFileForHome(ctx, r.homeDir, req.ID, func(path string) error {
+		var err error
+		content, exists, err = readHostFileContent(path)
+		return err
+	}); err != nil {
+		resp.Diagnostics.AddError("Failed to import host file", err.Error())
+		return
+	}
+	if !exists {
+		resp.Diagnostics.AddError("Failed to import host file", fmt.Sprintf("Host file %q does not exist.", req.ID))
+		return
+	}
+
+	// A path-only import has no block ownership metadata. Treat the existing
+	// file as whole-file content so the first refresh cannot mistake it for an
+	// empty block-managed file and remove it from state.
+	resp.Diagnostics.Append(resp.State.SetAttribute(
+		ctx,
+		tfpath.Root("content"),
+		types.StringValue(trimRenderedManagedBlockBody(content)),
+	)...)
 }
 
 func hostFileBlockSpecs(ctx context.Context, blocks types.List) ([]hostFileBlockSpec, diag.Diagnostics) {

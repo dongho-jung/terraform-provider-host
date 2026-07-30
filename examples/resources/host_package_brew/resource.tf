@@ -8,7 +8,8 @@ resource "host_package_brew" "terraform_ls" {
 }
 
 resource "host_package_brew" "neovim" {
-  name = "neovim"
+  name           = "neovim"
+  install_reason = "on_request"
 }
 
 resource "host_package_brew" "starship" {

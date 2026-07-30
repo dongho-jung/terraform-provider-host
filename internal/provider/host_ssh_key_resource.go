@@ -110,6 +110,9 @@ func (r *HostSSHKeyResource) Configure(ctx context.Context, req resource.Configu
 
 	switch data := req.ProviderData.(type) {
 	case HostProviderData:
+		if !requireHostUserScope(data, "host_ssh_key", &resp.Diagnostics) {
+			return
+		}
 		r.homeDir = data.HomeDir
 		r.manager = data.SSHKeyManager
 		if r.manager == nil {

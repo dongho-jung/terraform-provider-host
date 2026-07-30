@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	osuser "os/user"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -394,6 +393,11 @@ func (m *CLICronScheduleManager) syncCronEntry(ctx context.Context, spec HostSch
 	// transaction so parallel schedule resources cannot overwrite each other.
 	m.crontabWriteMu.Lock()
 	defer m.crontabWriteMu.Unlock()
+	lock, err := lockHostFileContext(ctx, "crontab:"+spec.User)
+	if err != nil {
+		return err
+	}
+	defer lock.close()
 
 	if err := m.ensureCrontab(ctx); err != nil {
 		return err
@@ -423,6 +427,11 @@ func (m *CLICronScheduleManager) syncCronEntry(ctx context.Context, spec HostSch
 func (m *CLICronScheduleManager) removeCronEntry(ctx context.Context, spec HostScheduleSpec, status HostScheduleStatus) error {
 	m.crontabWriteMu.Lock()
 	defer m.crontabWriteMu.Unlock()
+	lock, err := lockHostFileContext(ctx, "crontab:"+spec.User)
+	if err != nil {
+		return err
+	}
+	defer lock.close()
 
 	if !m.resolveCrontabPath() {
 		return nil
@@ -577,7 +586,9 @@ func (m *CLICronScheduleManager) crontabCommand(ctx context.Context, targetUser 
 	}
 
 	display := strings.TrimSpace(commandName + " " + strings.Join(commandArgs, " "))
-	return exec.CommandContext(ctx, commandName, commandArgs...), display, nil
+	cmd := exec.CommandContext(ctx, commandName, commandArgs...)
+	cmd.Env = environmentWithCLocale(cmd.Environ())
+	return cmd, display, nil
 }
 
 func hostScheduleCrontabArgs(targetUser string, currentUser string, args ...string) ([]string, bool) {
@@ -751,23 +762,6 @@ func validateHostScheduleTargetUser(targetUser string) error {
 		return fmt.Errorf("target user must be configured on the provider")
 	}
 	return validateHostUserName(targetUser)
-}
-
-func currentHostUsername() (string, error) {
-	current, err := osuser.Current()
-	if err != nil {
-		return "", fmt.Errorf("resolve current user: %w", err)
-	}
-	if strings.TrimSpace(current.Username) == "" {
-		return "", fmt.Errorf("resolve current user: username is empty")
-	}
-
-	username := current.Username
-	if before, after, ok := strings.Cut(username, "\\"); ok && before != "" && after != "" {
-		username = after
-	}
-
-	return username, nil
 }
 
 func validateScheduleShell(shell string) error {

@@ -33,6 +33,7 @@ func (m *convergingPackageManager) UpgradePackages(ctx context.Context, names []
 func (m *convergingPackageManager) MarkUserPackages(ctx context.Context, names []string) error {
 	m.marked = append(m.marked, names...)
 	m.status.ReasonUser = true
+	m.status.InstallReason = dnfPackageInstallReasonUser
 	return nil
 }
 

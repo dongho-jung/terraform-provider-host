@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	frameworkprovider "github.com/hashicorp/terraform-plugin-framework/provider"
+	providerschema "github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 )
@@ -26,6 +27,25 @@ func TestProviderMetadata(t *testing.T) {
 
 	if resp.Version != "test" {
 		t.Fatalf("expected provider version test, got %q", resp.Version)
+	}
+}
+
+func TestProviderTargetUserIsOptional(t *testing.T) {
+	t.Parallel()
+
+	provider := New("test")()
+	var resp frameworkprovider.SchemaResponse
+	provider.Schema(t.Context(), frameworkprovider.SchemaRequest{}, &resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", resp.Diagnostics)
+	}
+
+	targetUser, ok := resp.Schema.Attributes["target_user"].(providerschema.StringAttribute)
+	if !ok {
+		t.Fatalf("target_user attribute has type %T", resp.Schema.Attributes["target_user"])
+	}
+	if !targetUser.Optional || targetUser.Required {
+		t.Fatalf("target_user Optional=%t Required=%t, want optional only", targetUser.Optional, targetUser.Required)
 	}
 }
 

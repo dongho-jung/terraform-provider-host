@@ -88,6 +88,9 @@ func (r *MacOSDefaultsResource) Configure(ctx context.Context, req resource.Conf
 
 	switch data := req.ProviderData.(type) {
 	case HostProviderData:
+		if !requireHostUserScope(data, "host_mac_settings", &resp.Diagnostics) {
+			return
+		}
 		if data.MacOSDefaultsManager == nil {
 			resp.Diagnostics.AddError("macOS settings unavailable", "`host_mac_settings` requires the macOS `defaults` command.")
 			return
@@ -285,6 +288,10 @@ func (r *MacOSDefaultsResource) updateDefaults(ctx context.Context, prior MacOSD
 	for _, spec := range planSpecs {
 		plannedIDs[spec.Spec.ID] = struct{}{}
 	}
+	priorByID := make(map[string]macOSDefaultsNamedSpec, len(priorSpecs))
+	for _, spec := range priorSpecs {
+		priorByID[spec.Spec.ID] = spec
+	}
 
 	var restartProcesses []string
 	for _, spec := range priorSpecs {
@@ -298,6 +305,10 @@ func (r *MacOSDefaultsResource) updateDefaults(ctx context.Context, prior MacOSD
 	}
 
 	for _, spec := range planSpecs {
+		if priorSpec, exists := priorByID[spec.Spec.ID]; exists &&
+			macOSDefaultValuesEqual(priorSpec.Spec.Value, spec.Spec.Value) {
+			continue
+		}
 		if err := r.manager.WriteDefault(ctx, spec.Spec); err != nil {
 			return plan, err
 		}

@@ -15,7 +15,9 @@ var (
 )
 
 type MacOSAudioDeviceDataSource struct {
-	manager MacOSAudioManager
+	manager                 MacOSAudioManager
+	targetUser              string
+	desktopSessionValidator HostDesktopSessionValidator
 }
 
 type MacOSAudioDeviceDataSourceModel struct {
@@ -38,7 +40,7 @@ func (d *MacOSAudioDeviceDataSource) Metadata(ctx context.Context, req datasourc
 
 func (d *MacOSAudioDeviceDataSource) Schema(ctx context.Context, req datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Reads an existing macOS CoreAudio device by UID, display name, or built-in output selector.",
+		MarkdownDescription: "Reads an existing macOS CoreAudio device by UID, display name, or built-in output selector in the target user's active desktop session. Terraform must run as provider `target_user`, and that user must own the active macOS console session.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,
@@ -81,11 +83,16 @@ func (d *MacOSAudioDeviceDataSource) Configure(ctx context.Context, req datasour
 
 	switch data := req.ProviderData.(type) {
 	case HostProviderData:
+		if !requireHostUserScope(data, "data.host_mac_audio_device", &resp.Diagnostics) {
+			return
+		}
 		if data.MacOSAudioManager == nil {
-			resp.Diagnostics.AddError("macOS audio unavailable", "`host_mac_audio_device` requires the macOS `swift` command to access CoreAudio.")
+			resp.Diagnostics.AddError("macOS audio unavailable", "`host_mac_audio_device` requires the macOS `swiftc` compiler to access CoreAudio.")
 			return
 		}
 		d.manager = data.MacOSAudioManager
+		d.targetUser = data.TargetUser
+		d.desktopSessionValidator = data.DesktopSessionValidator
 	case MacOSAudioManager:
 		d.manager = data
 	default:
@@ -97,6 +104,9 @@ func (d *MacOSAudioDeviceDataSource) Configure(ctx context.Context, req datasour
 }
 
 func (d *MacOSAudioDeviceDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	if !requireHostDesktopSession(d.targetUser, d.desktopSessionValidator, &resp.Diagnostics) {
+		return
+	}
 	var config MacOSAudioDeviceDataSourceModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
@@ -104,7 +114,7 @@ func (d *MacOSAudioDeviceDataSource) Read(ctx context.Context, req datasource.Re
 	}
 
 	if d.manager == nil {
-		resp.Diagnostics.AddError("macOS audio unavailable", "`host_mac_audio_device` requires the macOS `swift` command to access CoreAudio.")
+		resp.Diagnostics.AddError("macOS audio unavailable", "`host_mac_audio_device` requires the macOS `swiftc` compiler to access CoreAudio.")
 		return
 	}
 

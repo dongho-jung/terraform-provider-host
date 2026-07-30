@@ -373,6 +373,51 @@ func TestMacOSDefaultsResourceUpdateDeletesRemovedDefaultsWhenConfigured(t *test
 	}
 }
 
+func TestMacOSDefaultsResourceUpdateWritesOnlyChangedDefaults(t *testing.T) {
+	t.Parallel()
+
+	prior := mustMacOSDefaultsMap(t, map[string]MacOSDefaultsDefaultModel{
+		"autohide": {
+			Domain: mustMacOSSettingDomain(t, "com.apple.dock"),
+			Key:    types.StringValue("autohide"),
+			Value:  mustMacOSDefaultDynamic(t, macOSDefaultValue{Type: macOSDefaultValueBool, Bool: false}),
+		},
+		"show_recents": {
+			Domain: mustMacOSSettingDomain(t, "com.apple.dock"),
+			Key:    types.StringValue("show-recents"),
+			Value:  mustMacOSDefaultDynamic(t, macOSDefaultValue{Type: macOSDefaultValueBool, Bool: false}),
+		},
+	})
+	plan := mustMacOSDefaultsMap(t, map[string]MacOSDefaultsDefaultModel{
+		"autohide": {
+			Domain: mustMacOSSettingDomain(t, "com.apple.dock"),
+			Key:    types.StringValue("autohide"),
+			Value:  mustMacOSDefaultDynamic(t, macOSDefaultValue{Type: macOSDefaultValueBool, Bool: true}),
+		},
+		"show_recents": {
+			Domain: mustMacOSSettingDomain(t, "com.apple.dock"),
+			Key:    types.StringValue("show-recents"),
+			Value:  mustMacOSDefaultDynamic(t, macOSDefaultValue{Type: macOSDefaultValueBool, Bool: false}),
+		},
+	})
+
+	manager := &recordingMacOSDefaultsManager{}
+	resource := &MacOSDefaultsResource{manager: manager}
+	if _, err := resource.updateDefaults(
+		t.Context(),
+		MacOSDefaultsResourceModel{Settings: prior},
+		MacOSDefaultsResourceModel{Settings: plan},
+	); err != nil {
+		t.Fatalf("update defaults: %s", err)
+	}
+	if len(manager.writes) != 1 || manager.writes[0].Key != "autohide" {
+		t.Fatalf("writes got %#v, want only autohide", manager.writes)
+	}
+	if !reflect.DeepEqual(manager.restarts, []string{"Dock"}) {
+		t.Fatalf("restarts got %#v, want Dock once", manager.restarts)
+	}
+}
+
 func mustMacOSDefaultsMap(t *testing.T, values map[string]MacOSDefaultsDefaultModel) types.Dynamic {
 	t.Helper()
 

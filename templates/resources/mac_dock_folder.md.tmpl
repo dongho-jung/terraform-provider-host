@@ -10,6 +10,8 @@ description: |-
 
 Manages one folder in the macOS Dock persistent folders section.
 
+Terraform must run as provider `target_user`, and that user must own the active macOS desktop session. If this resource blocks an apply for another or inactive user, log in as that user and run Terraform from a terminal in the desktop session without `sudo`. Use `terraform apply -target=<unaffected-resource-address>` only when specific unaffected resources must be staged first.
+
 ## Example Usage
 
 {{ tffile "examples/resources/host_mac_dock_folder/resource.tf" }}

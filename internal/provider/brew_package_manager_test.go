@@ -1,6 +1,12 @@
 package provider
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+)
 
 func TestParseBrewFormulaStatus(t *testing.T) {
 	t.Parallel()
@@ -160,4 +166,127 @@ func TestBrewCaskAppPathsIgnoresNonAppArtifacts(t *testing.T) {
 	if len(status.AppPaths) != len(want) || status.AppPaths[0] != want[0] {
 		t.Fatalf("app paths got %#v, want %#v", status.AppPaths, want)
 	}
+}
+
+func TestCLIBrewPackageManagerCachesTapsAndPackageStatus(t *testing.T) {
+	t.Parallel()
+
+	brewPath := writeMockBrew(t)
+	manager := NewCLIBrewPackageManager(brewPath, "")
+
+	start := make(chan struct{})
+	errs := make(chan error, 16)
+	var wg sync.WaitGroup
+	for range 8 {
+		for _, tap := range []string{"homebrew/core", "custom/tools"} {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				_, err := manager.TapInstalled(t.Context(), tap)
+				errs <- err
+			}()
+		}
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("tap status: %s", err)
+		}
+	}
+	if got := mockBrewCommandCount(t, brewPath, "tap"); got != 1 {
+		t.Fatalf("brew tap calls got %d, want 1", got)
+	}
+
+	for range 2 {
+		status, err := manager.PackageStatus(t.Context(), "bat", brewPackageTypeFormula)
+		if err != nil {
+			t.Fatalf("package status: %s", err)
+		}
+		if status.CandidateVersion != "0.26.1" {
+			t.Fatalf("unexpected package status: %#v", status)
+		}
+	}
+	if got := mockBrewCommandCount(t, brewPath, "info "); got != 1 {
+		t.Fatalf("brew info calls got %d, want 1", got)
+	}
+}
+
+func TestCLIBrewPackageManagerMutationInvalidatesStatus(t *testing.T) {
+	t.Parallel()
+
+	brewPath := writeMockBrew(t)
+	manager := NewCLIBrewPackageManager(brewPath, "")
+
+	before, err := manager.PackageStatus(t.Context(), "bat", brewPackageTypeFormula)
+	if err != nil {
+		t.Fatalf("status before install: %s", err)
+	}
+	if before.Installed {
+		t.Fatal("bat should initially be absent")
+	}
+	if err := manager.InstallPackage(t.Context(), "bat", brewPackageTypeFormula); err != nil {
+		t.Fatalf("install package: %s", err)
+	}
+	after, err := manager.PackageStatus(t.Context(), "bat", brewPackageTypeFormula)
+	if err != nil {
+		t.Fatalf("status after install: %s", err)
+	}
+	if !after.Installed {
+		t.Fatal("cache did not observe package after mutation")
+	}
+	if got := mockBrewCommandCount(t, brewPath, "info "); got != 2 {
+		t.Fatalf("brew info calls got %d, want 2 after invalidation", got)
+	}
+}
+
+func writeMockBrew(t *testing.T) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "brew")
+	contents := `#!/bin/sh
+printf '%s\n' "$*" >> "${0}.log"
+case "$1" in
+  tap)
+    if [ "$#" -eq 1 ]; then
+      printf '%s\n' 'homebrew/core' 'custom/tools'
+    fi
+    ;;
+  info)
+    if [ -f "${0}.installed" ]; then
+      installed='[{"version":"0.26.0","installed_on_request":true}]'
+      linked='"0.26.0"'
+    else
+      installed='[]'
+      linked='null'
+    fi
+    printf '{"formulae":[{"name":"bat","full_name":"bat","versions":{"stable":"0.26.1"},"installed":%s,"linked_keg":%s,"outdated":false,"pinned":false}],"casks":[]}\n' "$installed" "$linked"
+    ;;
+  install)
+    : > "${0}.installed"
+    ;;
+esac
+`
+	if err := os.WriteFile(path, []byte(contents), 0o700); err != nil {
+		t.Fatalf("write mock brew: %s", err)
+	}
+	return path
+}
+
+func mockBrewCommandCount(t *testing.T, brewPath string, prefix string) int {
+	t.Helper()
+
+	content, err := os.ReadFile(brewPath + ".log")
+	if err != nil {
+		t.Fatalf("read mock brew log: %s", err)
+	}
+	count := 0
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			count++
+		}
+	}
+	return count
 }

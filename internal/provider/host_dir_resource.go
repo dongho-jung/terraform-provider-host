@@ -54,6 +54,9 @@ func (r *HostDirResource) Configure(ctx context.Context, req resource.ConfigureR
 		resp.Diagnostics.AddError("Unexpected provider data", fmt.Sprintf("Expected HostProviderData, got %T.", req.ProviderData))
 		return
 	}
+	if !requireHostUserScope(data, "host_dir", &resp.Diagnostics) {
+		return
+	}
 	r.homeDir = data.HomeDir
 }
 

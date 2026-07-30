@@ -1,3 +1,25 @@
+## 0.15.0 (2026-07-30)
+
+FEATURES:
+
+- Add `host_package_dnf`, `host_package_pacman`, and `host_package_aur` data sources so every managed package backend also supports read-only installation and version lookup.
+
+IMPROVEMENTS:
+
+- Separate Host objects into system and user scopes. System-only provider configurations may omit `target_user`; user-scoped objects diagnose the missing user context, while `host_user` and `host_sudoers_rule` remain host-wide and may refer to users other than `target_user`.
+- Require Dock, Login Item, and CoreAudio objects to run as provider `target_user` in that user's active macOS console session, with actionable login and targeted-apply diagnostics when the session is unavailable.
+- Track desired and observed DNF and Homebrew `install_reason`, repair external reason drift to `user`/`on_request`, and skip DNF repository version queries when `ignore_version = true`.
+- Preserve Terraform's refresh boundary for version-ignored DNF and Homebrew packages, keeping `terraform plan -refresh=false` based on prior state instead of performing live package lookups.
+- Share DNF and Homebrew package snapshots across concurrent resources, cache macOS Dock, Login Item, and audio-device reads, compile the CoreAudio Swift helper once per source version, reduce systemd service status to one command, and reuse the planned Git remote commit during apply.
+- Write only changed entries when updating grouped macOS settings, so unchanged defaults are not rewritten and their processes are not restarted.
+
+FIXES:
+
+- Hydrate whole-file content and symbolic-link source state during `host_file` and `host_link` imports so the first refresh can adopt the existing object instead of dropping it from state or failing on a missing required attribute.
+- Atomically replace managed files and runtime metadata, including privileged fstab, sysctl, and systemd files, instead of truncating destinations in place.
+- Serialize complete fstab and crontab read/modify/write transactions plus DNF, Pacman, AUR, and Homebrew package mutations across provider instances, and make macOS Dock refresh detect live deletion and ordering drift.
+- Preserve command errors during systemd status reads and use a stable C locale when parsing human-readable package and host-management command output.
+
 ## 0.14.0 (2026-07-30)
 
 BREAKING CHANGES:

@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	tfpath "github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -15,7 +17,10 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"golang.org/x/sync/singleflight"
 )
+
+const macOSLoginItemReadCacheTTL = 500 * time.Millisecond
 
 var (
 	_ resource.Resource                = &MacOSLoginItemResource{}
@@ -25,8 +30,10 @@ var (
 )
 
 type MacOSLoginItemResource struct {
-	manager MacOSLoginItemManager
-	homeDir string
+	manager                 MacOSLoginItemManager
+	homeDir                 string
+	targetUser              string
+	desktopSessionValidator HostDesktopSessionValidator
 }
 
 type MacOSLoginItemResourceModel struct {
@@ -59,6 +66,11 @@ type MacOSLoginItemManager interface {
 type CLIMacOSLoginItemManager struct {
 	osascriptPath string
 	homeDir       string
+
+	cacheMu     sync.RWMutex
+	cachedItems []MacOSLoginItemStatus
+	cacheUntil  time.Time
+	readGroup   singleflight.Group
 }
 
 func NewCLIMacOSLoginItemManager(osascriptPath string, homeDirs ...string) MacOSLoginItemManager {
@@ -81,7 +93,7 @@ func (r *MacOSLoginItemResource) Metadata(ctx context.Context, req resource.Meta
 
 func (r *MacOSLoginItemResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manages one macOS Login Item by application bundle path.",
+		MarkdownDescription: "Manages one macOS Login Item by application bundle path in the target user's active desktop session.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,
@@ -119,12 +131,17 @@ func (r *MacOSLoginItemResource) Configure(ctx context.Context, req resource.Con
 
 	switch data := req.ProviderData.(type) {
 	case HostProviderData:
+		if !requireHostUserScope(data, "host_mac_login_item", &resp.Diagnostics) {
+			return
+		}
 		if data.MacOSLoginItemManager == nil {
 			resp.Diagnostics.AddError("macOS Login Items unavailable", "`host_mac_login_item` requires the macOS `osascript` command.")
 			return
 		}
 		r.manager = data.MacOSLoginItemManager
 		r.homeDir = data.HomeDir
+		r.targetUser = data.TargetUser
+		r.desktopSessionValidator = data.DesktopSessionValidator
 	case MacOSLoginItemManager:
 		r.manager = data
 	default:
@@ -136,6 +153,9 @@ func (r *MacOSLoginItemResource) Configure(ctx context.Context, req resource.Con
 }
 
 func (r *MacOSLoginItemResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if !requireHostDesktopSession(r.targetUser, r.desktopSessionValidator, &resp.Diagnostics) {
+		return
+	}
 	if req.Plan.Raw.IsNull() {
 		return
 	}
@@ -166,6 +186,9 @@ func (r *MacOSLoginItemResource) ModifyPlan(ctx context.Context, req resource.Mo
 }
 
 func (r *MacOSLoginItemResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	if !requireHostDesktopSession(r.targetUser, r.desktopSessionValidator, &resp.Diagnostics) {
+		return
+	}
 	var plan MacOSLoginItemResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
@@ -182,6 +205,9 @@ func (r *MacOSLoginItemResource) Create(ctx context.Context, req resource.Create
 }
 
 func (r *MacOSLoginItemResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	if !requireHostDesktopSession(r.targetUser, r.desktopSessionValidator, &resp.Diagnostics) {
+		return
+	}
 	var state MacOSLoginItemResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
@@ -212,6 +238,9 @@ func (r *MacOSLoginItemResource) Read(ctx context.Context, req resource.ReadRequ
 }
 
 func (r *MacOSLoginItemResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	if !requireHostDesktopSession(r.targetUser, r.desktopSessionValidator, &resp.Diagnostics) {
+		return
+	}
 	var plan MacOSLoginItemResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
@@ -228,6 +257,9 @@ func (r *MacOSLoginItemResource) Update(ctx context.Context, req resource.Update
 }
 
 func (r *MacOSLoginItemResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	if !requireHostDesktopSession(r.targetUser, r.desktopSessionValidator, &resp.Diagnostics) {
+		return
+	}
 	var state MacOSLoginItemResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
@@ -249,6 +281,9 @@ func (r *MacOSLoginItemResource) Delete(ctx context.Context, req resource.Delete
 }
 
 func (r *MacOSLoginItemResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	if !requireHostDesktopSession(r.targetUser, r.desktopSessionValidator, &resp.Diagnostics) {
+		return
+	}
 	resource.ImportStatePassthroughID(ctx, tfpath.Root("path"), req, resp)
 }
 
@@ -327,6 +362,7 @@ func (m *CLIMacOSLoginItemManager) EnsureLoginItem(ctx context.Context, spec Mac
 	if err != nil {
 		return MacOSLoginItemStatus{}, err
 	}
+	m.invalidateLoginItemCache()
 
 	status, exists, err := m.LoginItemStatus(ctx, pathResolved)
 	if err != nil {
@@ -357,10 +393,36 @@ func (m *CLIMacOSLoginItemManager) DeleteLoginItem(ctx context.Context, path str
 		"end tell",
 		"end run",
 	}, pathResolved)
+	m.invalidateLoginItemCache()
 	return err
 }
 
 func (m *CLIMacOSLoginItemManager) readLoginItems(ctx context.Context) ([]MacOSLoginItemStatus, error) {
+	if items, ok := m.readCachedLoginItems(); ok {
+		return items, nil
+	}
+	value, err, _ := m.readGroup.Do("login-items", func() (any, error) {
+		if items, ok := m.readCachedLoginItems(); ok {
+			return items, nil
+		}
+		items, err := m.readLoginItemsUncached(ctx)
+		if err != nil {
+			return nil, err
+		}
+		m.cacheLoginItems(items)
+		return items, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	items, ok := value.([]MacOSLoginItemStatus)
+	if !ok {
+		return nil, fmt.Errorf("unexpected macOS login item result %T", value)
+	}
+	return append([]MacOSLoginItemStatus(nil), items...), nil
+}
+
+func (m *CLIMacOSLoginItemManager) readLoginItemsUncached(ctx context.Context) ([]MacOSLoginItemStatus, error) {
 	out, err := m.runOSAScript(ctx, []string{
 		"set output to \"\"",
 		"tell application \"System Events\"",
@@ -379,6 +441,29 @@ func (m *CLIMacOSLoginItemManager) readLoginItems(ctx context.Context) ([]MacOSL
 	return parseMacOSLoginItemsForHome(string(out), m.homeDir)
 }
 
+func (m *CLIMacOSLoginItemManager) readCachedLoginItems() ([]MacOSLoginItemStatus, bool) {
+	m.cacheMu.RLock()
+	defer m.cacheMu.RUnlock()
+	if m.cachedItems == nil || !time.Now().Before(m.cacheUntil) {
+		return nil, false
+	}
+	return append([]MacOSLoginItemStatus(nil), m.cachedItems...), true
+}
+
+func (m *CLIMacOSLoginItemManager) cacheLoginItems(items []MacOSLoginItemStatus) {
+	m.cacheMu.Lock()
+	m.cachedItems = append([]MacOSLoginItemStatus(nil), items...)
+	m.cacheUntil = time.Now().Add(macOSLoginItemReadCacheTTL)
+	m.cacheMu.Unlock()
+}
+
+func (m *CLIMacOSLoginItemManager) invalidateLoginItemCache() {
+	m.cacheMu.Lock()
+	m.cachedItems = nil
+	m.cacheUntil = time.Time{}
+	m.cacheMu.Unlock()
+}
+
 func (m *CLIMacOSLoginItemManager) runOSAScript(ctx context.Context, scriptLines []string, args ...string) ([]byte, error) {
 	commandArgs := make([]string, 0, len(scriptLines)*2+len(args))
 	for _, line := range scriptLines {
@@ -387,6 +472,7 @@ func (m *CLIMacOSLoginItemManager) runOSAScript(ctx context.Context, scriptLines
 	commandArgs = append(commandArgs, args...)
 
 	cmd := exec.CommandContext(ctx, m.osascriptPath, commandArgs...)
+	cmd.Env = environmentWithCLocale(cmd.Environ())
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("run osascript: %w%s", err, commandOutputSuffix(out))

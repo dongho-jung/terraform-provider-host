@@ -243,26 +243,20 @@ func (m *CLISystemdServiceManager) ServiceStatus(ctx context.Context, name strin
 		return SystemdServiceStatus{}, err
 	}
 
-	loadOut, err := m.run(ctx, false, m.systemctlPath, "show", "--property=LoadState", "--value", name)
+	out, err := m.run(
+		ctx,
+		false,
+		m.systemctlPath,
+		"show",
+		"--property=LoadState",
+		"--property=UnitFileState",
+		"--property=ActiveState",
+		name,
+	)
 	if err != nil {
 		return SystemdServiceStatus{}, err
 	}
-	loadState := strings.TrimSpace(string(loadOut))
-	status := SystemdServiceStatus{
-		Name:   name,
-		Exists: loadState != "" && loadState != "not-found",
-	}
-	if !status.Exists {
-		return status, nil
-	}
-
-	enabledOut, _ := m.run(ctx, false, m.systemctlPath, "is-enabled", name)
-	status.Enabled = parseSystemdEnabled(string(enabledOut))
-
-	activeOut, _ := m.run(ctx, false, m.systemctlPath, "is-active", name)
-	status.Running = parseSystemdActive(string(activeOut))
-
-	return status, nil
+	return parseSystemdServiceShow(name, string(out))
 }
 
 func (m *CLISystemdServiceManager) SyncService(ctx context.Context, spec SystemdServiceSpec) error {
@@ -314,6 +308,7 @@ func runHostSystemCommand(ctx context.Context, mutate bool, sudoPath string, lab
 	}
 
 	cmd := exec.CommandContext(ctx, commandName, commandArgs...)
+	cmd.Env = environmentWithCLocale(cmd.Environ())
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -364,6 +359,41 @@ func parseSystemdEnabled(out string) bool {
 
 func parseSystemdActive(out string) bool {
 	return strings.TrimSpace(out) == "active"
+}
+
+func parseSystemdServiceShow(name string, out string) (SystemdServiceStatus, error) {
+	properties := make(map[string]string)
+	for _, line := range strings.Split(out, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || key == "" {
+			continue
+		}
+		properties[key] = strings.TrimSpace(value)
+	}
+
+	loadState, ok := properties["LoadState"]
+	if !ok || loadState == "" {
+		return SystemdServiceStatus{}, fmt.Errorf("systemctl show did not report LoadState for %q", name)
+	}
+	status := SystemdServiceStatus{
+		Name:   name,
+		Exists: loadState != "not-found",
+	}
+	if !status.Exists {
+		return status, nil
+	}
+
+	unitFileState, ok := properties["UnitFileState"]
+	if !ok {
+		return SystemdServiceStatus{}, fmt.Errorf("systemctl show did not report UnitFileState for %q", name)
+	}
+	activeState, ok := properties["ActiveState"]
+	if !ok {
+		return SystemdServiceStatus{}, fmt.Errorf("systemctl show did not report ActiveState for %q", name)
+	}
+	status.Enabled = parseSystemdEnabled(unitFileState)
+	status.Running = parseSystemdActive(activeState)
+	return status, nil
 }
 
 func parseLocalectlLocale(out string) (string, error) {

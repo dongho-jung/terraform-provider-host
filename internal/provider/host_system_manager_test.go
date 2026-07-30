@@ -1,6 +1,11 @@
 package provider
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestParseSystemSetupTimezone(t *testing.T) {
 	t.Parallel()
@@ -33,6 +38,73 @@ func TestParseSystemdActive(t *testing.T) {
 	}
 	if parseSystemdActive("inactive\n") {
 		t.Fatal("expected inactive output to parse false")
+	}
+}
+
+func TestParseSystemdServiceShow(t *testing.T) {
+	t.Parallel()
+
+	status, err := parseSystemdServiceShow(
+		"docker.service",
+		"ActiveState=active\nLoadState=loaded\nUnitFileState=enabled\n",
+	)
+	if err != nil {
+		t.Fatalf("parse service show: %s", err)
+	}
+	if !status.Exists || !status.Enabled || !status.Running {
+		t.Fatalf("unexpected status: %#v", status)
+	}
+
+	missing, err := parseSystemdServiceShow(
+		"missing.service",
+		"LoadState=not-found\nActiveState=inactive\nUnitFileState=\n",
+	)
+	if err != nil {
+		t.Fatalf("parse missing service show: %s", err)
+	}
+	if missing.Exists || missing.Enabled || missing.Running {
+		t.Fatalf("unexpected missing status: %#v", missing)
+	}
+}
+
+func TestParseSystemdServiceShowRejectsIncompleteOutput(t *testing.T) {
+	t.Parallel()
+
+	if _, err := parseSystemdServiceShow("docker.service", "LoadState=loaded\n"); err == nil {
+		t.Fatal("expected incomplete systemctl output to fail")
+	}
+}
+
+func TestCLISystemdServiceManagerReadsStatusWithOneCommand(t *testing.T) {
+	t.Parallel()
+
+	systemctlPath := filepath.Join(t.TempDir(), "systemctl")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "${0}.log"
+printf '%s\n' 'LoadState=loaded' 'UnitFileState=enabled' 'ActiveState=active'
+`
+	if err := os.WriteFile(systemctlPath, []byte(script), 0o700); err != nil {
+		t.Fatalf("write mock systemctl: %s", err)
+	}
+	manager := NewCLISystemdServiceManager(systemctlPath, "")
+	status, err := manager.ServiceStatus(t.Context(), "docker.service")
+	if err != nil {
+		t.Fatalf("service status: %s", err)
+	}
+	if !status.Exists || !status.Enabled || !status.Running {
+		t.Fatalf("unexpected service status: %#v", status)
+	}
+	log, err := os.ReadFile(systemctlPath + ".log")
+	if err != nil {
+		t.Fatalf("read systemctl log: %s", err)
+	}
+	if got := len(splitNonEmptyLines(string(log))); got != 1 {
+		t.Fatalf("systemctl calls got %d, want 1", got)
+	}
+	if !strings.Contains(string(log), "--property=LoadState") ||
+		!strings.Contains(string(log), "--property=UnitFileState") ||
+		!strings.Contains(string(log), "--property=ActiveState") {
+		t.Fatalf("unexpected systemctl command: %s", log)
 	}
 }
 

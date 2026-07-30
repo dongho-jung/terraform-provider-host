@@ -24,6 +24,7 @@ type BrewPackageDataSourceModel struct {
 	Tap              types.String `tfsdk:"tap"`
 	PackageType      types.String `tfsdk:"package_type"`
 	Installed        types.Bool   `tfsdk:"installed"`
+	InstallReason    types.String `tfsdk:"install_reason"`
 	InstalledVersion types.String `tfsdk:"installed_version"`
 	CandidateVersion types.String `tfsdk:"candidate_version"`
 	Pinned           types.Bool   `tfsdk:"pinned"`
@@ -64,6 +65,10 @@ func (d *BrewPackageDataSource) Schema(ctx context.Context, req datasource.Schem
 				Computed:            true,
 				MarkdownDescription: "Whether Homebrew reports the package as installed.",
 			},
+			"install_reason": schema.StringAttribute{
+				Computed:            true,
+				MarkdownDescription: "Observed Homebrew install reason: `on_request` or `dependency`. Null when the package is not installed; casks report `on_request`.",
+			},
 			"installed_version": schema.StringAttribute{
 				Computed:            true,
 				MarkdownDescription: "Installed Homebrew package version.",
@@ -96,6 +101,9 @@ func (d *BrewPackageDataSource) Configure(ctx context.Context, req datasource.Co
 
 	switch data := req.ProviderData.(type) {
 	case HostProviderData:
+		if !requireHostUserScope(data, "data.host_package_brew", &resp.Diagnostics) {
+			return
+		}
 		if data.BrewManager == nil {
 			resp.Diagnostics.AddError(
 				"Homebrew executable not found",
@@ -162,9 +170,10 @@ func (d *BrewPackageDataSource) Read(ctx context.Context, req datasource.ReadReq
 	config.ID = types.StringValue(brewPackageID(packageType, packageName))
 	config.PackageType = types.StringValue(packageType)
 	config.Installed = types.BoolValue(status.Installed)
+	hydrateBrewPackageInstallReason(&config.InstallReason, status)
 	config.Pinned = types.BoolValue(status.Pinned)
-	config.InstalledVersion = brewVersionValue(status.InstalledVersion)
-	config.CandidateVersion = brewVersionValue(status.CandidateVersion)
+	config.InstalledVersion = packageVersionValue(status.InstalledVersion)
+	config.CandidateVersion = packageVersionValue(status.CandidateVersion)
 	config.AppPath, config.AppPaths = brewAppPathValues(status)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &config)...)
@@ -189,11 +198,4 @@ func validateBrewDataSourceConfig(model BrewPackageResourceModel) error {
 		return err
 	}
 	return nil
-}
-
-func brewVersionValue(version string) types.String {
-	if version == "" {
-		return types.StringNull()
-	}
-	return types.StringValue(version)
 }

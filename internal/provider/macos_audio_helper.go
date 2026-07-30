@@ -3,11 +3,23 @@ package provider
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/sync/singleflight"
 )
+
+const macOSAudioDeviceCacheTTL = 500 * time.Millisecond
 
 type MacOSAudioDevice struct {
 	UID            string `json:"uid"`
@@ -40,25 +52,57 @@ type MacOSAudioManager interface {
 }
 
 type CLIMacOSAudioManager struct {
-	swiftPath string
-	run       macOSAudioHelperRunner
+	swiftPath  string
+	runtimeDir string
+	run        macOSAudioHelperRunner
+
+	helperMu   sync.Mutex
+	helperPath string
+
+	deviceCacheMu    sync.RWMutex
+	cachedDevices    []MacOSAudioDevice
+	deviceCacheUntil time.Time
+	deviceListLoad   singleflight.Group
 }
 
 type macOSAudioHelperRunner func(ctx context.Context, swiftPath string, command string, payload any, output any) error
 
-func NewCLIMacOSAudioManager(swiftPath string) MacOSAudioManager {
+func NewCLIMacOSAudioManager(swiftPath string, runtimeDirOverride ...string) MacOSAudioManager {
+	runtimeDir := ""
+	if len(runtimeDirOverride) > 0 {
+		runtimeDir = runtimeDirOverride[0]
+	}
 	return &CLIMacOSAudioManager{
-		swiftPath: swiftPath,
-		run:       runMacOSAudioHelper,
+		swiftPath:  swiftPath,
+		runtimeDir: runtimeDir,
+		run:        runMacOSAudioHelper,
 	}
 }
 
 func (m *CLIMacOSAudioManager) ListDevices(ctx context.Context) ([]MacOSAudioDevice, error) {
-	var devices []MacOSAudioDevice
-	if err := m.run(ctx, m.swiftPath, "list-devices", nil, &devices); err != nil {
+	if devices, ok := m.readCachedDevices(); ok {
+		return devices, nil
+	}
+
+	value, err, _ := m.deviceListLoad.Do("devices", func() (any, error) {
+		if devices, ok := m.readCachedDevices(); ok {
+			return devices, nil
+		}
+		var devices []MacOSAudioDevice
+		if err := m.runHelper(ctx, "list-devices", nil, &devices); err != nil {
+			return nil, err
+		}
+		m.cacheDevices(devices)
+		return devices, nil
+	})
+	if err != nil {
 		return nil, err
 	}
-	return devices, nil
+	devices, ok := value.([]MacOSAudioDevice)
+	if !ok {
+		return nil, fmt.Errorf("unexpected macOS audio device result %T", value)
+	}
+	return cloneMacOSAudioDevices(devices), nil
 }
 
 func (m *CLIMacOSAudioManager) ReadMultiOutput(ctx context.Context, uid string) (MacOSAudioMultiOutputSpec, bool, error) {
@@ -66,7 +110,7 @@ func (m *CLIMacOSAudioManager) ReadMultiOutput(ctx context.Context, uid string) 
 		Exists bool                      `json:"exists"`
 		Spec   MacOSAudioMultiOutputSpec `json:"spec"`
 	}
-	if err := m.run(ctx, m.swiftPath, "read-multi-output", map[string]string{"uid": uid}, &result); err != nil {
+	if err := m.runHelper(ctx, "read-multi-output", map[string]string{"uid": uid}, &result); err != nil {
 		return MacOSAudioMultiOutputSpec{}, false, err
 	}
 	return result.Spec, result.Exists, nil
@@ -74,18 +118,29 @@ func (m *CLIMacOSAudioManager) ReadMultiOutput(ctx context.Context, uid string) 
 
 func (m *CLIMacOSAudioManager) WriteMultiOutput(ctx context.Context, spec MacOSAudioMultiOutputSpec) (MacOSAudioMultiOutputSpec, error) {
 	var result MacOSAudioMultiOutputSpec
-	if err := m.run(ctx, m.swiftPath, "write-multi-output", spec, &result); err != nil {
+	if err := m.runHelper(ctx, "write-multi-output", spec, &result); err != nil {
 		return MacOSAudioMultiOutputSpec{}, err
 	}
+	m.invalidateDeviceCache()
 	return result, nil
 }
 
 func (m *CLIMacOSAudioManager) DeleteMultiOutput(ctx context.Context, uid string) error {
-	return m.run(ctx, m.swiftPath, "delete-multi-output", map[string]string{"uid": uid}, nil)
+	err := m.runHelper(ctx, "delete-multi-output", map[string]string{"uid": uid}, nil)
+	m.invalidateDeviceCache()
+	return err
 }
 
-func runMacOSAudioHelper(ctx context.Context, swiftPath string, command string, payload any, output any) error {
-	args := []string{"-suppress-warnings", "-", command}
+func (m *CLIMacOSAudioManager) runHelper(ctx context.Context, command string, payload any, output any) error {
+	helperPath, err := m.helperExecutable(ctx)
+	if err != nil {
+		return err
+	}
+	return m.run(ctx, helperPath, command, payload, output)
+}
+
+func runMacOSAudioHelper(ctx context.Context, helperPath string, command string, payload any, output any) error {
+	args := []string{command}
 	if payload != nil {
 		payloadBytes, err := json.Marshal(payload)
 		if err != nil {
@@ -94,8 +149,7 @@ func runMacOSAudioHelper(ctx context.Context, swiftPath string, command string, 
 		args = append(args, base64.StdEncoding.EncodeToString(payloadBytes))
 	}
 
-	cmd := exec.CommandContext(ctx, swiftPath, args...)
-	cmd.Stdin = bytes.NewBufferString(macOSAudioHelperSwift)
+	cmd := exec.CommandContext(ctx, helperPath, args...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -113,6 +167,154 @@ func runMacOSAudioHelper(ctx context.Context, swiftPath string, command string, 
 		return fmt.Errorf("decode macOS audio helper output: %w: %s", err, stdout.String())
 	}
 	return nil
+}
+
+func (m *CLIMacOSAudioManager) helperExecutable(ctx context.Context) (string, error) {
+	m.helperMu.Lock()
+	defer m.helperMu.Unlock()
+
+	if executableFileExists(m.helperPath) {
+		return m.helperPath, nil
+	}
+	if m.swiftPath == "" {
+		return "", fmt.Errorf("swift compiler path is empty")
+	}
+
+	runtimeDir := m.runtimeDir
+	if runtimeDir == "" {
+		cacheDir, err := os.UserCacheDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve macOS audio helper cache directory: %w", err)
+		}
+		runtimeDir = filepath.Join(cacheDir, providerRuntimeDirName)
+	}
+	helperDir, err := providerRuntimeSubdir(runtimeDir, "mac_audio")
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(helperDir, 0o700); err != nil {
+		return "", fmt.Errorf("create macOS audio helper directory: %w", err)
+	}
+
+	digest := sha256.Sum256([]byte(runtime.GOOS + "\x00" + runtime.GOARCH + "\x00" + macOSAudioHelperSwift))
+	version := hex.EncodeToString(digest[:])
+	helperPath := filepath.Join(helperDir, "helper-"+version)
+	lock, err := lockHostFileContext(ctx, helperPath)
+	if err != nil {
+		return "", err
+	}
+	defer lock.close()
+
+	if executableFileExists(helperPath) {
+		m.helperPath = helperPath
+		return helperPath, nil
+	}
+	if err := m.compileHelper(ctx, helperDir, helperPath, version); err != nil {
+		return "", err
+	}
+	m.helperPath = helperPath
+	return helperPath, nil
+}
+
+func (m *CLIMacOSAudioManager) compileHelper(ctx context.Context, helperDir string, helperPath string, version string) (returnErr error) {
+	sourcePath := filepath.Join(helperDir, "helper-"+version+".swift")
+	if err := writeHostFileAtomically(sourcePath, []byte(macOSAudioHelperSwift), 0o600); err != nil {
+		return err
+	}
+	defer func() {
+		if err := os.Remove(sourcePath); err != nil && !os.IsNotExist(err) && returnErr == nil {
+			returnErr = fmt.Errorf("remove macOS audio helper source: %w", err)
+		}
+	}()
+
+	tempFile, err := os.CreateTemp(helperDir, ".mac-audio-helper-*")
+	if err != nil {
+		return fmt.Errorf("create macOS audio helper output: %w", err)
+	}
+	tempPath := tempFile.Name()
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("close macOS audio helper output: %w", err)
+	}
+	if err := os.Remove(tempPath); err != nil {
+		return fmt.Errorf("prepare macOS audio helper output: %w", err)
+	}
+	defer func() {
+		if err := os.Remove(tempPath); err != nil && !os.IsNotExist(err) && returnErr == nil {
+			returnErr = fmt.Errorf("remove temporary macOS audio helper %q: %w", tempPath, err)
+		}
+	}()
+
+	cmd := exec.CommandContext(ctx, m.swiftPath, "-O", "-o", tempPath, sourcePath)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf(
+			"compile macOS audio helper with %s: %w\n%s",
+			m.swiftPath,
+			err,
+			strings.TrimSpace(stderr.String()),
+		)
+	}
+	if err := os.Chmod(tempPath, 0o700); err != nil {
+		return fmt.Errorf("chmod macOS audio helper: %w", err)
+	}
+	binary, err := os.OpenFile(tempPath, os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("open compiled macOS audio helper: %w", err)
+	}
+	if err := binary.Sync(); err != nil {
+		_ = binary.Close()
+		return fmt.Errorf("sync compiled macOS audio helper: %w", err)
+	}
+	if err := binary.Close(); err != nil {
+		return fmt.Errorf("close compiled macOS audio helper: %w", err)
+	}
+	if err := os.Rename(tempPath, helperPath); err != nil {
+		return fmt.Errorf("install compiled macOS audio helper: %w", err)
+	}
+	return nil
+}
+
+func executableFileExists(path string) bool {
+	if path == "" {
+		return false
+	}
+	info, err := os.Lstat(path)
+	return err == nil &&
+		info.Size() > 0 &&
+		info.Mode().IsRegular() &&
+		info.Mode()&os.ModeSymlink == 0 &&
+		info.Mode().Perm()&0o111 != 0 &&
+		info.Mode().Perm()&0o022 == 0
+}
+
+func (m *CLIMacOSAudioManager) readCachedDevices() ([]MacOSAudioDevice, bool) {
+	m.deviceCacheMu.RLock()
+	defer m.deviceCacheMu.RUnlock()
+	if m.cachedDevices == nil || !time.Now().Before(m.deviceCacheUntil) {
+		return nil, false
+	}
+	return cloneMacOSAudioDevices(m.cachedDevices), true
+}
+
+func (m *CLIMacOSAudioManager) cacheDevices(devices []MacOSAudioDevice) {
+	m.deviceCacheMu.Lock()
+	m.cachedDevices = cloneMacOSAudioDevices(devices)
+	m.deviceCacheUntil = time.Now().Add(macOSAudioDeviceCacheTTL)
+	m.deviceCacheMu.Unlock()
+}
+
+func (m *CLIMacOSAudioManager) invalidateDeviceCache() {
+	m.deviceCacheMu.Lock()
+	m.cachedDevices = nil
+	m.deviceCacheUntil = time.Time{}
+	m.deviceCacheMu.Unlock()
+}
+
+func cloneMacOSAudioDevices(devices []MacOSAudioDevice) []MacOSAudioDevice {
+	return append([]MacOSAudioDevice(nil), devices...)
 }
 
 const macOSAudioHelperSwift = `

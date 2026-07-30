@@ -9,9 +9,15 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 const macOSDockDomain = "com.apple.dock"
+
+const macOSDockReadCacheTTL = 500 * time.Millisecond
 
 type MacOSDockSpec struct {
 	Apps    []string
@@ -28,6 +34,11 @@ type CLIMacOSDockManager struct {
 	defaultsPath string
 	killallPath  string
 	run          macOSCommandRunner
+
+	cacheMu    sync.RWMutex
+	cachedDock *MacOSDockSpec
+	cacheUntil time.Time
+	readGroup  singleflight.Group
 }
 
 func NewCLIMacOSDockManager(defaultsPath string, killallPath string) MacOSDockManager {
@@ -43,6 +54,32 @@ func (m *CLIMacOSDockManager) ReadDock(ctx context.Context) (MacOSDockSpec, erro
 		return MacOSDockSpec{}, fmt.Errorf("defaults command not found")
 	}
 
+	if cached, ok := m.readCachedDock(); ok {
+		return cached, nil
+	}
+
+	value, err, _ := m.readGroup.Do("dock", func() (any, error) {
+		if cached, ok := m.readCachedDock(); ok {
+			return cached, nil
+		}
+		dock, err := m.readDockUncached(ctx)
+		if err != nil {
+			return MacOSDockSpec{}, err
+		}
+		m.cacheDock(dock)
+		return dock, nil
+	})
+	if err != nil {
+		return MacOSDockSpec{}, err
+	}
+	dock, ok := value.(MacOSDockSpec)
+	if !ok {
+		return MacOSDockSpec{}, fmt.Errorf("unexpected macOS Dock read result %T", value)
+	}
+	return cloneMacOSDockSpec(dock), nil
+}
+
+func (m *CLIMacOSDockManager) readDockUncached(ctx context.Context) (MacOSDockSpec, error) {
 	appsOut, err := m.readDockArray(ctx, "persistent-apps")
 	if err != nil {
 		return MacOSDockSpec{}, err
@@ -69,6 +106,7 @@ func (m *CLIMacOSDockManager) WriteDock(ctx context.Context, spec MacOSDockSpec)
 	if err := m.writeDockArray(ctx, "persistent-others", macOSDockEntries(spec.Folders, "directory-tile")); err != nil {
 		return err
 	}
+	m.cacheDock(spec)
 	return nil
 }
 
@@ -93,6 +131,30 @@ func (m *CLIMacOSDockManager) writeDockArray(ctx context.Context, key string, en
 	args = append(args, entries...)
 	_, err := m.run(ctx, m.defaultsPath, args...)
 	return err
+}
+
+func (m *CLIMacOSDockManager) readCachedDock() (MacOSDockSpec, bool) {
+	m.cacheMu.RLock()
+	defer m.cacheMu.RUnlock()
+	if m.cachedDock == nil || !time.Now().Before(m.cacheUntil) {
+		return MacOSDockSpec{}, false
+	}
+	return cloneMacOSDockSpec(*m.cachedDock), true
+}
+
+func (m *CLIMacOSDockManager) cacheDock(spec MacOSDockSpec) {
+	cloned := cloneMacOSDockSpec(spec)
+	m.cacheMu.Lock()
+	m.cachedDock = &cloned
+	m.cacheUntil = time.Now().Add(macOSDockReadCacheTTL)
+	m.cacheMu.Unlock()
+}
+
+func cloneMacOSDockSpec(spec MacOSDockSpec) MacOSDockSpec {
+	return MacOSDockSpec{
+		Apps:    append([]string(nil), spec.Apps...),
+		Folders: append([]string(nil), spec.Folders...),
+	}
 }
 
 func resolveMacOSDockPathForHome(label string, item string, wantApp bool, homeDir string) (string, error) {

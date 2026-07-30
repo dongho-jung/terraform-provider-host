@@ -38,6 +38,7 @@ type BrewPackageResourceModel struct {
 	IgnoreVersion    types.Bool   `tfsdk:"ignore_version"`
 	Autoremove       types.Bool   `tfsdk:"autoremove"`
 	Zap              types.Bool   `tfsdk:"zap"`
+	InstallReason    types.String `tfsdk:"install_reason"`
 	InstalledVersion types.String `tfsdk:"installed_version"`
 	CandidateVersion types.String `tfsdk:"candidate_version"`
 	Pinned           types.Bool   `tfsdk:"pinned"`
@@ -111,6 +112,12 @@ func (r *BrewPackageResource) Schema(ctx context.Context, req resource.SchemaReq
 				Default:             booldefault.StaticBool(false),
 				MarkdownDescription: "Use `brew uninstall --zap` when removing a cask. Ignored for formulae.",
 			},
+			"install_reason": schema.StringAttribute{
+				Optional:            true,
+				Computed:            true,
+				Default:             stringdefault.StaticString(brewPackageInstallReasonOnRequest),
+				MarkdownDescription: "Desired and observed Homebrew install reason. The only supported desired value is `on_request`; refresh records `dependency` when a formula becomes dependency-only so the next apply marks it as requested. Casks always report `on_request`.",
+			},
 			"installed_version": schema.StringAttribute{
 				Computed:            true,
 				MarkdownDescription: "Installed Homebrew package version.",
@@ -155,6 +162,9 @@ func (r *BrewPackageResource) Configure(ctx context.Context, req resource.Config
 
 	switch data := req.ProviderData.(type) {
 	case HostProviderData:
+		if !requireHostUserScope(data, "host_package_brew", &resp.Diagnostics) {
+			return
+		}
 		if data.BrewManager == nil {
 			resp.Diagnostics.AddError(
 				"Homebrew executable not found",
@@ -203,6 +213,27 @@ func (r *BrewPackageResource) ModifyPlan(ctx context.Context, req resource.Modif
 	if err := validateBrewResourcePlan(plan); err != nil {
 		resp.Diagnostics.AddError("Invalid Homebrew package", err.Error())
 		return
+	}
+
+	// Preserve Terraform's refresh boundary. Version-ignored resources can
+	// reuse all observed package metadata from prior state instead of making
+	// brew info discover live changes during terraform plan -refresh=false.
+	var priorState BrewPackageResourceModel
+	if !req.State.Raw.IsNull() {
+		resp.Diagnostics.Append(req.State.Get(ctx, &priorState)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		if brewPackageCanPlanFromPriorState(plan, priorState) {
+			plan.ID = priorState.ID
+			plan.InstalledVersion = priorState.InstalledVersion
+			plan.CandidateVersion = types.StringNull()
+			plan.Pinned = priorState.Pinned
+			plan.AppPath = priorState.AppPath
+			plan.AppPaths = priorState.AppPaths
+			resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+			return
+		}
 	}
 
 	tapName := brewPackageTap(plan)
@@ -445,6 +476,7 @@ func (r *BrewPackageResource) refreshState(ctx context.Context, model BrewPackag
 		model.Zap = types.BoolValue(false)
 	}
 	model.Pinned = types.BoolValue(status.Pinned)
+	hydrateBrewPackageInstallReason(&model.InstallReason, status)
 	hydrateBrewVersionState(&model, status)
 	hydrateBrewAppPathState(&model, status)
 	if brewPackageIgnoresVersion(model) {
@@ -512,8 +544,8 @@ func (r *BrewPackageResource) syncPackage(ctx context.Context, model BrewPackage
 }
 
 func hydrateBrewVersionState(model *BrewPackageResourceModel, status BrewPackageStatus) {
-	model.InstalledVersion = brewVersionValue(status.InstalledVersion)
-	model.CandidateVersion = brewVersionValue(status.CandidateVersion)
+	model.InstalledVersion = packageVersionValue(status.InstalledVersion)
+	model.CandidateVersion = packageVersionValue(status.CandidateVersion)
 }
 
 func hydrateBrewAppPathState(model *BrewPackageResourceModel, status BrewPackageStatus) {
@@ -552,6 +584,22 @@ func brewPackageIgnoresVersion(model BrewPackageResourceModel) bool {
 	return model.IgnoreVersion.IsNull() || model.IgnoreVersion.IsUnknown() || model.IgnoreVersion.ValueBool()
 }
 
+func brewPackageCanPlanFromPriorState(plan BrewPackageResourceModel, state BrewPackageResourceModel) bool {
+	return !plan.Name.IsNull() &&
+		!plan.Name.IsUnknown() &&
+		!state.Name.IsNull() &&
+		!state.Name.IsUnknown() &&
+		plan.Name.Equal(state.Name) &&
+		plan.Tap.Equal(state.Tap) &&
+		!plan.PackageType.IsNull() &&
+		!plan.PackageType.IsUnknown() &&
+		!state.PackageType.IsNull() &&
+		!state.PackageType.IsUnknown() &&
+		plan.PackageType.Equal(state.PackageType) &&
+		brewPackageIgnoresVersion(plan) &&
+		brewPackageIgnoresVersion(state)
+}
+
 func shouldUpgradeBrewPackage(version string, status BrewPackageStatus) bool {
 	if !status.Installed || status.InstalledVersion == "" || status.UpgradeVersion == "" || status.InstalledVersion == status.UpgradeVersion {
 		return false
@@ -581,8 +629,30 @@ func validateBrewResourcePlan(model BrewPackageResourceModel) error {
 	if err := validateBrewVersionPolicy(model.Version.ValueString()); err != nil {
 		return err
 	}
+	if err := validateBrewInstallReasonPolicy(model.InstallReason.ValueString()); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func validateBrewInstallReasonPolicy(reason string) error {
+	if reason == "" || reason == brewPackageInstallReasonOnRequest {
+		return nil
+	}
+	return fmt.Errorf("unsupported install reason %q; only %q can be configured", reason, brewPackageInstallReasonOnRequest)
+}
+
+func hydrateBrewPackageInstallReason(installReason *types.String, status BrewPackageStatus) {
+	if !status.Installed {
+		*installReason = types.StringNull()
+		return
+	}
+	if status.InstalledOnRequest {
+		*installReason = types.StringValue(brewPackageInstallReasonOnRequest)
+		return
+	}
+	*installReason = types.StringValue(brewPackageInstallReasonDependency)
 }
 
 func validateBrewVersionPolicy(version string) error {

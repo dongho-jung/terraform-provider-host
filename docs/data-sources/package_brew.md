@@ -43,6 +43,7 @@ resource "host_mac_dock_app" "google_chrome" {
 - `app_paths` (List of String) Application bundle paths reported by Homebrew cask app artifacts. Empty for formulae and casks without app artifacts.
 - `candidate_version` (String) Latest Homebrew package version known to Homebrew.
 - `id` (String) Package identifier in `<package_type>:<name>` form.
+- `install_reason` (String) Observed Homebrew install reason: `on_request` or `dependency`. Null when the package is not installed; casks report `on_request`.
 - `installed` (Boolean) Whether Homebrew reports the package as installed.
 - `installed_version` (String) Installed Homebrew package version.
 - `pinned` (Boolean) Whether Homebrew reports the package as pinned.

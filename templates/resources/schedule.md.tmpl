@@ -14,7 +14,7 @@ Schedule scripts and metadata live under `~/.local/state/terraform-provider-host
 
 Refresh verifies the generated script, metadata, modes, and exact cron entry. Missing, modified, corrupt, duplicated, or stale artifacts create an in-place diff, and the next apply atomically rewrites the runtime and cron entry.
 
-Parallel schedule resources in one provider process serialize the target crontab read/modify/write transaction so they cannot overwrite one another. This does not coordinate separate Terraform processes or unrelated external crontab writers; avoid changing the same target user's crontab concurrently outside this provider.
+Parallel schedule resources and separate provider processes serialize the target user's crontab read/modify/write transaction through a shared file lock, so provider-managed updates cannot overwrite one another. Unrelated external crontab writers do not participate in this lock; avoid changing the same target user's crontab concurrently outside this provider.
 
 ## Example Usage
 

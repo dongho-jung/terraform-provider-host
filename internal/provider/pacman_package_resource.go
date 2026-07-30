@@ -26,10 +26,6 @@ type PacmanPackageResource struct {
 	manager PackageManager
 }
 
-type packageManagerWithStatusOptions interface {
-	PackageStatusWithOptions(ctx context.Context, name string, includeVersions bool) (PackageStatus, error)
-}
-
 type PacmanPackageResourceModel struct {
 	ID               types.String `tfsdk:"id"`
 	Name             types.String `tfsdk:"name"`

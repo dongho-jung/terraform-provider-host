@@ -113,6 +113,9 @@ func (r *AURPackageResource) Configure(ctx context.Context, req resource.Configu
 
 	switch data := req.ProviderData.(type) {
 	case HostProviderData:
+		if !requireHostUserScope(data, "host_package_aur", &resp.Diagnostics) {
+			return
+		}
 		if data.AURManager == nil {
 			resp.Diagnostics.AddError(
 				"AUR helper not found",

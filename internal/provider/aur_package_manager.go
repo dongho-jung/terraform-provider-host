@@ -141,8 +141,8 @@ func (m *CLIAURPackageManager) runHelperQuery(ctx context.Context, args ...strin
 	return nil, false, err
 }
 
-// runHelperMutate serializes on the shared pacman mutex: the helper drives
-// pacman internally, which takes the same exclusive db.lck as direct calls.
+// runHelperMutate uses the shared process and file locks: the helper drives
+// Pacman internally and takes the same exclusive db.lck as direct calls.
 func (m *CLIAURPackageManager) runHelperMutate(ctx context.Context, args ...string) ([]byte, error) {
 	if os.Geteuid() == 0 {
 		return nil, fmt.Errorf("AUR helpers refuse to run as root; run Terraform as the unprivileged target user and let %s escalate through sudo itself", m.helperName)
@@ -150,7 +150,15 @@ func (m *CLIAURPackageManager) runHelperMutate(ctx context.Context, args ...stri
 
 	pacmanMutateMutex.Lock()
 	defer pacmanMutateMutex.Unlock()
+	mutationLock, err := m.pacman.lockMutation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer mutationLock.close()
 	defer m.pacman.invalidateStatusCache()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	if m.pacman.sudoPath != "" {
 		if err := m.pacman.authenticateSudo(ctx, m.helperPath, args...); err != nil {
@@ -163,6 +171,7 @@ func (m *CLIAURPackageManager) runHelperMutate(ctx context.Context, args ...stri
 
 func (m *CLIAURPackageManager) runHelper(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, m.helperPath, args...)
+	cmd.Env = environmentWithCLocale(cmd.Environ())
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

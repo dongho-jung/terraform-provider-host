@@ -32,19 +32,19 @@ func (p *HostProvider) Metadata(ctx context.Context, req provider.MetadataReques
 
 func (p *HostProvider) Schema(ctx context.Context, req provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "The Host provider manages host-related infrastructure.",
+		MarkdownDescription: "The Host provider manages system-scoped host infrastructure and optional user-scoped local state.",
 		Attributes: map[string]schema.Attribute{
 			"runtime_dir": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "Directory where provider runtime metadata is stored. Defaults to `~/.local/state/terraform-provider-host` under the configured target user's home directory.",
+				MarkdownDescription: "Directory where user-scoped provider runtime metadata is stored. Requires `target_user` and defaults to `~/.local/state/terraform-provider-host` under that user's home directory.",
 			},
 			"home_dir": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "Home directory used to expand leading `~` in host paths. Defaults to the configured `target_user` home directory. Set this when bootstrapping a target user that does not exist yet.",
+				MarkdownDescription: "Home directory used to expand leading `~` in user-scoped host paths. Requires `target_user` and defaults to that user's discovered home directory. Set this when bootstrapping a target user that does not exist yet.",
 			},
 			"target_user": schema.StringAttribute{
-				Required:            true,
-				MarkdownDescription: "Local user this provider instance manages. User-scoped resources use this user's home directory and crontab.",
+				Optional:            true,
+				MarkdownDescription: "Local user context for user-scoped resources. User-scoped resources require this argument and use the user's home directory and crontab. System-scoped resources do not require it.",
 			},
 		},
 	}
@@ -60,51 +60,63 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 
 	var data HostProviderData
 
-	if config.TargetUser.IsNull() || config.TargetUser.IsUnknown() {
-		resp.Diagnostics.AddError("Missing target_user", "`target_user` must name the local user this provider instance manages.")
+	if config.TargetUser.IsUnknown() {
+		resp.Diagnostics.AddError("Unknown target_user", "`target_user` must be known while configuring the Host provider.")
 		return
 	}
-	targetUser := config.TargetUser.ValueString()
-	if err := validateHostUserName(targetUser); err != nil {
-		resp.Diagnostics.AddError("Invalid target_user", err.Error())
-		return
-	}
-	data.TargetUser = targetUser
 
-	targetHomeDir, err := resolveTargetUserHomeDir(ctx, data.TargetUser)
-	if !config.HomeDir.IsNull() && !config.HomeDir.IsUnknown() {
-		homeBase := targetHomeDir
-		if err != nil {
-			homeBase = ""
-		}
-		homeDir, err := expandHostPathWithHome(config.HomeDir.ValueString(), homeBase)
-		if err != nil {
-			resp.Diagnostics.AddError("Invalid home_dir", err.Error())
+	if config.TargetUser.IsNull() {
+		if !config.HomeDir.IsNull() {
+			resp.Diagnostics.AddError("home_dir requires target_user", "`home_dir` belongs to a user context. Configure `target_user`, or omit both arguments for a system-only provider configuration.")
 			return
 		}
-		data.HomeDir = homeDir
+		if !config.RuntimeDir.IsNull() {
+			resp.Diagnostics.AddError("runtime_dir requires target_user", "`runtime_dir` stores user-scoped provider metadata. Configure `target_user`, or omit both arguments for a system-only provider configuration.")
+			return
+		}
 	} else {
-		if err != nil {
-			resp.Diagnostics.AddError("Invalid target_user", fmt.Sprintf("%s. Set home_dir when bootstrapping a target user that does not exist yet.", err.Error()))
+		targetUser := config.TargetUser.ValueString()
+		if err := validateHostUserName(targetUser); err != nil {
+			resp.Diagnostics.AddError("Invalid target_user", err.Error())
 			return
 		}
-		data.HomeDir = targetHomeDir
-	}
+		data.TargetUser = targetUser
 
-	if !config.RuntimeDir.IsNull() && !config.RuntimeDir.IsUnknown() {
-		runtimeDir, err := expandHostPathWithHome(config.RuntimeDir.ValueString(), data.HomeDir)
-		if err != nil {
-			resp.Diagnostics.AddError("Invalid runtime_dir", err.Error())
-			return
+		targetHomeDir, err := resolveTargetUserHomeDir(ctx, data.TargetUser)
+		if !config.HomeDir.IsNull() && !config.HomeDir.IsUnknown() {
+			homeBase := targetHomeDir
+			if err != nil {
+				homeBase = ""
+			}
+			homeDir, err := expandHostPathWithHome(config.HomeDir.ValueString(), homeBase)
+			if err != nil {
+				resp.Diagnostics.AddError("Invalid home_dir", err.Error())
+				return
+			}
+			data.HomeDir = homeDir
+		} else {
+			if err != nil {
+				resp.Diagnostics.AddError("Invalid target_user", fmt.Sprintf("%s. Set home_dir when bootstrapping a target user that does not exist yet.", err.Error()))
+				return
+			}
+			data.HomeDir = targetHomeDir
 		}
-		data.RuntimeDir = runtimeDir
-	} else {
-		runtimeDir, err := providerRuntimeDirForHome(data.HomeDir)
-		if err != nil {
-			resp.Diagnostics.AddError("Invalid runtime_dir", err.Error())
-			return
+
+		if !config.RuntimeDir.IsNull() && !config.RuntimeDir.IsUnknown() {
+			runtimeDir, err := expandHostPathWithHome(config.RuntimeDir.ValueString(), data.HomeDir)
+			if err != nil {
+				resp.Diagnostics.AddError("Invalid runtime_dir", err.Error())
+				return
+			}
+			data.RuntimeDir = runtimeDir
+		} else {
+			runtimeDir, err := providerRuntimeDirForHome(data.HomeDir)
+			if err != nil {
+				resp.Diagnostics.AddError("Invalid runtime_dir", err.Error())
+				return
+			}
+			data.RuntimeDir = runtimeDir
 		}
-		data.RuntimeDir = runtimeDir
 	}
 
 	sudoPath := executablePath("sudo")
@@ -119,13 +131,10 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 	if pacmanPath != "" {
 		pacmanManager := NewCLIPacmanPackageManager(pacmanPath, sudoPath)
 		data.PacmanManager = pacmanManager
-		data.AURManager = NewResolvingAURPackageManager(pacmanManager)
-		data.AURHelperManager = NewCLIAURHelperManager(pacmanManager)
-	}
-
-	brewPath := executablePath("brew")
-	if brewPath != "" {
-		data.BrewManager = NewCLIBrewPackageManager(brewPath, sudoPath)
+		if data.TargetUser != "" {
+			data.AURManager = NewResolvingAURPackageManager(pacmanManager)
+			data.AURHelperManager = NewCLIAURHelperManager(pacmanManager)
+		}
 	}
 
 	hostnamectlPath := executablePath("hostnamectl")
@@ -162,35 +171,45 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		data.FstabManager = NewHostFstabManager(sudoPath)
 	}
 
-	gitPath := executablePath("git")
-	if gitPath != "" {
-		data.GitPath = gitPath
-	}
+	if data.TargetUser != "" {
+		data.DesktopSessionValidator = NewHostDesktopSessionValidator()
 
-	sshKeygenPath := executablePath("ssh-keygen")
-	if sshKeygenPath != "" {
-		data.SSHKeyManager = NewCLISSHKeyManager(sshKeygenPath, data.HomeDir)
-	}
+		brewPath := executablePath("brew")
+		if brewPath != "" {
+			data.BrewManager = NewCLIBrewPackageManager(brewPath, sudoPath)
+		}
 
-	crontabPath := executablePath("crontab")
-	data.ScheduleManager = NewCLICronScheduleManager(crontabPath, data.PackageManager, sudoPath, CLICronScheduleManagerOptions{
-		HomeDir:    data.HomeDir,
-		RuntimeDir: data.RuntimeDir,
-		TargetUser: data.TargetUser,
-	})
-	defaultsPath := executablePath("defaults")
-	if defaultsPath != "" {
-		killallPath := executablePath("killall")
-		data.MacOSDefaultsManager = NewCLIMacOSDefaultsManager(defaultsPath, killallPath)
-		data.MacOSDockManager = NewCLIMacOSDockManager(defaultsPath, killallPath)
-	}
-	swiftPath := executablePath("swift")
-	if swiftPath != "" {
-		data.MacOSAudioManager = NewCLIMacOSAudioManager(swiftPath)
-	}
-	osascriptPath := executablePath("osascript")
-	if osascriptPath != "" {
-		data.MacOSLoginItemManager = NewCLIMacOSLoginItemManager(osascriptPath, data.HomeDir)
+		gitPath := executablePath("git")
+		if gitPath != "" {
+			data.GitPath = gitPath
+		}
+
+		sshKeygenPath := executablePath("ssh-keygen")
+		if sshKeygenPath != "" {
+			data.SSHKeyManager = NewCLISSHKeyManager(sshKeygenPath, data.HomeDir)
+		}
+
+		crontabPath := executablePath("crontab")
+		data.ScheduleManager = NewCLICronScheduleManager(crontabPath, data.PackageManager, sudoPath, CLICronScheduleManagerOptions{
+			HomeDir:    data.HomeDir,
+			RuntimeDir: data.RuntimeDir,
+			TargetUser: data.TargetUser,
+		})
+
+		defaultsPath := executablePath("defaults")
+		if defaultsPath != "" {
+			killallPath := executablePath("killall")
+			data.MacOSDefaultsManager = NewCLIMacOSDefaultsManager(defaultsPath, killallPath)
+			data.MacOSDockManager = NewCLIMacOSDockManager(defaultsPath, killallPath)
+		}
+		swiftCompilerPath := executablePath("swiftc")
+		if swiftCompilerPath != "" {
+			data.MacOSAudioManager = NewCLIMacOSAudioManager(swiftCompilerPath, data.RuntimeDir)
+		}
+		osascriptPath := executablePath("osascript")
+		if osascriptPath != "" {
+			data.MacOSLoginItemManager = NewCLIMacOSLoginItemManager(osascriptPath, data.HomeDir)
+		}
 	}
 
 	resp.ResourceData = data
@@ -244,6 +263,9 @@ func (p *HostProvider) Resources(ctx context.Context) []func() resource.Resource
 
 func (p *HostProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
+		NewDNFPackageDataSource,
+		NewPacmanPackageDataSource,
+		NewAURPackageDataSource,
 		NewBrewPackageDataSource,
 		NewMacOSAudioDeviceDataSource,
 	}

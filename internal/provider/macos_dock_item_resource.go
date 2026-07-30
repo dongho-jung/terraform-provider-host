@@ -47,10 +47,12 @@ type MacOSDockFolderResource struct {
 }
 
 type MacOSDockItemResource struct {
-	kind       string
-	manager    MacOSDockManager
-	homeDir    string
-	runtimeDir string
+	kind                    string
+	manager                 MacOSDockManager
+	homeDir                 string
+	runtimeDir              string
+	targetUser              string
+	desktopSessionValidator HostDesktopSessionValidator
 }
 
 type MacOSDockItemResourceModel struct {
@@ -99,7 +101,7 @@ func (r *MacOSDockAppResource) Configure(ctx context.Context, req resource.Confi
 }
 
 func (r *MacOSDockAppResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
-	resp.Schema = r.item.schema("Manages one application in the macOS Dock persistent apps section.", "Application `.app` bundle path to show in the Dock.")
+	resp.Schema = r.item.schema("Manages one application in the target user's active macOS Dock session.", "Application `.app` bundle path to show in the Dock.")
 }
 
 func (r *MacOSDockAppResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
@@ -135,7 +137,7 @@ func (r *MacOSDockFolderResource) Configure(ctx context.Context, req resource.Co
 }
 
 func (r *MacOSDockFolderResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
-	resp.Schema = r.item.schema("Manages one folder in the macOS Dock persistent folders section.", "Folder path to show in the Dock.")
+	resp.Schema = r.item.schema("Manages one folder in the target user's active macOS Dock session.", "Folder path to show in the Dock.")
 }
 
 func (r *MacOSDockFolderResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
@@ -172,6 +174,13 @@ func (r *MacOSDockItemResource) configure(req resource.ConfigureRequest, resp *r
 		resp.Diagnostics.AddError("Unexpected provider data", fmt.Sprintf("Expected HostProviderData, got %T.", req.ProviderData))
 		return
 	}
+	terraformType := "host_mac_dock_app"
+	if r.kind == macOSDockItemKindFolder {
+		terraformType = "host_mac_dock_folder"
+	}
+	if !requireHostUserScope(data, terraformType, &resp.Diagnostics) {
+		return
+	}
 	if data.MacOSDockManager == nil {
 		resp.Diagnostics.AddError("macOS Dock unavailable", "`host_mac_dock_app` and `host_mac_dock_folder` require the macOS `defaults` command.")
 		return
@@ -179,6 +188,8 @@ func (r *MacOSDockItemResource) configure(req resource.ConfigureRequest, resp *r
 	r.manager = data.MacOSDockManager
 	r.homeDir = data.HomeDir
 	r.runtimeDir = data.RuntimeDir
+	r.targetUser = data.TargetUser
+	r.desktopSessionValidator = data.DesktopSessionValidator
 }
 
 func (r *MacOSDockItemResource) schema(description string, pathDescription string) schema.Schema {
@@ -215,6 +226,9 @@ func (r *MacOSDockItemResource) schema(description string, pathDescription strin
 }
 
 func (r *MacOSDockItemResource) modifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if !requireHostDesktopSession(r.targetUser, r.desktopSessionValidator, &resp.Diagnostics) {
+		return
+	}
 	if req.Plan.Raw.IsNull() {
 		return
 	}
@@ -235,6 +249,9 @@ func (r *MacOSDockItemResource) modifyPlan(ctx context.Context, req resource.Mod
 }
 
 func (r *MacOSDockItemResource) importState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	if !requireHostDesktopSession(r.targetUser, r.desktopSessionValidator, &resp.Diagnostics) {
+		return
+	}
 	state, err := r.importModel(ctx, req.ID)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid macOS Dock import", err.Error())
@@ -294,6 +311,9 @@ func (r *MacOSDockItemResource) importModel(ctx context.Context, importID string
 }
 
 func (r *MacOSDockItemResource) create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	if !requireHostDesktopSession(r.targetUser, r.desktopSessionValidator, &resp.Diagnostics) {
+		return
+	}
 	var plan MacOSDockItemResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
@@ -316,6 +336,9 @@ func (r *MacOSDockItemResource) create(ctx context.Context, req resource.CreateR
 }
 
 func (r *MacOSDockItemResource) read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	if !requireHostDesktopSession(r.targetUser, r.desktopSessionValidator, &resp.Diagnostics) {
+		return
+	}
 	var state MacOSDockItemResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
@@ -326,7 +349,7 @@ func (r *MacOSDockItemResource) read(ctx context.Context, req resource.ReadReque
 		return
 	}
 
-	item, exists, err := readMacOSDockManagedItemForRuntime(state.ID.ValueString(), r.kind, r.runtimeDir)
+	next, exists, err := r.refreshModel(ctx, state)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read macOS Dock item", err.Error())
 		return
@@ -336,15 +359,67 @@ func (r *MacOSDockItemResource) read(ctx context.Context, req resource.ReadReque
 		return
 	}
 
-	state.PathResolved = types.StringValue(item.Path)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
+}
+
+func (r *MacOSDockItemResource) refreshModel(ctx context.Context, state MacOSDockItemResourceModel) (MacOSDockItemResourceModel, bool, error) {
+	if r.manager == nil {
+		return state, false, fmt.Errorf("macOS Dock manager unavailable")
+	}
+
+	managedState, exists, err := readMacOSDockManagedStateIfExistsForRuntime(r.runtimeDir)
+	if err != nil || !exists {
+		return state, false, err
+	}
+	item, exists := macOSDockManagedStateItemsForKind(&managedState, r.kind)[state.ID.ValueString()]
+	if !exists {
+		return state, false, nil
+	}
+
+	liveDock, err := r.manager.ReadDock(ctx)
+	if err != nil {
+		return state, false, err
+	}
+	expectedPaths, err := sortedMacOSDockManagedPaths(
+		macOSDockManagedStateItemsForKind(&managedState, r.kind),
+		r.kind,
+	)
+	if err != nil {
+		return state, false, err
+	}
+	livePaths := macOSDockPathsForKind(liveDock, r.kind)
+	if macOSDockManagedItemIsLive(item.Path, expectedPaths, livePaths) {
+		state.PathResolved = types.StringValue(item.Path)
+	} else {
+		// path_resolved is computed and populated with the desired path during
+		// ModifyPlan. Clearing it here makes a missing or reordered live item
+		// produce an in-place update without discarding the stable managed ID.
+		state.PathResolved = types.StringNull()
+	}
 	state.Priority = types.Int64Value(item.Priority)
 	if state.Restart.IsNull() || state.Restart.IsUnknown() {
 		state.Restart = types.BoolValue(true)
 	}
-	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+	return state, true, nil
+}
+
+func macOSDockManagedItemIsLive(path string, expectedPaths []string, livePaths []string) bool {
+	expectedIndex := macOSDockPathIndex(expectedPaths, path)
+	liveIndex := macOSDockPathIndex(livePaths, path)
+	if expectedIndex < 0 || liveIndex != expectedIndex {
+		return false
+	}
+
+	// An unmanaged trailing item does not shift any managed item. Assign the
+	// length check to the final managed item so that this drift still schedules
+	// exactly one repair instead of being invisible.
+	return expectedIndex != len(expectedPaths)-1 || len(livePaths) == len(expectedPaths)
 }
 
 func (r *MacOSDockItemResource) update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	if !requireHostDesktopSession(r.targetUser, r.desktopSessionValidator, &resp.Diagnostics) {
+		return
+	}
 	var plan MacOSDockItemResourceModel
 	var state MacOSDockItemResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
@@ -373,6 +448,9 @@ func (r *MacOSDockItemResource) update(ctx context.Context, req resource.UpdateR
 }
 
 func (r *MacOSDockItemResource) delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	if !requireHostDesktopSession(r.targetUser, r.desktopSessionValidator, &resp.Diagnostics) {
+		return
+	}
 	var state MacOSDockItemResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
@@ -693,7 +771,7 @@ func writeMacOSDockManagedStateForRuntime(state macOSDockManagedState, runtimeDi
 		return fmt.Errorf("encode macOS Dock state %q: %w", statePath, err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(statePath, data, 0o600); err != nil {
+	if err := writeHostFileAtomically(statePath, data, 0o600); err != nil {
 		return fmt.Errorf("write macOS Dock state %q: %w", statePath, err)
 	}
 	return nil

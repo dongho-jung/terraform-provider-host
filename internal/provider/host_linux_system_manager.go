@@ -180,14 +180,18 @@ type FstabEntry struct {
 }
 
 type HostFstabManager struct {
-	path     string
-	sudoPath string
+	path      string
+	sudoPath  string
+	readFile  func(string) ([]byte, bool, error)
+	writeFile func(context.Context, string, string, []byte, os.FileMode) error
 }
 
 func NewHostFstabManager(sudoPath string) *HostFstabManager {
 	return &HostFstabManager{
-		path:     hostFstabPath,
-		sudoPath: sudoPath,
+		path:      hostFstabPath,
+		sudoPath:  sudoPath,
+		readFile:  readProtectedFile,
+		writeFile: writeProtectedFile,
 	}
 }
 
@@ -196,7 +200,7 @@ func (m *HostFstabManager) Entry(ctx context.Context, name string) (FstabEntry, 
 		return FstabEntry{}, false, err
 	}
 
-	content, exists, err := readProtectedFile(m.path)
+	content, exists, err := m.readProtected(m.path)
 	if err != nil || !exists {
 		return FstabEntry{}, false, err
 	}
@@ -208,7 +212,16 @@ func (m *HostFstabManager) SyncEntry(ctx context.Context, entry FstabEntry) erro
 		return err
 	}
 
-	content, exists, err := readProtectedFile(m.path)
+	lock, err := lockHostFileContext(ctx, m.path)
+	if err != nil {
+		return err
+	}
+	defer lock.close()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	content, exists, err := m.readProtected(m.path)
 	if err != nil {
 		return err
 	}
@@ -221,7 +234,7 @@ func (m *HostFstabManager) SyncEntry(ctx context.Context, entry FstabEntry) erro
 	if err != nil {
 		return err
 	}
-	return writeProtectedFile(ctx, m.sudoPath, m.path, []byte(next), 0o644)
+	return m.writeProtected(ctx, m.sudoPath, m.path, []byte(next), 0o644)
 }
 
 func (m *HostFstabManager) DeleteEntry(ctx context.Context, name string) error {
@@ -229,7 +242,16 @@ func (m *HostFstabManager) DeleteEntry(ctx context.Context, name string) error {
 		return err
 	}
 
-	content, exists, err := readProtectedFile(m.path)
+	lock, err := lockHostFileContext(ctx, m.path)
+	if err != nil {
+		return err
+	}
+	defer lock.close()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	content, exists, err := m.readProtected(m.path)
 	if err != nil || !exists {
 		return err
 	}
@@ -237,11 +259,25 @@ func (m *HostFstabManager) DeleteEntry(ctx context.Context, name string) error {
 	if err != nil || !changed {
 		return err
 	}
-	return writeProtectedFile(ctx, m.sudoPath, m.path, []byte(next), 0o644)
+	return m.writeProtected(ctx, m.sudoPath, m.path, []byte(next), 0o644)
 }
 
 func (m *HostFstabManager) NeedsPrivilegeEscalation() bool {
 	return os.Geteuid() != 0
+}
+
+func (m *HostFstabManager) readProtected(path string) ([]byte, bool, error) {
+	if m.readFile != nil {
+		return m.readFile(path)
+	}
+	return readProtectedFile(path)
+}
+
+func (m *HostFstabManager) writeProtected(ctx context.Context, sudoPath string, path string, content []byte, mode os.FileMode) error {
+	if m.writeFile != nil {
+		return m.writeFile(ctx, sudoPath, path, content, mode)
+	}
+	return writeProtectedFile(ctx, sudoPath, path, content, mode)
 }
 
 func sysctlManagedPath(key string) string {

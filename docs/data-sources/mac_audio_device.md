@@ -3,12 +3,12 @@
 page_title: "host_mac_audio_device Data Source - host"
 subcategory: ""
 description: |-
-  Reads an existing macOS CoreAudio device by UID, display name, or built-in output selector.
+  Reads an existing macOS CoreAudio device by UID, display name, or built-in output selector in the target user's active desktop session. Terraform must run as provider target_user, and that user must own the active macOS console session.
 ---
 
 # host_mac_audio_device (Data Source)
 
-Reads an existing macOS CoreAudio device by UID, display name, or built-in output selector.
+Reads an existing macOS CoreAudio device by UID, display name, or built-in output selector in the target user's active desktop session. Terraform must run as provider `target_user`, and that user must own the active macOS console session.
 
 ## Example Usage
 

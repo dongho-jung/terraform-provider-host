@@ -29,9 +29,8 @@ var (
 )
 
 type HostSudoersRuleResource struct {
-	manager    HostSystemFileManager
-	validator  HostSudoersValidator
-	targetUser string
+	manager   HostSystemFileManager
+	validator HostSudoersValidator
 }
 
 type HostSudoersRuleBackend struct {
@@ -157,7 +156,6 @@ func (r *HostSudoersRuleResource) Configure(ctx context.Context, req resource.Co
 	}
 	switch data := req.ProviderData.(type) {
 	case HostProviderData:
-		r.targetUser = data.TargetUser
 		r.manager = NewCLIHostSystemFileManager("")
 		r.validator = NewCLIHostSudoersValidator("")
 	case HostSudoersRuleBackend:
@@ -178,10 +176,6 @@ func (r *HostSudoersRuleResource) ModifyPlan(ctx context.Context, req resource.M
 	var plan HostSudoersRuleResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() || !hostSudoersRulePlanReady(plan) {
-		return
-	}
-	if err := r.validateTargetUser(plan); err != nil {
-		resp.Diagnostics.AddError("Invalid sudoers rule", err.Error())
 		return
 	}
 	spec, rendered, err := hostSudoersRuleSpecFromModel(ctx, plan)
@@ -206,10 +200,6 @@ func (r *HostSudoersRuleResource) Create(ctx context.Context, req resource.Creat
 	var plan HostSudoersRuleResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
-		return
-	}
-	if err := r.validateTargetUser(plan); err != nil {
-		resp.Diagnostics.AddError("Invalid sudoers rule", err.Error())
 		return
 	}
 	spec, rendered, err := hostSudoersRuleSpecFromModel(ctx, plan)
@@ -258,10 +248,6 @@ func (r *HostSudoersRuleResource) Read(ctx context.Context, req resource.ReadReq
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if err := r.validateTargetUser(state); err != nil {
-		resp.Diagnostics.AddError("Invalid sudoers rule", err.Error())
-		return
-	}
 	next, exists, err := r.refreshState(ctx, state, false)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read sudoers rule", err.Error())
@@ -284,10 +270,6 @@ func (r *HostSudoersRuleResource) Update(ctx context.Context, req resource.Updat
 	var plan HostSudoersRuleResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
-		return
-	}
-	if err := r.validateTargetUser(plan); err != nil {
-		resp.Diagnostics.AddError("Invalid sudoers rule", err.Error())
 		return
 	}
 	spec, rendered, err := hostSudoersRuleSpecFromModel(ctx, plan)
@@ -373,13 +355,6 @@ func (r *HostSudoersRuleResource) addPrivilegeWarning(diags *diag.Diagnostics) {
 	if r.manager != nil && r.manager.NeedsPrivilegeEscalation() {
 		addSudoPrivilegeWarningOnce(diags)
 	}
-}
-
-func (r *HostSudoersRuleResource) validateTargetUser(model HostSudoersRuleResourceModel) error {
-	if r.targetUser != "" && !model.User.IsNull() && !model.User.IsUnknown() && model.User.ValueString() != r.targetUser {
-		return fmt.Errorf("sudoers user %q must match provider target_user %q", model.User.ValueString(), r.targetUser)
-	}
-	return nil
 }
 
 func hostSudoersRulePlanReady(model HostSudoersRuleResourceModel) bool {

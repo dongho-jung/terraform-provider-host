@@ -155,6 +155,9 @@ func (r *HostScheduleResource) Configure(ctx context.Context, req resource.Confi
 
 	switch data := req.ProviderData.(type) {
 	case HostProviderData:
+		if !requireHostUserScope(data, "host_schedule", &resp.Diagnostics) {
+			return
+		}
 		if data.ScheduleManager == nil {
 			resp.Diagnostics.AddError(
 				"Schedule backend unavailable",

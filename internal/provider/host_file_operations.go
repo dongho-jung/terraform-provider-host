@@ -44,7 +44,7 @@ func withLockedHostFileForHome(ctx context.Context, homeDir string, path string,
 		return err
 	}
 
-	lock, err := lockHostFile(resolvedPath)
+	lock, err := lockHostFileContext(ctx, resolvedPath)
 	if err != nil {
 		return err
 	}
@@ -89,7 +89,13 @@ func writeHostFile(path string, content string) error {
 		return fmt.Errorf("create parent directory for %q: %w", path, err)
 	}
 
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat %q before write: %w", path, err)
+	}
+	if err := writeHostFileAtomically(path, []byte(content), mode); err != nil {
 		return fmt.Errorf("write %q: %w", path, err)
 	}
 
@@ -394,7 +400,7 @@ func writeCleanHostFileStateAndContentForRuntime(path string, state cleanHostFil
 	}
 	data = append(data, '\n')
 
-	if err := os.WriteFile(statePath, data, 0o600); err != nil {
+	if err := writeHostFileAtomically(statePath, data, 0o600); err != nil {
 		return fmt.Errorf("write clean host file state %q: %w", statePath, err)
 	}
 

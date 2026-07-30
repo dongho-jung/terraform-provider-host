@@ -8,11 +8,15 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	frameworkresource "github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 )
 
 type fakeBrewPackageManager struct {
 	statuses        map[string]BrewPackageStatus
+	statusCalls     int
 	taps            map[string]bool
 	tapped          []string
 	installed       []string
@@ -36,6 +40,7 @@ func (m *fakeBrewPackageManager) Tap(ctx context.Context, name string) error {
 }
 
 func (m *fakeBrewPackageManager) PackageStatus(ctx context.Context, name string, packageType string) (BrewPackageStatus, error) {
+	m.statusCalls++
 	if status, ok := m.statuses[brewPackageID(packageType, name)]; ok {
 		return status, nil
 	}
@@ -58,6 +63,12 @@ func (m *fakeBrewPackageManager) UpgradePackage(ctx context.Context, name string
 
 func (m *fakeBrewPackageManager) MarkPackageOnRequest(ctx context.Context, name string) error {
 	m.markedOnRequest = append(m.markedOnRequest, name)
+	for id, status := range m.statuses {
+		if status.PackageType == brewPackageTypeFormula && (status.Name == name || id == brewPackageID(brewPackageTypeFormula, name)) {
+			status.InstalledOnRequest = true
+			m.statuses[id] = status
+		}
+	}
 	return nil
 }
 
@@ -444,6 +455,173 @@ func TestBrewPackageIgnoresVersionKeepsExactVersionEnforced(t *testing.T) {
 		IgnoreVersion: types.BoolValue(true),
 	}) {
 		t.Fatal("exact version should be enforced even when ignore_version is true")
+	}
+}
+
+func TestBrewPackageResourceIgnoredVersionPlanRespectsPriorState(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	manager := &fakeBrewPackageManager{
+		statuses: map[string]BrewPackageStatus{
+			"formula:bat": {
+				Name:             "bat",
+				PackageType:      brewPackageTypeFormula,
+				Installed:        true,
+				InstalledVersion: "0.27.0",
+			},
+		},
+	}
+	r := &BrewPackageResource{manager: manager}
+
+	var schemaResp frameworkresource.SchemaResponse
+	r.Schema(ctx, frameworkresource.SchemaRequest{}, &schemaResp)
+	if schemaResp.Diagnostics.HasError() {
+		t.Fatalf("resource schema: %v", schemaResp.Diagnostics)
+	}
+
+	stateModel := BrewPackageResourceModel{
+		ID:               types.StringValue("formula:bat"),
+		Name:             types.StringValue("bat"),
+		Tap:              types.StringNull(),
+		PackageType:      types.StringValue(brewPackageTypeFormula),
+		Version:          types.StringValue(versionLatest),
+		IgnoreVersion:    types.BoolValue(true),
+		Autoremove:       types.BoolValue(true),
+		Zap:              types.BoolValue(false),
+		InstallReason:    types.StringValue(brewPackageInstallReasonOnRequest),
+		InstalledVersion: types.StringValue("0.26.1"),
+		CandidateVersion: types.StringNull(),
+		Pinned:           types.BoolValue(false),
+		AppPath:          types.StringNull(),
+		AppPaths:         types.ListValueMust(types.StringType, nil),
+	}
+	state := tfsdk.State{
+		Schema: schemaResp.Schema,
+		Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(ctx), nil),
+	}
+	if diags := state.Set(ctx, &stateModel); diags.HasError() {
+		t.Fatalf("encode state: %v", diags)
+	}
+	plan := tfsdk.Plan{
+		Schema: schemaResp.Schema,
+		Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(ctx), nil),
+	}
+	if diags := plan.Set(ctx, &stateModel); diags.HasError() {
+		t.Fatalf("encode plan: %v", diags)
+	}
+
+	modifyResp := frameworkresource.ModifyPlanResponse{Plan: plan}
+	r.ModifyPlan(ctx, frameworkresource.ModifyPlanRequest{State: state, Plan: plan}, &modifyResp)
+	if modifyResp.Diagnostics.HasError() {
+		t.Fatalf("modify plan: %v", modifyResp.Diagnostics)
+	}
+	var got BrewPackageResourceModel
+	if diags := modifyResp.Plan.Get(ctx, &got); diags.HasError() {
+		t.Fatalf("decode modified plan: %v", diags)
+	}
+	if got.InstalledVersion.ValueString() != "0.26.1" {
+		t.Fatalf("installed version %q, want prior state version", got.InstalledVersion.ValueString())
+	}
+	if !got.CandidateVersion.IsNull() {
+		t.Fatalf("candidate version should remain null, got %#v", got.CandidateVersion)
+	}
+	if manager.statusCalls != 0 {
+		t.Fatalf("ModifyPlan performed %d live package lookups, want none", manager.statusCalls)
+	}
+}
+
+func TestBrewPackageResourceDependencyFormulaPlansAndAppliesOnRequestReason(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	manager := &fakeBrewPackageManager{
+		statuses: map[string]BrewPackageStatus{
+			"formula:libgit2": {
+				Name:               "libgit2",
+				PackageType:        brewPackageTypeFormula,
+				Installed:          true,
+				InstalledVersion:   "1.9.4",
+				InstalledOnRequest: false,
+			},
+		},
+	}
+	r := &BrewPackageResource{manager: manager}
+
+	var schemaResp frameworkresource.SchemaResponse
+	r.Schema(ctx, frameworkresource.SchemaRequest{}, &schemaResp)
+	if schemaResp.Diagnostics.HasError() {
+		t.Fatalf("resource schema: %v", schemaResp.Diagnostics)
+	}
+
+	stateModel, installed, err := r.refreshState(ctx, BrewPackageResourceModel{
+		Name:        types.StringValue("libgit2"),
+		PackageType: types.StringValue(brewPackageTypeFormula),
+		Version:     types.StringValue(versionLatest),
+	})
+	if err != nil {
+		t.Fatalf("refresh dependency state: %s", err)
+	}
+	if !installed {
+		t.Fatal("expected libgit2 to be installed")
+	}
+	if stateModel.InstallReason.ValueString() != brewPackageInstallReasonDependency {
+		t.Fatalf("observed install reason %q, want dependency", stateModel.InstallReason.ValueString())
+	}
+
+	state := tfsdk.State{
+		Schema: schemaResp.Schema,
+		Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(ctx), nil),
+	}
+	if diags := state.Set(ctx, &stateModel); diags.HasError() {
+		t.Fatalf("encode state: %v", diags)
+	}
+	planModel := stateModel
+	planModel.InstallReason = types.StringValue(brewPackageInstallReasonOnRequest)
+	plan := tfsdk.Plan{
+		Schema: schemaResp.Schema,
+		Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(ctx), nil),
+	}
+	if diags := plan.Set(ctx, &planModel); diags.HasError() {
+		t.Fatalf("encode plan: %v", diags)
+	}
+
+	modifyResp := frameworkresource.ModifyPlanResponse{Plan: plan}
+	r.ModifyPlan(ctx, frameworkresource.ModifyPlanRequest{State: state, Plan: plan}, &modifyResp)
+	if modifyResp.Diagnostics.HasError() {
+		t.Fatalf("modify plan: %v", modifyResp.Diagnostics)
+	}
+	var modifiedPlan BrewPackageResourceModel
+	if diags := modifyResp.Plan.Get(ctx, &modifiedPlan); diags.HasError() {
+		t.Fatalf("decode modified plan: %v", diags)
+	}
+	if modifiedPlan.InstallReason.ValueString() != brewPackageInstallReasonOnRequest {
+		t.Fatalf("planned install reason %q, want on_request", modifiedPlan.InstallReason.ValueString())
+	}
+	if stateModel.InstallReason.Equal(modifiedPlan.InstallReason) {
+		t.Fatal("expected observed dependency reason to differ from desired on_request reason")
+	}
+	if manager.statusCalls != 1 {
+		t.Fatalf("ModifyPlan performed a live package lookup; status calls = %d, want 1 from refresh only", manager.statusCalls)
+	}
+
+	updateResp := frameworkresource.UpdateResponse{
+		State: tfsdk.State{Schema: schemaResp.Schema, Raw: modifyResp.Plan.Raw},
+	}
+	r.Update(ctx, frameworkresource.UpdateRequest{State: state, Plan: modifyResp.Plan}, &updateResp)
+	if updateResp.Diagnostics.HasError() {
+		t.Fatalf("update: %v", updateResp.Diagnostics)
+	}
+	if want := []string{"libgit2"}; !reflect.DeepEqual(manager.markedOnRequest, want) {
+		t.Fatalf("marked on request %#v, want %#v", manager.markedOnRequest, want)
+	}
+
+	var appliedState BrewPackageResourceModel
+	if diags := updateResp.State.Get(ctx, &appliedState); diags.HasError() {
+		t.Fatalf("decode applied state: %v", diags)
+	}
+	if appliedState.InstallReason.ValueString() != brewPackageInstallReasonOnRequest {
+		t.Fatalf("applied install reason %q, want on_request", appliedState.InstallReason.ValueString())
 	}
 }
 

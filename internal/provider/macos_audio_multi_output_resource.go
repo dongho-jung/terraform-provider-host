@@ -26,7 +26,9 @@ var (
 )
 
 type MacOSAudioMultiOutputResource struct {
-	manager MacOSAudioManager
+	manager                 MacOSAudioManager
+	targetUser              string
+	desktopSessionValidator HostDesktopSessionValidator
 }
 
 type MacOSAudioMultiOutputResourceModel struct {
@@ -73,7 +75,7 @@ func (r *MacOSAudioMultiOutputResource) Metadata(ctx context.Context, req resour
 
 func (r *MacOSAudioMultiOutputResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manages one macOS CoreAudio multi-output device.",
+		MarkdownDescription: "Manages one macOS CoreAudio multi-output device in the target user's active desktop session.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,
@@ -177,11 +179,16 @@ func (r *MacOSAudioMultiOutputResource) Configure(ctx context.Context, req resou
 
 	switch data := req.ProviderData.(type) {
 	case HostProviderData:
+		if !requireHostUserScope(data, "host_mac_audio_multi_output", &resp.Diagnostics) {
+			return
+		}
 		if data.MacOSAudioManager == nil {
-			resp.Diagnostics.AddError("macOS audio unavailable", "`host_mac_audio_multi_output` requires the macOS `swift` command to access CoreAudio.")
+			resp.Diagnostics.AddError("macOS audio unavailable", "`host_mac_audio_multi_output` requires the macOS `swiftc` compiler to access CoreAudio.")
 			return
 		}
 		r.manager = data.MacOSAudioManager
+		r.targetUser = data.TargetUser
+		r.desktopSessionValidator = data.DesktopSessionValidator
 	case MacOSAudioManager:
 		r.manager = data
 	default:
@@ -193,6 +200,9 @@ func (r *MacOSAudioMultiOutputResource) Configure(ctx context.Context, req resou
 }
 
 func (r *MacOSAudioMultiOutputResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if !requireHostDesktopSession(r.targetUser, r.desktopSessionValidator, &resp.Diagnostics) {
+		return
+	}
 	if req.Plan.Raw.IsNull() {
 		return
 	}
@@ -210,6 +220,9 @@ func (r *MacOSAudioMultiOutputResource) ModifyPlan(ctx context.Context, req reso
 }
 
 func (r *MacOSAudioMultiOutputResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	if !requireHostDesktopSession(r.targetUser, r.desktopSessionValidator, &resp.Diagnostics) {
+		return
+	}
 	var plan MacOSAudioMultiOutputResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
@@ -225,6 +238,9 @@ func (r *MacOSAudioMultiOutputResource) Create(ctx context.Context, req resource
 }
 
 func (r *MacOSAudioMultiOutputResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	if !requireHostDesktopSession(r.targetUser, r.desktopSessionValidator, &resp.Diagnostics) {
+		return
+	}
 	var state MacOSAudioMultiOutputResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
@@ -250,6 +266,9 @@ func (r *MacOSAudioMultiOutputResource) Read(ctx context.Context, req resource.R
 }
 
 func (r *MacOSAudioMultiOutputResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	if !requireHostDesktopSession(r.targetUser, r.desktopSessionValidator, &resp.Diagnostics) {
+		return
+	}
 	var plan MacOSAudioMultiOutputResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
@@ -265,6 +284,9 @@ func (r *MacOSAudioMultiOutputResource) Update(ctx context.Context, req resource
 }
 
 func (r *MacOSAudioMultiOutputResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	if !requireHostDesktopSession(r.targetUser, r.desktopSessionValidator, &resp.Diagnostics) {
+		return
+	}
 	var state MacOSAudioMultiOutputResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
@@ -278,6 +300,9 @@ func (r *MacOSAudioMultiOutputResource) Delete(ctx context.Context, req resource
 }
 
 func (r *MacOSAudioMultiOutputResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	if !requireHostDesktopSession(r.targetUser, r.desktopSessionValidator, &resp.Diagnostics) {
+		return
+	}
 	actual, exists, err := r.manager.ReadMultiOutput(ctx, req.ID)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to import macOS multi-output device", err.Error())

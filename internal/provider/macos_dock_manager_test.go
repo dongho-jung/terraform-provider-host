@@ -97,6 +97,37 @@ func TestCLIMacOSDockManagerWriteDock(t *testing.T) {
 	}
 }
 
+func TestCLIMacOSDockManagerCachesSequentialReads(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	manager := &CLIMacOSDockManager{
+		defaultsPath: "defaults",
+		run: func(ctx context.Context, command string, args ...string) ([]byte, error) {
+			calls++
+			if strings.Contains(strings.Join(args, " "), "persistent-apps") {
+				return []byte(`("_CFURLString" = "file:///Applications/Test.app/";)`), nil
+			}
+			return []byte("()"), nil
+		},
+	}
+
+	first, err := manager.ReadDock(t.Context())
+	if err != nil {
+		t.Fatalf("first ReadDock: %s", err)
+	}
+	second, err := manager.ReadDock(t.Context())
+	if err != nil {
+		t.Fatalf("second ReadDock: %s", err)
+	}
+	if calls != 2 {
+		t.Fatalf("defaults calls got %d, want 2 for one Dock snapshot", calls)
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("cached Dock got %#v, want %#v", second, first)
+	}
+}
+
 func TestMacOSDockManagedStateSortsByPriority(t *testing.T) {
 	t.Parallel()
 

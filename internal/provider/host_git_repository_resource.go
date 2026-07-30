@@ -28,7 +28,7 @@ var (
 	_ resource.ResourceWithModifyPlan  = &HostGitRepositoryResource{}
 )
 
-var gitSHAishPattern = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
+var gitSHAishPattern = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
 
 type HostGitRepositoryResource struct {
 	gitPath         string
@@ -68,6 +68,9 @@ func (r *HostGitRepositoryResource) Configure(ctx context.Context, req resource.
 
 	switch data := req.ProviderData.(type) {
 	case HostProviderData:
+		if !requireHostUserScope(data, "host_git_repo", &resp.Diagnostics) {
+			return
+		}
 		r.setConfiguredGitPath(data.GitPath)
 		r.homeDir = data.HomeDir
 	case string:
@@ -179,6 +182,13 @@ func (r *HostGitRepositoryResource) ModifyPlan(ctx context.Context, req resource
 	}
 
 	if spec.TrackRemote {
+		if remoteCommit, ok := reusableHostGitRemoteCommit(spec, state, r.homeDir); ok {
+			plan.RemoteCommit = types.StringValue(remoteCommit)
+			plan.Commit = types.StringValue(remoteCommit)
+			resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+			return
+		}
+
 		gitPath, available := r.tryGitExecutablePath()
 		if !available {
 			// Planning happens before package resources can install git. Keep the
@@ -368,11 +378,12 @@ func (r *HostGitRepositoryResource) syncRepository(ctx context.Context, model Ho
 		return model, err
 	}
 
-	if err := syncGitRepositoryCheckout(ctx, gitPath, spec); err != nil {
+	remoteCommit, err := syncGitRepositoryCheckout(ctx, gitPath, spec, hostGitKnownRemoteCommit(model))
+	if err != nil {
 		return model, err
 	}
 
-	state, exists, err := r.readRepository(ctx, model)
+	state, exists, err := r.readRepositoryWithRemoteCommit(ctx, model, remoteCommit)
 	if err != nil {
 		return model, err
 	}
@@ -428,11 +439,12 @@ func (r *HostGitRepositoryResource) syncRepositoryUpdate(
 		}
 	}
 
-	if err := syncGitRepositoryCheckout(ctx, gitPath, plannedSpec); err != nil {
+	remoteCommit, err := syncGitRepositoryCheckout(ctx, gitPath, plannedSpec, hostGitKnownRemoteCommit(plannedModel))
+	if err != nil {
 		return plannedModel, err
 	}
 
-	state, exists, err := r.readRepository(ctx, plannedModel)
+	state, exists, err := r.readRepositoryWithRemoteCommit(ctx, plannedModel, remoteCommit)
 	if err != nil {
 		return plannedModel, err
 	}
@@ -443,6 +455,14 @@ func (r *HostGitRepositoryResource) syncRepositoryUpdate(
 }
 
 func (r *HostGitRepositoryResource) readRepository(ctx context.Context, model HostGitRepositoryResourceModel) (HostGitRepositoryResourceModel, bool, error) {
+	return r.readRepositoryWithRemoteCommit(ctx, model, "")
+}
+
+func (r *HostGitRepositoryResource) readRepositoryWithRemoteCommit(
+	ctx context.Context,
+	model HostGitRepositoryResourceModel,
+	knownRemoteCommit string,
+) (HostGitRepositoryResourceModel, bool, error) {
 	gitPath, err := r.resolveGitExecutablePath("Git repository read")
 	if err != nil {
 		return model, false, err
@@ -479,11 +499,13 @@ func (r *HostGitRepositoryResource) readRepository(ctx context.Context, model Ho
 	model.Commit = types.StringValue(commit)
 	model.Dirty = types.BoolValue(dirty)
 	if spec.TrackRemote {
-		remoteCommit, err := gitResolveRemoteRef(ctx, gitPath, spec.URL, spec.Ref)
-		if err != nil {
-			return model, false, err
+		if knownRemoteCommit == "" {
+			knownRemoteCommit, err = gitResolveRemoteRef(ctx, gitPath, spec.URL, spec.Ref)
+			if err != nil {
+				return model, false, err
+			}
 		}
-		model.RemoteCommit = types.StringValue(remoteCommit)
+		model.RemoteCommit = types.StringValue(knownRemoteCommit)
 	} else {
 		model.RemoteCommit = types.StringNull()
 	}
@@ -628,6 +650,42 @@ func hostGitRepositoryPlanReady(model HostGitRepositoryResourceModel) bool {
 		!model.DeleteOnDestroy.IsNull() && !model.DeleteOnDestroy.IsUnknown()
 }
 
+func reusableHostGitRemoteCommit(
+	plannedSpec hostGitRepositorySpec,
+	state HostGitRepositoryResourceModel,
+	homeDir string,
+) (string, bool) {
+	if state.RemoteCommit.IsNull() || state.RemoteCommit.IsUnknown() {
+		return "", false
+	}
+	if !hostGitRepositoryPlanReady(state) {
+		return "", false
+	}
+	stateSpec, err := hostGitRepositorySpecFromModelForHome(state, homeDir)
+	if err != nil {
+		return "", false
+	}
+	if !stateSpec.TrackRemote ||
+		stateSpec.URL != plannedSpec.URL ||
+		stateSpec.Ref != plannedSpec.Ref ||
+		stateSpec.PathResolved != plannedSpec.PathResolved {
+		return "", false
+	}
+	remoteCommit := strings.TrimSpace(state.RemoteCommit.ValueString())
+	return remoteCommit, gitSHAishPattern.MatchString(remoteCommit)
+}
+
+func hostGitKnownRemoteCommit(model HostGitRepositoryResourceModel) string {
+	if model.RemoteCommit.IsNull() || model.RemoteCommit.IsUnknown() {
+		return ""
+	}
+	commit := strings.TrimSpace(model.RemoteCommit.ValueString())
+	if !gitSHAishPattern.MatchString(commit) {
+		return ""
+	}
+	return commit
+}
+
 func gitClone(ctx context.Context, gitPath string, spec hostGitRepositorySpec) error {
 	parent := filepath.Dir(spec.PathResolved)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
@@ -645,15 +703,25 @@ func gitClone(ctx context.Context, gitPath string, spec hostGitRepositorySpec) e
 	return nil
 }
 
-func syncGitRepositoryCheckout(ctx context.Context, gitPath string, spec hostGitRepositorySpec) error {
+func syncGitRepositoryCheckout(
+	ctx context.Context,
+	gitPath string,
+	spec hostGitRepositorySpec,
+	knownRemoteCommit string,
+) (string, error) {
 	var target string
+	var remoteCommit string
 	if spec.TrackRemote {
-		remoteCommit, err := gitResolveRemoteRef(ctx, gitPath, spec.URL, spec.Ref)
-		if err != nil {
-			return err
+		remoteCommit = strings.TrimSpace(knownRemoteCommit)
+		if remoteCommit == "" {
+			var err error
+			remoteCommit, err = gitResolveRemoteRef(ctx, gitPath, spec.URL, spec.Ref)
+			if err != nil {
+				return "", err
+			}
 		}
 		if _, err := runGit(ctx, gitPath, spec.PathResolved, "fetch", "--tags", spec.RemoteName); err != nil {
-			return err
+			return "", err
 		}
 		target = remoteCommit
 	} else if spec.Ref != "" {
@@ -661,36 +729,39 @@ func syncGitRepositoryCheckout(ctx context.Context, gitPath string, spec hostGit
 	}
 
 	if target != "" {
-		current, _ := gitCurrentCommit(ctx, gitPath, spec.PathResolved)
+		current, err := gitCurrentCommit(ctx, gitPath, spec.PathResolved)
+		if err != nil {
+			return "", err
+		}
 		if current != target {
 			dirty, err := gitCheckoutDirty(ctx, gitPath, spec.PathResolved)
 			if err != nil {
-				return err
+				return "", err
 			}
 			if dirty {
 				if !spec.Force {
-					return fmt.Errorf("repository %q has local changes; set force = true to discard them before checkout", spec.PathResolved)
+					return "", fmt.Errorf("repository %q has local changes; set force = true to discard them before checkout", spec.PathResolved)
 				}
 				if _, err := runGit(ctx, gitPath, spec.PathResolved, "reset", "--hard"); err != nil {
-					return err
+					return "", err
 				}
 				if _, err := runGit(ctx, gitPath, spec.PathResolved, "clean", "-fd"); err != nil {
-					return err
+					return "", err
 				}
 			}
 		}
 		if _, err := runGit(ctx, gitPath, spec.PathResolved, "checkout", "--detach", target); err != nil {
-			return err
+			return "", err
 		}
 	}
 
 	if spec.Recursive {
 		if _, err := runGit(ctx, gitPath, spec.PathResolved, "submodule", "update", "--init", "--recursive"); err != nil {
-			return err
+			return "", err
 		}
 	}
 
-	return nil
+	return remoteCommit, nil
 }
 
 func ensureGitRepositoryMatches(ctx context.Context, gitPath string, spec hostGitRepositorySpec) error {
@@ -872,7 +943,7 @@ func selectGitRemoteRefCommit(out string, ref string) (string, bool) {
 	var refs []remoteRef
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 2 {
+		if len(fields) < 2 || !gitSHAishPattern.MatchString(fields[0]) {
 			continue
 		}
 		refs = append(refs, remoteRef{commit: fields[0], name: fields[1]})

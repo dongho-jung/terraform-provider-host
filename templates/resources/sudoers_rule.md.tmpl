@@ -10,6 +10,8 @@ description: |-
 
 Manages one root-owned, mode-0440 structured rule under `/etc/sudoers.d` on Linux, `/private/etc/sudoers.d` on macOS, or `/usr/local/etc/sudoers.d` on FreeBSD.
 
+This is a system-scoped resource. Provider `target_user` is not required and does not restrict the rule's `user`.
+
 Every create and update is checked with strict `visudo` syntax validation before an atomic install. The resource deliberately accepts only a literal local `user` and literal absolute command paths without arguments or sudoers metacharacters. Each command is rendered with sudoers' empty-argument marker, so the grant does not also authorize arbitrary arguments.
 
 If an operation needs fixed arguments, install a small, separately reviewed wrapper with `host_system_file` and authorize that wrapper's absolute path here. Keep the wrapper's inputs fixed and avoid forwarding arbitrary user-controlled arguments. Use a separate system-administration workflow when aliases, groups, wildcards, variable command arguments, or arbitrary raw sudoers syntax are required.

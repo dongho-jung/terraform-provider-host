@@ -191,6 +191,9 @@ func (r *MacOSDefaultResource) Configure(ctx context.Context, req resource.Confi
 
 	switch data := req.ProviderData.(type) {
 	case HostProviderData:
+		if !requireHostUserScope(data, "host_mac_setting", &resp.Diagnostics) {
+			return
+		}
 		if data.MacOSDefaultsManager == nil {
 			resp.Diagnostics.AddError("macOS settings unavailable", "`host_mac_setting` requires the macOS `defaults` command.")
 			return
@@ -485,6 +488,7 @@ func (m *CLIMacOSDefaultsManager) defaultsArgs(currentHost bool, args ...string)
 
 func runMacOSCommand(ctx context.Context, command string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, command, args...)
+	cmd.Env = environmentWithCLocale(cmd.Environ())
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout

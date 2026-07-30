@@ -52,6 +52,9 @@ func (r *HostLinkResource) Configure(ctx context.Context, req resource.Configure
 		resp.Diagnostics.AddError("Unexpected provider data", fmt.Sprintf("Expected HostProviderData, got %T.", req.ProviderData))
 		return
 	}
+	if !requireHostUserScope(data, "host_link", &resp.Diagnostics) {
+		return
+	}
 	r.homeDir = data.HomeDir
 }
 
@@ -203,6 +206,32 @@ func (r *HostLinkResource) Delete(ctx context.Context, req resource.DeleteReques
 
 func (r *HostLinkResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("destination"), req, resp)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	destinationPath, err := resolveHostLinkDestinationForHome(req.ID, r.homeDir)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to import host link", err.Error())
+		return
+	}
+	sourcePath, exists, err := readHostLinkSource(destinationPath)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to import host link", err.Error())
+		return
+	}
+	if !exists {
+		resp.Diagnostics.AddError("Failed to import host link", fmt.Sprintf("Symbolic link %q does not exist.", req.ID))
+		return
+	}
+
+	// Hydrate the required source attribute before the first Read. Import only
+	// supplies a destination, while Read needs both sides to resolve the link.
+	resp.Diagnostics.Append(resp.State.SetAttribute(
+		ctx,
+		path.Root("source"),
+		types.StringValue(sourcePath),
+	)...)
 }
 
 func (r *HostLinkResource) syncLink(model HostLinkResourceModel) (HostLinkResourceModel, error) {

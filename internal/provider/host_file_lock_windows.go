@@ -3,12 +3,20 @@
 package provider
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 )
+
+func lockHostFileContext(ctx context.Context, path string) (*lockedHostFile, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return lockHostFile(path)
+}
 
 type lockedHostFile struct {
 	lockFile *os.File

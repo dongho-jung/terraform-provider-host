@@ -96,6 +96,9 @@ func (r *AURHelperResource) Configure(ctx context.Context, req resource.Configur
 	}
 	switch data := req.ProviderData.(type) {
 	case HostProviderData:
+		if !requireHostUserScope(data, "host_aur_helper", &resp.Diagnostics) {
+			return
+		}
 		if data.AURHelperManager == nil {
 			resp.Diagnostics.AddError("AUR helper bootstrap unavailable", "`host_aur_helper` requires Pacman on an Arch Linux host.")
 			return
