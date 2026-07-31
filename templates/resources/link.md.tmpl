@@ -10,6 +10,13 @@ description: |-
 
 Manages a symbolic link from a destination host path to a source file or directory.
 
+By default the destination points directly at the resolved source path. Set
+`stage_source = true` when the source lives in a Terraform checkout or worktree:
+the provider copies it into content-addressed storage under `runtime_dir` and
+links the destination to that stable copy. Source changes are staged on the
+next apply, and deleting or moving the checkout does not break the live link.
+The staged directory is private to the provider target user.
+
 ## Example Usage
 
 {{ tffile "examples/resources/host_link/resource.tf" }}
@@ -17,7 +24,7 @@ Manages a symbolic link from a destination host path to a source file or directo
 ## Import
 
 Import an existing symbolic link by its destination path. The provider reads
-and stores the current link source:
+and stores the current link source in direct-link mode:
 
 ```shell
 terraform import host_link.neovim_config '~/.config/nvim'

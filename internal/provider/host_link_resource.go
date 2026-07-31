@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -23,14 +25,17 @@ var (
 )
 
 type HostLinkResource struct {
-	homeDir string
+	homeDir    string
+	runtimeDir string
 }
 
 type HostLinkResourceModel struct {
 	ID              types.String `tfsdk:"id"`
 	Source          types.String `tfsdk:"source"`
+	StageSource     types.Bool   `tfsdk:"stage_source"`
 	Destination     types.String `tfsdk:"destination"`
 	SourcePath      types.String `tfsdk:"source_path"`
+	SourceDigest    types.String `tfsdk:"source_digest"`
 	DestinationPath types.String `tfsdk:"destination_path"`
 }
 
@@ -56,6 +61,7 @@ func (r *HostLinkResource) Configure(ctx context.Context, req resource.Configure
 		return
 	}
 	r.homeDir = data.HomeDir
+	r.runtimeDir = data.RuntimeDir
 }
 
 func (r *HostLinkResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
@@ -74,6 +80,12 @@ func (r *HostLinkResource) Schema(ctx context.Context, req resource.SchemaReques
 				Required:            true,
 				MarkdownDescription: "Source file or directory the symbolic link points to. Absolute paths are used as-is, `~` is expanded to the provider `home_dir`, and relative paths are resolved from the Terraform working directory.",
 			},
+			"stage_source": schema.BoolAttribute{
+				Optional:            true,
+				Computed:            true,
+				Default:             booldefault.StaticBool(false),
+				MarkdownDescription: "Copy the source into a content-addressed directory under the provider `runtime_dir` and point the symbolic link at that stable copy. This isolates managed links from temporary Terraform worktrees; source content changes take effect on the next apply instead of immediately.",
+			},
 			"destination": schema.StringAttribute{
 				Required:            true,
 				MarkdownDescription: "Destination host path where the symbolic link should exist. `~` is expanded to the provider `home_dir`.",
@@ -81,6 +93,10 @@ func (r *HostLinkResource) Schema(ctx context.Context, req resource.SchemaReques
 			"source_path": schema.StringAttribute{
 				Computed:            true,
 				MarkdownDescription: "Resolved absolute source path currently stored in the symbolic link.",
+			},
+			"source_digest": schema.StringAttribute{
+				Computed:            true,
+				MarkdownDescription: "Content and permission SHA256 for a staged source. Null when `stage_source` is false.",
 			},
 			"destination_path": schema.StringAttribute{
 				Computed:            true,
@@ -105,20 +121,21 @@ func (r *HostLinkResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 		return
 	}
 
-	link, err := hostLinkSpecFromModelForHome(plan, r.homeDir)
+	resolved, err := resolveHostLinkModel(plan, r.homeDir, r.runtimeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid host link", err.Error())
 		return
 	}
-	if err := ensureHostLinkSourceExists(link.SourcePath); err != nil {
-		resp.Diagnostics.AddError("Invalid host link source", err.Error())
-		return
-	}
 
 	plan.ID = types.StringValue(plan.Destination.ValueString())
-	plan.SourcePath = types.StringValue(link.SourcePath)
-	plan.DestinationPath = types.StringValue(link.DestinationPath)
-	requireReplaceIfResolvedPathChanged(req, resp, path.Root("destination"), state.DestinationPath, link.DestinationPath)
+	plan.SourcePath = types.StringValue(resolved.Link.SourcePath)
+	if resolved.SourceDigest == "" {
+		plan.SourceDigest = types.StringNull()
+	} else {
+		plan.SourceDigest = types.StringValue(resolved.SourceDigest)
+	}
+	plan.DestinationPath = types.StringValue(resolved.Link.DestinationPath)
+	requireReplaceIfResolvedPathChanged(req, resp, path.Root("destination"), state.DestinationPath, resolved.Link.DestinationPath)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -148,13 +165,13 @@ func (r *HostLinkResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
-	link, err := hostLinkSpecFromModelForHome(state, r.homeDir)
+	destinationPath, err := resolveHostLinkDestinationForHome(state.Destination.ValueString(), r.homeDir)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid host link state", err.Error())
 		return
 	}
 
-	actualSource, exists, err := readHostLinkSource(link.DestinationPath)
+	actualSource, exists, err := readHostLinkSource(destinationPath)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read host link", err.Error())
 		return
@@ -166,7 +183,20 @@ func (r *HostLinkResource) Read(ctx context.Context, req resource.ReadRequest, r
 
 	state.ID = types.StringValue(state.Destination.ValueString())
 	state.SourcePath = types.StringValue(actualSource)
-	state.DestinationPath = types.StringValue(link.DestinationPath)
+	state.DestinationPath = types.StringValue(destinationPath)
+	if state.StageSource.IsNull() || state.StageSource.IsUnknown() {
+		state.StageSource = types.BoolValue(false)
+	}
+	if state.StageSource.ValueBool() {
+		digest, digestErr := hostLinkSourceDigest(actualSource)
+		if digestErr != nil {
+			state.SourceDigest = types.StringNull()
+		} else {
+			state.SourceDigest = types.StringValue(digest)
+		}
+	} else {
+		state.SourceDigest = types.StringNull()
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -201,6 +231,17 @@ func (r *HostLinkResource) Delete(ctx context.Context, req resource.DeleteReques
 
 	if err := deleteHostLink(link.DestinationPath); err != nil {
 		resp.Diagnostics.AddError("Failed to delete host link", err.Error())
+		return
+	}
+	if !state.StageSource.IsNull() && !state.StageSource.IsUnknown() && state.StageSource.ValueBool() {
+		stageRoot, stageErr := hostLinkStageRoot(r.runtimeDir, link.DestinationPath)
+		if stageErr != nil {
+			resp.Diagnostics.AddError("Failed to delete staged host link", stageErr.Error())
+			return
+		}
+		if stageErr := removeHostLinkStageRoot(stageRoot); stageErr != nil {
+			resp.Diagnostics.AddError("Failed to delete staged host link", stageErr.Error())
+		}
 	}
 }
 
@@ -232,30 +273,97 @@ func (r *HostLinkResource) ImportState(ctx context.Context, req resource.ImportS
 		path.Root("source"),
 		types.StringValue(sourcePath),
 	)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(
+		ctx,
+		path.Root("stage_source"),
+		types.BoolValue(false),
+	)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(
+		ctx,
+		path.Root("source_digest"),
+		types.StringNull(),
+	)...)
 }
 
 func (r *HostLinkResource) syncLink(model HostLinkResourceModel) (HostLinkResourceModel, error) {
-	link, err := hostLinkSpecFromModelForHome(model, r.homeDir)
+	resolved, err := resolveHostLinkModel(model, r.homeDir, r.runtimeDir)
 	if err != nil {
 		return model, err
 	}
 
-	if err := ensureHostLinkSourceExists(link.SourcePath); err != nil {
+	if resolved.StageRoot != "" {
+		if err := stageHostLinkSource(resolved.OriginalSourcePath, resolved.Link.SourcePath, resolved.SourceDigest); err != nil {
+			return model, err
+		}
+	}
+	if err := writeHostLink(resolved.Link.DestinationPath, resolved.Link.SourcePath); err != nil {
 		return model, err
 	}
-	if err := writeHostLink(link.DestinationPath, link.SourcePath); err != nil {
+	if resolved.StageRoot == "" && r.runtimeDir != "" {
+		stageRoot, stageErr := hostLinkStageRoot(r.runtimeDir, resolved.Link.DestinationPath)
+		if stageErr != nil {
+			return model, stageErr
+		}
+		if stageErr := removeHostLinkStageRoot(stageRoot); stageErr != nil {
+			return model, stageErr
+		}
+	} else if err := cleanupHostLinkStages(resolved.StageRoot, resolved.SourceDigest); err != nil {
 		return model, err
 	}
 
 	model.ID = types.StringValue(model.Destination.ValueString())
-	model.SourcePath = types.StringValue(link.SourcePath)
-	model.DestinationPath = types.StringValue(link.DestinationPath)
+	model.SourcePath = types.StringValue(resolved.Link.SourcePath)
+	if resolved.SourceDigest == "" {
+		model.SourceDigest = types.StringNull()
+	} else {
+		model.SourceDigest = types.StringValue(resolved.SourceDigest)
+	}
+	model.DestinationPath = types.StringValue(resolved.Link.DestinationPath)
 	return model, nil
 }
 
 type hostLinkSpec struct {
 	DestinationPath string
 	SourcePath      string
+}
+
+type resolvedHostLink struct {
+	Link               hostLinkSpec
+	OriginalSourcePath string
+	SourceDigest       string
+	StageRoot          string
+}
+
+func resolveHostLinkModel(model HostLinkResourceModel, homeDir string, runtimeDir string) (resolvedHostLink, error) {
+	link, err := hostLinkSpecFromModelForHome(model, homeDir)
+	if err != nil {
+		return resolvedHostLink{}, err
+	}
+	if err := ensureHostLinkSourceExists(link.SourcePath); err != nil {
+		return resolvedHostLink{}, err
+	}
+
+	resolved := resolvedHostLink{
+		Link:               link,
+		OriginalSourcePath: link.SourcePath,
+	}
+	if model.StageSource.IsNull() || model.StageSource.IsUnknown() || !model.StageSource.ValueBool() {
+		return resolved, nil
+	}
+
+	digest, err := hostLinkSourceDigest(link.SourcePath)
+	if err != nil {
+		return resolvedHostLink{}, fmt.Errorf("digest source: %w", err)
+	}
+	stageRoot, err := hostLinkStageRoot(runtimeDir, link.DestinationPath)
+	if err != nil {
+		return resolvedHostLink{}, fmt.Errorf("resolve staged source: %w", err)
+	}
+
+	resolved.SourceDigest = digest
+	resolved.StageRoot = stageRoot
+	resolved.Link.SourcePath = hostLinkStagePath(stageRoot, digest)
+	return resolved, nil
 }
 
 func hostLinkSpecFromModelForHome(model HostLinkResourceModel, homeDir string) (hostLinkSpec, error) {
@@ -352,13 +460,28 @@ func writeHostLink(destinationPath string, sourcePath string) error {
 		if sameHostLinkPath(actualSource, sourcePath) {
 			return nil
 		}
-		if err := os.Remove(destinationPath); err != nil {
-			return fmt.Errorf("remove stale symbolic link %q: %w", destinationPath, err)
-		}
 	}
 
-	if err := os.Symlink(sourcePath, destinationPath); err != nil {
-		return fmt.Errorf("create symbolic link %q -> %q: %w", destinationPath, sourcePath, err)
+	tempDir, err := os.MkdirTemp(parent, ".terraform-provider-host-link-*")
+	if err != nil {
+		return fmt.Errorf("create temporary link directory for %q: %w", destinationPath, err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	tempLink := filepath.Join(tempDir, "link")
+	if err := os.Symlink(sourcePath, tempLink); err != nil {
+		return fmt.Errorf("create temporary symbolic link %q -> %q: %w", tempLink, sourcePath, err)
+	}
+	if err := os.Rename(tempLink, destinationPath); err != nil {
+		if !exists || runtime.GOOS != "windows" {
+			return fmt.Errorf("atomically replace symbolic link %q -> %q: %w", destinationPath, sourcePath, err)
+		}
+		if removeErr := os.Remove(destinationPath); removeErr != nil {
+			return fmt.Errorf("remove stale symbolic link %q: %w", destinationPath, removeErr)
+		}
+		if renameErr := os.Rename(tempLink, destinationPath); renameErr != nil {
+			return fmt.Errorf("replace symbolic link %q -> %q: %w", destinationPath, sourcePath, renameErr)
+		}
 	}
 
 	return nil

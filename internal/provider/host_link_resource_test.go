@@ -3,10 +3,12 @@ package provider
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
 )
 
@@ -55,6 +57,35 @@ func TestWriteHostLinkCreatesSymlink(t *testing.T) {
 	}
 }
 
+func TestWriteHostLinkAtomicallyReplacesSymlink(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	firstTarget := filepath.Join(root, "first")
+	secondTarget := filepath.Join(root, "second")
+	for _, target := range []string{firstTarget, secondTarget} {
+		if err := os.WriteFile(target, []byte(filepath.Base(target)), 0o600); err != nil {
+			t.Fatalf("write target %q: %s", target, err)
+		}
+	}
+
+	link := filepath.Join(root, "current")
+	if err := os.Symlink(firstTarget, link); err != nil {
+		t.Fatalf("create initial link: %s", err)
+	}
+	if err := writeHostLink(link, secondTarget); err != nil {
+		t.Fatalf("replace link: %s", err)
+	}
+
+	got, exists, err := readHostLinkSource(link)
+	if err != nil {
+		t.Fatalf("read replaced link: %s", err)
+	}
+	if !exists || got != secondTarget {
+		t.Fatalf("replaced link = %q, exists=%t; want %q", got, exists, secondTarget)
+	}
+}
+
 func TestWriteHostLinkRejectsExistingDirectory(t *testing.T) {
 	t.Parallel()
 
@@ -92,6 +123,109 @@ func TestDeleteHostLinkRefusesRegularDirectory(t *testing.T) {
 
 	if err := deleteHostLink(link); err == nil {
 		t.Fatal("expected existing directory error")
+	}
+}
+
+func TestHostLinkSourceDigestTracksContentAndMode(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	if err := os.Mkdir(source, 0o750); err != nil {
+		t.Fatalf("create source: %s", err)
+	}
+	file := filepath.Join(source, "config")
+	if err := os.WriteFile(file, []byte("first"), 0o600); err != nil {
+		t.Fatalf("write source: %s", err)
+	}
+
+	first, err := hostLinkSourceDigest(source)
+	if err != nil {
+		t.Fatalf("digest source: %s", err)
+	}
+	if !isSHA256Hex(first) {
+		t.Fatalf("digest %q is not lowercase SHA256", first)
+	}
+
+	if err := os.WriteFile(file, []byte("second"), 0o600); err != nil {
+		t.Fatalf("change source content: %s", err)
+	}
+	second, err := hostLinkSourceDigest(source)
+	if err != nil {
+		t.Fatalf("digest changed content: %s", err)
+	}
+	if second == first {
+		t.Fatal("content change did not change digest")
+	}
+
+	if err := os.Chmod(file, 0o640); err != nil {
+		t.Fatalf("change source mode: %s", err)
+	}
+	third, err := hostLinkSourceDigest(source)
+	if err != nil {
+		t.Fatalf("digest changed mode: %s", err)
+	}
+	if third == second {
+		t.Fatal("mode change did not change digest")
+	}
+}
+
+func TestHostLinkResourceStagesSourceOutsideWorkingTree(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	source := filepath.Join(root, "checkout", "config")
+	if err := os.MkdirAll(source, 0o750); err != nil {
+		t.Fatalf("create source: %s", err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "settings"), []byte("managed"), 0o640); err != nil {
+		t.Fatalf("write source: %s", err)
+	}
+
+	homeDir := filepath.Join(root, "home")
+	runtimeDir := filepath.Join(homeDir, ".local", "state", "terraform-provider-host")
+	resource := &HostLinkResource{homeDir: homeDir, runtimeDir: runtimeDir}
+	model, err := resource.syncLink(HostLinkResourceModel{
+		Source:      types.StringValue(source),
+		StageSource: types.BoolValue(true),
+		Destination: types.StringValue("~/.config/example"),
+	})
+	if err != nil {
+		t.Fatalf("sync staged link: %s", err)
+	}
+
+	stagedSource := model.SourcePath.ValueString()
+	if !strings.HasPrefix(stagedSource, runtimeDir+string(os.PathSeparator)) {
+		t.Fatalf("staged source %q is outside runtime %q", stagedSource, runtimeDir)
+	}
+	if got, err := os.ReadFile(filepath.Join(stagedSource, "settings")); err != nil || string(got) != "managed" {
+		t.Fatalf("read staged content: got %q, err=%v", got, err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "checkout")); err != nil {
+		t.Fatalf("remove checkout: %s", err)
+	}
+
+	linkSource, exists, err := readHostLinkSource(model.DestinationPath.ValueString())
+	if err != nil {
+		t.Fatalf("read managed link: %s", err)
+	}
+	if !exists || linkSource != stagedSource {
+		t.Fatalf("managed link = %q, exists=%t; want %q", linkSource, exists, stagedSource)
+	}
+	if got, err := os.ReadFile(filepath.Join(linkSource, "settings")); err != nil || string(got) != "managed" {
+		t.Fatalf("read staged content after checkout removal: got %q, err=%v", got, err)
+	}
+}
+
+func TestRemoveHostLinkStageRootRejectsBroadPath(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := removeHostLinkStageRoot(root); err == nil {
+		t.Fatal("expected unsafe stage root error")
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Fatalf("unsafe root was changed: %s", err)
 	}
 }
 

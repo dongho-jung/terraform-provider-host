@@ -1,3 +1,13 @@
+## 0.17.0 (2026-07-31)
+
+FEATURES:
+
+- Add `host_link.stage_source` to copy a file or directory into content-addressed provider runtime storage before linking it, keeping live configuration independent from a temporary Terraform checkout or worktree.
+
+IMPROVEMENTS:
+
+- Replace managed symbolic links atomically when their source changes.
+
 ## 0.16.0 (2026-07-31)
 
 FEATURES:

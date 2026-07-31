@@ -10,6 +10,13 @@ description: |-
 
 Manages a symbolic link from a destination host path to a source file or directory.
 
+By default the destination points directly at the resolved source path. Set
+`stage_source = true` when the source lives in a Terraform checkout or worktree:
+the provider copies it into content-addressed storage under `runtime_dir` and
+links the destination to that stable copy. Source changes are staged on the
+next apply, and deleting or moving the checkout does not break the live link.
+The staged directory is private to the provider target user.
+
 ## Example Usage
 
 ```terraform
@@ -18,8 +25,9 @@ resource "host_package_brew" "neovim" {
 }
 
 resource "host_link" "neovim_config" {
-  source      = "${path.module}/config/nvim"
-  destination = "~/.config/nvim"
+  source       = "${path.module}/config/nvim"
+  destination  = "~/.config/nvim"
+  stage_source = true
 
   depends_on = [
     host_package_brew.neovim,
@@ -35,7 +43,7 @@ resource "host_link" "hammerspoon_config" {
 ## Import
 
 Import an existing symbolic link by its destination path. The provider reads
-and stores the current link source:
+and stores the current link source in direct-link mode:
 
 ```shell
 terraform import host_link.neovim_config '~/.config/nvim'
@@ -49,8 +57,13 @@ terraform import host_link.neovim_config '~/.config/nvim'
 - `destination` (String) Destination host path where the symbolic link should exist. `~` is expanded to the provider `home_dir`.
 - `source` (String) Source file or directory the symbolic link points to. Absolute paths are used as-is, `~` is expanded to the provider `home_dir`, and relative paths are resolved from the Terraform working directory.
 
+### Optional
+
+- `stage_source` (Boolean) Copy the source into a content-addressed directory under the provider `runtime_dir` and point the symbolic link at that stable copy. This isolates managed links from temporary Terraform worktrees; source content changes take effect on the next apply instead of immediately.
+
 ### Read-Only
 
 - `destination_path` (String) Resolved absolute symbolic link destination path.
 - `id` (String) Resource identifier, equal to `destination`.
+- `source_digest` (String) Content and permission SHA256 for a staged source. Null when `stage_source` is false.
 - `source_path` (String) Resolved absolute source path currently stored in the symbolic link.

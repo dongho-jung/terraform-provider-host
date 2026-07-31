@@ -24,6 +24,11 @@ Each `host_package_*` backend has a resource for lifecycle ownership and a data 
 
 User-scoped metadata, including file-block state and schedule scripts, defaults to `~/.local/state/terraform-provider-host` under `target_user`. A system-only provider has no user runtime directory.
 
+When `host_link.stage_source` is enabled, the provider also stores a
+content-addressed copy below `runtime_dir/links`. The live symbolic link points
+to that stable copy instead of the Terraform working directory. Old staged
+versions are removed only after the replacement link has been published.
+
 ## AUR Trust Boundary
 
 Provider-level AUR bootstrap and `host_aur_helper` both build `yay` or `paru` from the current AUR Git HEAD. AUR repositories and `PKGBUILD` files are user-contributed and mutable, and builds execute unsandboxed code as the Terraform user.

@@ -3,8 +3,9 @@ resource "host_package_brew" "neovim" {
 }
 
 resource "host_link" "neovim_config" {
-  source      = "${path.module}/config/nvim"
-  destination = "~/.config/nvim"
+  source       = "${path.module}/config/nvim"
+  destination  = "~/.config/nvim"
+  stage_source = true
 
   depends_on = [
     host_package_brew.neovim,
