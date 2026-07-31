@@ -1,3 +1,9 @@
+## 0.17.3 (2026-07-31)
+
+DOCUMENTATION:
+
+- Keep the provider landing page focused on general configuration and capabilities, with AUR bootstrap details in the relevant resource and security guide.
+
 ## 0.17.2 (2026-07-31)
 
 FIXES:
