@@ -10,6 +10,10 @@ description: |-
 
 Manages a host directory.
 
+Deletion refuses the filesystem root, target user's home, provider runtime, and
+active Terraform working directory. Recursive deletion also refuses any parent
+tree that contains one of those protected paths.
+
 ## Example Usage
 
 ```terraform
@@ -48,7 +52,7 @@ terraform import host_dir.projects '~/projects'
 ### Optional
 
 - `mode` (String) Directory permission mode as four octal digits, such as `0755`.
-- `recursive_delete` (Boolean) Remove the directory tree recursively on destroy. Defaults to false, which only removes an empty directory.
+- `recursive_delete` (Boolean) Remove the directory tree recursively on destroy. Defaults to false, which only removes an empty directory. Recursive deletion refuses filesystem roots and paths containing the target user's home, provider runtime, or Terraform working directory.
 
 ### Read-Only
 

@@ -1,3 +1,10 @@
+## 0.17.1 (2026-07-31)
+
+FIXES:
+
+- Refuse `host_dir` and `host_git_repo` deletion of filesystem roots and exact protected directories, plus recursive deletion of trees containing the target home, provider runtime, or active Terraform working directory.
+- Reject a final `host_dir` symbolic link before changing directory permissions.
+
 ## 0.17.0 (2026-07-31)
 
 FEATURES:

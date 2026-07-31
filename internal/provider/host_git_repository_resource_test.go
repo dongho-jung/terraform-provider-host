@@ -469,6 +469,29 @@ func TestHostGitRepositoryImportStateReadsExistingCheckout(t *testing.T) {
 	}
 }
 
+func TestHostGitRepositoryDeleteRefusesHomeDirectory(t *testing.T) {
+	t.Parallel()
+
+	homeDir := t.TempDir()
+	resource := &HostGitRepositoryResource{
+		homeDir:    homeDir,
+		runtimeDir: filepath.Join(homeDir, ".local", "state", providerRuntimeDirName),
+	}
+	err := resource.deleteRepository(t.Context(), HostGitRepositoryResourceModel{
+		URL:             types.StringValue("https://example.com/repository.git"),
+		Path:            types.StringValue(homeDir),
+		Ref:             types.StringNull(),
+		RemoteName:      types.StringValue("origin"),
+		TrackRemote:     types.BoolValue(false),
+		Recursive:       types.BoolValue(false),
+		Force:           types.BoolValue(false),
+		DeleteOnDestroy: types.BoolValue(true),
+	})
+	if err == nil {
+		t.Fatal("expected protected home directory error")
+	}
+}
+
 func initTestGitRepository(t *testing.T, gitPath string, contents string) string {
 	t.Helper()
 

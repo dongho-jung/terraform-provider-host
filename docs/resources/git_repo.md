@@ -12,7 +12,7 @@ Clones and optionally updates a Git repository at a host path.
 
 The provider resolves `git` when a Git operation needs it rather than when provider configuration starts. On a fresh host, a package resource can install Git earlier in the same apply when this repository has an explicit dependency on that package. If `track_remote = true` and Git is not yet available during planning, the remote and planned commit values remain unknown until apply instead of making provider configuration fail.
 
-Local changes are preserved unless `force = true`. Changing `url` or `remote_name` updates the existing remote in place after verifying that it still matches Terraform state; unexpected external remote changes are never overwritten. With `delete_on_destroy = true`, deletion first verifies that the destination is the expected Git repository.
+Local changes are preserved unless `force = true`. Changing `url` or `remote_name` updates the existing remote in place after verifying that it still matches Terraform state; unexpected external remote changes are never overwritten. With `delete_on_destroy = true`, deletion first verifies that the destination is the expected Git repository and refuses any tree containing the filesystem root, target user's home, provider runtime, or active Terraform working directory.
 
 ## Example Usage
 
@@ -68,7 +68,7 @@ terraform import host_git_repo.dotfiles '~/.dotfiles'
 
 ### Optional
 
-- `delete_on_destroy` (Boolean) Remove the cloned repository directory on destroy. The provider refuses to remove paths that are not Git repositories.
+- `delete_on_destroy` (Boolean) Remove the cloned repository directory on destroy. The provider verifies the expected Git repository and refuses filesystem roots or paths containing the target user's home, provider runtime, or Terraform working directory.
 - `force` (Boolean) Discard local checkout changes when moving to the desired commit. Defaults to false.
 - `recursive` (Boolean) Initialize and update submodules recursively.
 - `ref` (String) Branch, tag, or commit to checkout. Omit to use the remote default branch.

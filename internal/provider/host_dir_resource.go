@@ -25,7 +25,8 @@ var (
 )
 
 type HostDirResource struct {
-	homeDir string
+	homeDir    string
+	runtimeDir string
 }
 
 type HostDirResourceModel struct {
@@ -58,6 +59,7 @@ func (r *HostDirResource) Configure(ctx context.Context, req resource.ConfigureR
 		return
 	}
 	r.homeDir = data.HomeDir
+	r.runtimeDir = data.RuntimeDir
 }
 
 func (r *HostDirResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
@@ -89,7 +91,7 @@ func (r *HostDirResource) Schema(ctx context.Context, req resource.SchemaRequest
 				Optional:            true,
 				Computed:            true,
 				Default:             booldefault.StaticBool(false),
-				MarkdownDescription: "Remove the directory tree recursively on destroy. Defaults to false, which only removes an empty directory.",
+				MarkdownDescription: "Remove the directory tree recursively on destroy. Defaults to false, which only removes an empty directory. Recursive deletion refuses filesystem roots and paths containing the target user's home, provider runtime, or Terraform working directory.",
 			},
 		},
 	}
@@ -118,6 +120,12 @@ func (r *HostDirResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 	if _, err := parseHostDirMode(plan.Mode.ValueString()); err != nil {
 		resp.Diagnostics.AddError("Invalid host directory mode", err.Error())
 		return
+	}
+	if !plan.RecursiveDelete.IsNull() && !plan.RecursiveDelete.IsUnknown() {
+		if err := validateDirectoryRemoval(resolvedPath, r.homeDir, r.runtimeDir, plan.RecursiveDelete.ValueBool()); err != nil {
+			resp.Diagnostics.AddError("Unsafe directory deletion", err.Error())
+			return
+		}
 	}
 
 	plan.ID = types.StringValue(plan.Path.ValueString())
@@ -188,7 +196,7 @@ func (r *HostDirResource) Delete(ctx context.Context, req resource.DeleteRequest
 		return
 	}
 
-	if err := deleteHostDirForHome(state, r.homeDir); err != nil {
+	if err := deleteHostDirForHome(state, r.homeDir, r.runtimeDir); err != nil {
 		resp.Diagnostics.AddError("Failed to delete host directory", err.Error())
 	}
 }
@@ -207,10 +215,22 @@ func syncHostDirForHome(model HostDirResourceModel, homeDir string) (HostDirReso
 		return model, err
 	}
 
-	if err := os.MkdirAll(resolvedPath, mode); err != nil {
-		return model, fmt.Errorf("create directory %q: %w", resolvedPath, err)
+	info, err := os.Lstat(resolvedPath)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return model, fmt.Errorf("path %q is a symbolic link, not a directory", resolvedPath)
+		}
+		if !info.IsDir() {
+			return model, fmt.Errorf("path %q exists and is not a directory", resolvedPath)
+		}
+	} else if os.IsNotExist(err) {
+		if err := os.MkdirAll(resolvedPath, mode); err != nil {
+			return model, fmt.Errorf("create directory %q: %w", resolvedPath, err)
+		}
+	} else {
+		return model, fmt.Errorf("inspect directory %q: %w", resolvedPath, err)
 	}
-	if err := os.Chmod(resolvedPath, mode); err != nil {
+	if err := chmodHostDirNoFollow(resolvedPath, mode); err != nil {
 		return model, fmt.Errorf("chmod directory %q: %w", resolvedPath, err)
 	}
 
@@ -255,7 +275,7 @@ func readExistingHostDir(model HostDirResourceModel, resolvedPath string) (HostD
 	return model, nil
 }
 
-func deleteHostDirForHome(model HostDirResourceModel, homeDir string) error {
+func deleteHostDirForHome(model HostDirResourceModel, homeDir string, runtimeDir string) error {
 	resolvedPath, err := resolveHostDirPathForHome(model.Path.ValueString(), homeDir)
 	if err != nil {
 		return err
@@ -275,6 +295,9 @@ func deleteHostDirForHome(model HostDirResourceModel, homeDir string) error {
 		return fmt.Errorf("path %q exists and is not a directory", resolvedPath)
 	}
 
+	if err := validateDirectoryRemoval(resolvedPath, homeDir, runtimeDir, model.RecursiveDelete.ValueBool()); err != nil {
+		return err
+	}
 	if model.RecursiveDelete.ValueBool() {
 		return os.RemoveAll(resolvedPath)
 	}
@@ -282,6 +305,17 @@ func deleteHostDirForHome(model HostDirResourceModel, homeDir string) error {
 		return fmt.Errorf("remove directory %q: %w. Set recursive_delete = true to remove a non-empty directory tree", resolvedPath, err)
 	}
 	return nil
+}
+
+func chmodHostDirNoFollow(path string, mode os.FileMode) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("path changed while preparing to update its mode")
+	}
+	return os.Chmod(path, mode)
 }
 
 func resolveHostDirPathForHome(value string, homeDir string) (string, error) {

@@ -33,6 +33,7 @@ var gitSHAishPattern = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
 type HostGitRepositoryResource struct {
 	gitPath         string
 	homeDir         string
+	runtimeDir      string
 	gitExecutableMu sync.Mutex
 	gitExecutable   *lazyExecutablePath
 }
@@ -73,6 +74,7 @@ func (r *HostGitRepositoryResource) Configure(ctx context.Context, req resource.
 		}
 		r.setConfiguredGitPath(data.GitPath)
 		r.homeDir = data.HomeDir
+		r.runtimeDir = data.RuntimeDir
 	case string:
 		r.setConfiguredGitPath(data)
 	default:
@@ -135,7 +137,7 @@ func (r *HostGitRepositoryResource) Schema(ctx context.Context, req resource.Sch
 				Optional:            true,
 				Computed:            true,
 				Default:             booldefault.StaticBool(true),
-				MarkdownDescription: "Remove the cloned repository directory on destroy. The provider refuses to remove paths that are not Git repositories.",
+				MarkdownDescription: "Remove the cloned repository directory on destroy. The provider verifies the expected Git repository and refuses filesystem roots or paths containing the target user's home, provider runtime, or Terraform working directory.",
 			},
 			"commit": schema.StringAttribute{
 				Computed:            true,
@@ -172,6 +174,12 @@ func (r *HostGitRepositoryResource) ModifyPlan(ctx context.Context, req resource
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid Git repository", err.Error())
 		return
+	}
+	if spec.DeleteOnDestroy {
+		if err := validateDirectoryRemoval(spec.PathResolved, r.homeDir, r.runtimeDir, true); err != nil {
+			resp.Diagnostics.AddError("Unsafe Git repository deletion", err.Error())
+			return
+		}
 	}
 
 	plan.ID = types.StringValue(spec.Path)
@@ -520,6 +528,9 @@ func (r *HostGitRepositoryResource) deleteRepository(ctx context.Context, model 
 	}
 	if !spec.DeleteOnDestroy {
 		return nil
+	}
+	if err := validateDirectoryRemoval(spec.PathResolved, r.homeDir, r.runtimeDir, true); err != nil {
+		return err
 	}
 
 	exists, err := pathExists(spec.PathResolved)
