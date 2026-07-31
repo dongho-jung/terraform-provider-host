@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -219,6 +220,49 @@ func TestCLIAURHelperManagerMissingSudoFailsBeforeBootstrap(t *testing.T) {
 	}
 }
 
+func TestCLIAURHelperManagerInstallsMissingBootstrapPrerequisites(t *testing.T) {
+	t.Parallel()
+
+	pacmanPath := writeMockPacman(t)
+	pacman := NewCLIPacmanPackageManager(pacmanPath, pacmanPath)
+	manager := NewCLIAURHelperManager(pacman)
+
+	toolsDir := t.TempDir()
+	gitPath := writeExecutable(t, toolsDir, "git", "#!/bin/sh\nexit 0\n")
+	makepkgPath := writeExecutable(t, toolsDir, "makepkg", "#!/bin/sh\nexit 0\n")
+	lookups := make(map[string]int)
+	manager.lookPath = func(name string) (string, error) {
+		lookups[name]++
+		if lookups[name] == 1 {
+			return "", fmt.Errorf("%s is missing", name)
+		}
+		switch name {
+		case "git":
+			return gitPath, nil
+		case "makepkg":
+			return makepkgPath, nil
+		default:
+			return "", fmt.Errorf("unexpected lookup %q", name)
+		}
+	}
+
+	gotGit, gotMakepkg, err := manager.ensureBootstrapPrerequisites(t.Context(), "yay")
+	if err != nil {
+		t.Fatalf("ensure prerequisites: %s", err)
+	}
+	if gotGit != gitPath || gotMakepkg != makepkgPath {
+		t.Fatalf("paths = %q, %q; want %q, %q", gotGit, gotMakepkg, gitPath, makepkgPath)
+	}
+
+	log, err := os.ReadFile(pacmanPath + ".log")
+	if err != nil {
+		t.Fatalf("read pacman log: %s", err)
+	}
+	if !strings.Contains(string(log), "-S --needed --noconfirm git base-devel") {
+		t.Fatalf("missing prerequisite install in pacman log:\n%s", log)
+	}
+}
+
 func TestResolvingAURPackageManagerReadsLocalStatusWithoutHelper(t *testing.T) {
 	t.Parallel()
 
@@ -244,6 +288,44 @@ func TestResolvingAURPackageManagerReadsLocalStatusWithoutHelper(t *testing.T) {
 	}
 	if err := manager.InstallPackages(t.Context(), []string{"wl-kbptr"}); err == nil {
 		t.Fatal("apply installation must strictly require an AUR helper")
+	}
+}
+
+func TestBootstrappingAURPackageManagerMutatesOnlyForPackageWrites(t *testing.T) {
+	t.Parallel()
+
+	pacmanPath := writeMockPacman(t)
+	pacman := NewCLIPacmanPackageManager(pacmanPath, pacmanPath)
+	spec := AURHelperSpec{Name: "yay", Package: "yay-bin"}
+	helperManager := &fakeAURHelperManager{
+		status: AURHelperStatus{
+			Name:    "yay",
+			Package: "yay-bin",
+			Path:    "/usr/bin/yay",
+		},
+	}
+	manager := NewBootstrappingAURPackageManager(pacman, helperManager, spec)
+
+	status, err := manager.PackageStatus(t.Context(), "playerctl", true)
+	if err == nil || !errors.Is(err, errAURHelperUnavailable) {
+		t.Fatalf("remote read should defer a missing helper, got %v", err)
+	}
+	if !status.Installed {
+		t.Fatalf("remote-unavailable read should retain local status: %#v", status)
+	}
+	if len(helperManager.ensured) != 0 {
+		t.Fatalf("read path unexpectedly bootstrapped helper: %#v", helperManager.ensured)
+	}
+
+	resolved, err := manager.resolveForMutation(t.Context())
+	if err != nil {
+		t.Fatalf("resolve mutation helper: %s", err)
+	}
+	if resolved.helperName != "yay" || resolved.helperPath != "/usr/bin/yay" {
+		t.Fatalf("unexpected resolved helper: %#v", resolved)
+	}
+	if !reflect.DeepEqual(helperManager.ensured, []AURHelperSpec{spec}) {
+		t.Fatalf("ensured helpers %#v, want %#v", helperManager.ensured, []AURHelperSpec{spec})
 	}
 }
 

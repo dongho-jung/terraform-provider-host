@@ -10,7 +10,7 @@ description: |-
 
 The provider runs commands on the machine executing Terraform. Required tools vary by resource and include package managers, system-management utilities, `git`, `ssh-keygen`, `crontab`, and macOS command-line tools. Protected operations may authenticate through `sudo`.
 
-`git`, `ssh-keygen`, and AUR helpers are resolved when their operations run, so another resource can install them earlier in the same dependency-ordered apply. Pacman itself must already exist before Pacman or AUR objects are configured.
+`git`, `ssh-keygen`, and AUR helpers are resolved when their operations run. When `aur_helper` is configured, AUR package mutations install missing `base-devel` and `git` prerequisites and bootstrap that helper. Planning, refresh, and data-source reads do not install bootstrap tooling. Pacman itself must already exist before Pacman or AUR objects are configured.
 
 ## Packages and Data Sources
 
@@ -26,6 +26,6 @@ User-scoped metadata, including file-block state and schedule scripts, defaults 
 
 ## AUR Trust Boundary
 
-`host_aur_helper` bootstraps `yay` or `paru` from the current AUR Git HEAD. AUR repositories and `PKGBUILD` files are user-contributed and mutable, and builds execute unsandboxed code as the Terraform user.
+Provider-level AUR bootstrap and `host_aur_helper` both build `yay` or `paru` from the current AUR Git HEAD. AUR repositories and `PKGBUILD` files are user-contributed and mutable, and builds execute unsandboxed code as the Terraform user.
 
 Review and trust every AUR package before applying it. Verifying that Pacman owns the helper executable does not audit the helper or package source.

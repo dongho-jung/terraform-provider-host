@@ -20,9 +20,11 @@ type HostProvider struct {
 }
 
 type HostProviderModel struct {
-	RuntimeDir types.String `tfsdk:"runtime_dir"`
-	HomeDir    types.String `tfsdk:"home_dir"`
-	TargetUser types.String `tfsdk:"target_user"`
+	RuntimeDir       types.String `tfsdk:"runtime_dir"`
+	HomeDir          types.String `tfsdk:"home_dir"`
+	TargetUser       types.String `tfsdk:"target_user"`
+	AURHelper        types.String `tfsdk:"aur_helper"`
+	AURHelperPackage types.String `tfsdk:"aur_helper_package"`
 }
 
 func (p *HostProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -46,6 +48,14 @@ func (p *HostProvider) Schema(ctx context.Context, req provider.SchemaRequest, r
 				Optional:            true,
 				MarkdownDescription: "Local user context for user-scoped resources. User-scoped resources require this argument and use the user's home directory and crontab. System-scoped resources do not require it.",
 			},
+			"aur_helper": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "AUR helper to bootstrap lazily when an AUR package mutation needs one. Supported values are `yay` and `paru`; missing `base-devel` and `git` prerequisites are installed first. Requires `target_user`. Planning, refresh, and data-source reads never bootstrap tools. When omitted, AUR package resources only use an already installed, verified helper.",
+			},
+			"aur_helper_package": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "AUR package that provides the configured `aur_helper`. Defaults to the helper name; set this for variants such as `yay-bin`.",
+			},
 		},
 	}
 }
@@ -63,6 +73,38 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 	if config.TargetUser.IsUnknown() {
 		resp.Diagnostics.AddError("Unknown target_user", "`target_user` must be known while configuring the Host provider.")
 		return
+	}
+	if config.AURHelper.IsUnknown() {
+		resp.Diagnostics.AddError("Unknown aur_helper", "`aur_helper` must be known while configuring the Host provider.")
+		return
+	}
+	if config.AURHelperPackage.IsUnknown() {
+		resp.Diagnostics.AddError("Unknown aur_helper_package", "`aur_helper_package` must be known while configuring the Host provider.")
+		return
+	}
+
+	var aurHelperSpec *AURHelperSpec
+	if config.AURHelper.IsNull() {
+		if !config.AURHelperPackage.IsNull() {
+			resp.Diagnostics.AddError("aur_helper_package requires aur_helper", "Configure `aur_helper`, or omit `aur_helper_package`.")
+			return
+		}
+	} else {
+		if config.TargetUser.IsNull() {
+			resp.Diagnostics.AddError("aur_helper requires target_user", "AUR helpers run as an unprivileged user. Configure `target_user` together with `aur_helper`.")
+			return
+		}
+		helperName := config.AURHelper.ValueString()
+		helperPackage := helperName
+		if !config.AURHelperPackage.IsNull() {
+			helperPackage = config.AURHelperPackage.ValueString()
+		}
+		spec := AURHelperSpec{Name: helperName, Package: helperPackage}
+		if err := validateAURHelperSpec(spec); err != nil {
+			resp.Diagnostics.AddError("Invalid AUR helper configuration", err.Error())
+			return
+		}
+		aurHelperSpec = &spec
 	}
 
 	if config.TargetUser.IsNull() {
@@ -132,9 +174,17 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		pacmanManager := NewCLIPacmanPackageManager(pacmanPath, sudoPath)
 		data.PacmanManager = pacmanManager
 		if data.TargetUser != "" {
-			data.AURManager = NewResolvingAURPackageManager(pacmanManager)
-			data.AURHelperManager = NewCLIAURHelperManager(pacmanManager)
+			helperManager := NewCLIAURHelperManager(pacmanManager)
+			if aurHelperSpec == nil {
+				data.AURManager = NewResolvingAURPackageManager(pacmanManager)
+			} else {
+				data.AURManager = NewBootstrappingAURPackageManager(pacmanManager, helperManager, *aurHelperSpec)
+			}
+			data.AURHelperManager = helperManager
 		}
+	} else if aurHelperSpec != nil {
+		resp.Diagnostics.AddError("aur_helper requires Pacman", "`aur_helper` can only be configured on a host where the `pacman` executable is available.")
+		return
 	}
 
 	hostnamectlPath := executablePath("hostnamectl")

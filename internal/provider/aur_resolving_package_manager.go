@@ -12,17 +12,29 @@ import (
 var errAURHelperUnavailable = errors.New("AUR helper unavailable")
 
 // ResolvingAURPackageManager defers AUR helper discovery until an operation
-// actually needs one. This lets a host_aur_helper resource install yay or paru
-// earlier in the same Terraform apply.
+// actually needs one. Mutations can optionally bootstrap a provider-configured
+// helper, while read and planning paths remain free of installation side
+// effects.
 type ResolvingAURPackageManager struct {
-	pacman      *CLIPacmanPackageManager
-	helperNames []string
+	pacman          *CLIPacmanPackageManager
+	helperNames     []string
+	helperManager   AURHelperManager
+	bootstrapHelper *AURHelperSpec
 }
 
 func NewResolvingAURPackageManager(pacman *CLIPacmanPackageManager) *ResolvingAURPackageManager {
 	return &ResolvingAURPackageManager{
 		pacman:      pacman,
 		helperNames: []string{"yay", "paru"},
+	}
+}
+
+func NewBootstrappingAURPackageManager(pacman *CLIPacmanPackageManager, helperManager AURHelperManager, spec AURHelperSpec) *ResolvingAURPackageManager {
+	return &ResolvingAURPackageManager{
+		pacman:          pacman,
+		helperNames:     []string{spec.Name},
+		helperManager:   helperManager,
+		bootstrapHelper: &spec,
 	}
 }
 
@@ -46,7 +58,7 @@ func (m *ResolvingAURPackageManager) PackageStatus(ctx context.Context, name str
 }
 
 func (m *ResolvingAURPackageManager) InstallPackages(ctx context.Context, names []string) error {
-	manager, err := m.resolve(ctx)
+	manager, err := m.resolveForMutation(ctx)
 	if err != nil {
 		return err
 	}
@@ -54,7 +66,7 @@ func (m *ResolvingAURPackageManager) InstallPackages(ctx context.Context, names 
 }
 
 func (m *ResolvingAURPackageManager) UpgradePackages(ctx context.Context, names []string) error {
-	manager, err := m.resolve(ctx)
+	manager, err := m.resolveForMutation(ctx)
 	if err != nil {
 		return err
 	}
@@ -74,6 +86,20 @@ func (m *ResolvingAURPackageManager) NeedsPrivilegeEscalation() bool {
 }
 
 func (m *ResolvingAURPackageManager) resolve(ctx context.Context) (*CLIAURPackageManager, error) {
+	if m.bootstrapHelper != nil {
+		if m.helperManager == nil {
+			return nil, fmt.Errorf("AUR helper bootstrap manager is unavailable")
+		}
+		status, exists, err := m.helperManager.HelperStatus(ctx, *m.bootstrapHelper)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			return nil, fmt.Errorf("configured AUR helper %q is not installed yet", m.bootstrapHelper.Name)
+		}
+		return NewCLIAURPackageManager(status.Name, status.Path, executablePath("vercmp"), m.pacman), nil
+	}
+
 	for _, helperName := range m.helperNames {
 		if helper, ok := m.pacman.getVerifiedAURHelper(helperName); ok {
 			path, verified, err := m.verifyHelperPath(ctx, helperName, helper.Package, helper.Path)
@@ -105,7 +131,22 @@ func (m *ResolvingAURPackageManager) resolve(ctx context.Context) (*CLIAURPackag
 		return NewCLIAURPackageManager(helperName, helperPath, executablePath("vercmp"), m.pacman), nil
 	}
 
-	return nil, fmt.Errorf("verified AUR helper not found in PATH; declare host_aur_helper.yay (or install yay/paru) and make AUR package resources depend on it")
+	return nil, fmt.Errorf("verified AUR helper not found in PATH; configure aur_helper on the provider, declare a host_aur_helper dependency, or install yay/paru")
+}
+
+func (m *ResolvingAURPackageManager) resolveForMutation(ctx context.Context) (*CLIAURPackageManager, error) {
+	if m.bootstrapHelper == nil {
+		return m.resolve(ctx)
+	}
+	if m.helperManager == nil {
+		return nil, fmt.Errorf("AUR helper bootstrap manager is unavailable")
+	}
+
+	status, err := m.helperManager.EnsureHelper(ctx, *m.bootstrapHelper)
+	if err != nil {
+		return nil, err
+	}
+	return NewCLIAURPackageManager(status.Name, status.Path, executablePath("vercmp"), m.pacman), nil
 }
 
 func (m *ResolvingAURPackageManager) verifyHelperPath(ctx context.Context, name string, packageName string, path string) (string, bool, error) {

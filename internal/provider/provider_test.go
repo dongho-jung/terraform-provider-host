@@ -1,12 +1,16 @@
 package provider
 
 import (
+	"strings"
 	"testing"
 
 	frameworkprovider "github.com/hashicorp/terraform-plugin-framework/provider"
 	providerschema "github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 )
 
 var testAccProtoV6ProviderFactories = map[string]func() (tfprotov6.ProviderServer, error){
@@ -46,6 +50,102 @@ func TestProviderTargetUserIsOptional(t *testing.T) {
 	}
 	if !targetUser.Optional || targetUser.Required {
 		t.Fatalf("target_user Optional=%t Required=%t, want optional only", targetUser.Optional, targetUser.Required)
+	}
+}
+
+func TestProviderAURHelperConfigurationIsOptional(t *testing.T) {
+	t.Parallel()
+
+	provider := New("test")()
+	var resp frameworkprovider.SchemaResponse
+	provider.Schema(t.Context(), frameworkprovider.SchemaRequest{}, &resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", resp.Diagnostics)
+	}
+
+	for _, name := range []string{"aur_helper", "aur_helper_package"} {
+		attribute, ok := resp.Schema.Attributes[name].(providerschema.StringAttribute)
+		if !ok {
+			t.Fatalf("%s attribute has type %T", name, resp.Schema.Attributes[name])
+		}
+		if !attribute.Optional || attribute.Required {
+			t.Fatalf("%s Optional=%t Required=%t, want optional only", name, attribute.Optional, attribute.Required)
+		}
+	}
+}
+
+func TestProviderRejectsInvalidAURHelperConfiguration(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name   string
+		config HostProviderModel
+		want   string
+	}{
+		{
+			name: "helper without target user",
+			config: HostProviderModel{
+				TargetUser:       types.StringNull(),
+				HomeDir:          types.StringNull(),
+				RuntimeDir:       types.StringNull(),
+				AURHelper:        types.StringValue("yay"),
+				AURHelperPackage: types.StringNull(),
+			},
+			want: "aur_helper requires target_user",
+		},
+		{
+			name: "package without helper",
+			config: HostProviderModel{
+				TargetUser:       types.StringNull(),
+				HomeDir:          types.StringNull(),
+				RuntimeDir:       types.StringNull(),
+				AURHelper:        types.StringNull(),
+				AURHelperPackage: types.StringValue("yay-bin"),
+			},
+			want: "aur_helper_package requires aur_helper",
+		},
+		{
+			name: "unsupported helper",
+			config: HostProviderModel{
+				TargetUser:       types.StringValue("dongho"),
+				HomeDir:          types.StringNull(),
+				RuntimeDir:       types.StringNull(),
+				AURHelper:        types.StringValue("pacaur"),
+				AURHelperPackage: types.StringNull(),
+			},
+			want: "Invalid AUR helper configuration",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			hostProvider := New("test")()
+			var schemaResp frameworkprovider.SchemaResponse
+			hostProvider.Schema(ctx, frameworkprovider.SchemaRequest{}, &schemaResp)
+			if schemaResp.Diagnostics.HasError() {
+				t.Fatalf("schema diagnostics: %v", schemaResp.Diagnostics)
+			}
+
+			configState := tfsdk.State{
+				Schema: schemaResp.Schema,
+				Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(ctx), nil),
+			}
+			if diags := configState.Set(ctx, &test.config); diags.HasError() {
+				t.Fatalf("encode provider config: %v", diags)
+			}
+
+			var resp frameworkprovider.ConfigureResponse
+			hostProvider.Configure(ctx, frameworkprovider.ConfigureRequest{
+				Config: tfsdk.Config{Schema: schemaResp.Schema, Raw: configState.Raw},
+			}, &resp)
+			if !resp.Diagnostics.HasError() {
+				t.Fatalf("expected diagnostic containing %q", test.want)
+			}
+			if got := resp.Diagnostics.Errors()[0].Summary(); !strings.Contains(got, test.want) {
+				t.Fatalf("diagnostic summary %q does not contain %q", got, test.want)
+			}
+		})
 	}
 }
 

@@ -15,7 +15,8 @@ access.
 
 Set `include_remote = true` to query the candidate version through a verified
 `yay` or `paru` executable. The helper must already be installed and owned by
-its matching Pacman package. When a `host_aur_helper` resource bootstraps the
+its matching Pacman package. Data-source reads never bootstrap a
+provider-configured helper. When a `host_aur_helper` resource bootstraps the
 helper in the same apply, add an explicit `depends_on` to the data source.
 
 > **Security:** Remote AUR metadata comes from user-contributed package

@@ -10,7 +10,16 @@ description: |-
 
 Manages a single AUR package through a verified `yay` or `paru` installation and keeps its Pacman install reason marked as explicit.
 
-Pacman must already be installed. On a fresh Arch host, declare `host_aur_helper` together with its `base-devel` and `git` prerequisites, then make each AUR package depend on that helper. Helper discovery occurs when an operation needs it, so the helper may be bootstrapped earlier in the same apply. Planning can still read local package presence before the helper exists; installation, upgrade, and remote version lookup require a working helper whose executable is owned by a matching Pacman package.
+Pacman must already be installed. For a fresh Arch host, configure `aur_helper`
+on the provider. When an install or upgrade needs the helper, the provider
+installs missing `base-devel` and `git` prerequisites and bootstraps the
+configured helper exactly once. Planning, refresh, and data-source reads never
+bootstrap tools or install packages.
+
+When `aur_helper` is omitted, this resource only uses an already installed,
+verified `yay` or `paru`. The standalone `host_aur_helper` resource remains
+available when helper lifecycle or a package variant should be modeled
+explicitly.
 
 With the default `ignore_version = true`, refresh skips AUR network lookups and manages only package presence and explicit install reason. Set it to false to plan upgrades to the candidate version reported by the helper.
 
@@ -22,39 +31,14 @@ With the default `ignore_version = true`, refresh skips AUR network lookups and 
 ## Example Usage
 
 ```terraform
-resource "host_package_pacman" "base_devel" {
-  name = "base-devel"
-}
-
-resource "host_package_pacman" "git" {
-  name = "git"
-}
-
-resource "host_aur_helper" "yay" {
-  name = "yay"
-
-  depends_on = [
-    host_package_pacman.base_devel,
-    host_package_pacman.git,
-  ]
-}
-
 resource "host_package_aur" "wl_kbptr" {
   name = "wl-kbptr"
-
-  depends_on = [
-    host_aur_helper.yay,
-  ]
 }
 
 # ignore_version defaults to true: presence is managed without planning
 # rebuilds every time the AUR publishes a new version.
 resource "host_package_aur" "claude_code" {
   name = "claude-code"
-
-  depends_on = [
-    host_aur_helper.yay,
-  ]
 }
 ```
 

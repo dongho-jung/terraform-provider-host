@@ -22,6 +22,7 @@ terraform {
 
 provider "host" {
   target_user = "dongho"
+  aur_helper  = "yay"
 
   # runtime_dir defaults to ~/.local/state/terraform-provider-host for this user.
 }
@@ -51,8 +52,19 @@ provider "host" {
 
 See [Scopes and user contexts](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts) for the full classification, multi-user operation, bootstrap flow, and macOS desktop-session requirements.
 
+## AUR Helper Bootstrap
+
+Set `aur_helper` to `yay` or `paru` to let AUR package installs and upgrades
+prepare that helper lazily. `aur_helper_package` defaults to the same name and
+can select a package variant such as `yay-bin`. Both settings require
+`target_user`.
+
+The provider installs missing `base-devel` and `git` prerequisites before
+bootstrapping the helper. Planning, refresh, and data-source reads do not
+perform this bootstrap.
+
 ## Further Guidance
 
 - [Runtime and security](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/runtime-and-security)
 
-Provider arguments are [`target_user`](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts#user-context), [`home_dir`](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts#user-context), and [`runtime_dir`](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/runtime-and-security#runtime-metadata).
+Provider arguments include [`target_user`](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts#user-context), [`home_dir`](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts#user-context), [`runtime_dir`](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/runtime-and-security#runtime-metadata), and optional AUR helper bootstrap settings.

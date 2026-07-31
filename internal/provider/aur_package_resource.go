@@ -202,7 +202,7 @@ func (r *AURPackageResource) ModifyPlan(ctx context.Context, req resource.Modify
 	} else if remoteUnavailable {
 		resp.Diagnostics.AddWarning(
 			"AUR helper unavailable during planning",
-			"Remote AUR version information is deferred until an AUR helper is available. Package installation and upgrade operations still require a working helper; declare a host_aur_helper dependency for fresh-host applies.",
+			"Remote AUR version information is deferred until an AUR helper is available. A provider-configured `aur_helper` is bootstrapped only during package installation or upgrade; otherwise install a verified helper or declare a `host_aur_helper` dependency.",
 		)
 	} else {
 		hydrateAURPackageCandidateVersionState(&plan, status)

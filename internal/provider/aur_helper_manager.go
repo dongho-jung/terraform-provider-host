@@ -143,13 +143,9 @@ func (m *CLIAURHelperManager) ensureHelper(ctx context.Context, spec AURHelperSp
 		return AURHelperStatus{}, fmt.Errorf("bootstrap AUR helper %q: sudo was not found in PATH; non-root makepkg installation requires sudo", spec.Name)
 	}
 
-	gitPath, err := m.lookupPath("git")
+	gitPath, makepkgPath, err := m.ensureBootstrapPrerequisites(ctx, spec.Name)
 	if err != nil {
-		return AURHelperStatus{}, fmt.Errorf("bootstrap AUR helper %q: git was not found in PATH; install the git package first", spec.Name)
-	}
-	makepkgPath, err := m.lookupPath("makepkg")
-	if err != nil {
-		return AURHelperStatus{}, fmt.Errorf("bootstrap AUR helper %q: makepkg was not found in PATH; install the base-devel package first", spec.Name)
+		return AURHelperStatus{}, err
 	}
 
 	buildRoot, err := os.MkdirTemp("", "terraform-provider-host-aur-helper-*")
@@ -232,6 +228,41 @@ func (m *CLIAURHelperManager) requireHelperStatus(ctx context.Context, spec AURH
 		return AURHelperStatus{}, fmt.Errorf("AUR helper %q was not found after installing package %q", spec.Name, spec.Package)
 	}
 	return status, nil
+}
+
+func (m *CLIAURHelperManager) ensureBootstrapPrerequisites(ctx context.Context, helperName string) (string, string, error) {
+	gitPath, gitErr := m.lookupPath("git")
+	makepkgPath, makepkgErr := m.lookupPath("makepkg")
+
+	var packages []string
+	if gitErr != nil {
+		packages = append(packages, "git")
+	}
+	if makepkgErr != nil {
+		packages = append(packages, "base-devel")
+	}
+	if len(packages) != 0 {
+		if err := m.pacman.InstallPackages(ctx, packages); err != nil {
+			return "", "", fmt.Errorf("install AUR helper %q bootstrap prerequisites: %w", helperName, err)
+		}
+	}
+
+	if gitErr != nil {
+		var err error
+		gitPath, err = m.lookupPath("git")
+		if err != nil {
+			return "", "", fmt.Errorf("bootstrap AUR helper %q: git was not found after installing the git package", helperName)
+		}
+	}
+	if makepkgErr != nil {
+		var err error
+		makepkgPath, err = m.lookupPath("makepkg")
+		if err != nil {
+			return "", "", fmt.Errorf("bootstrap AUR helper %q: makepkg was not found after installing the base-devel package", helperName)
+		}
+	}
+
+	return gitPath, makepkgPath, nil
 }
 
 func (m *CLIAURHelperManager) lookupPath(name string) (string, error) {

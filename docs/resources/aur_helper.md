@@ -11,9 +11,11 @@ description: |-
 Bootstraps and manages an AUR helper package without requiring an existing AUR helper.
 
 This resource bootstraps `yay` or `paru` directly from its AUR Git repository
-with `makepkg`; it does not require an existing AUR helper. Declare Pacman's
-`base-devel` and `git` packages as dependencies so they are installed before the
-helper is built. AUR package resources should in turn depend on this resource.
+with `makepkg`; it does not require an existing AUR helper. Missing
+`base-devel` and `git` prerequisites are installed automatically before the
+helper is built. Use this standalone resource when helper lifecycle or a
+package variant should be represented explicitly. For the common case,
+configure `aur_helper` once on the provider instead.
 
 The provider runs `makepkg` as the unprivileged Terraform process user. Run
 Terraform as the configured target user rather than as root. Before the build,
@@ -36,23 +38,10 @@ explicit install reason.
 ## Example Usage
 
 ```terraform
-resource "host_package_pacman" "base_devel" {
-  name = "base-devel"
-}
-
-resource "host_package_pacman" "git" {
-  name = "git"
-}
-
 # Review and trust yay's mutable AUR PKGBUILD before allowing Terraform to
 # build it as the target user.
 resource "host_aur_helper" "yay" {
   name = "yay"
-
-  depends_on = [
-    host_package_pacman.base_devel,
-    host_package_pacman.git,
-  ]
 }
 
 resource "host_package_aur" "wl_kbptr" {

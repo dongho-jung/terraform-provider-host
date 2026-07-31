@@ -1,3 +1,14 @@
+## 0.16.0 (2026-07-31)
+
+FEATURES:
+
+- Add provider-level `aur_helper` and `aur_helper_package` settings so AUR package mutations can lazily bootstrap a verified `yay` or `paru` without a standalone helper resource or repeated `depends_on` blocks.
+
+IMPROVEMENTS:
+
+- Install missing `base-devel` and `git` prerequisites before bootstrapping an AUR helper, while keeping planning, refresh, and data-source reads free of package mutations.
+- Preserve `host_aur_helper` for configurations that need explicit helper lifecycle or package-variant management.
+
 ## 0.15.0 (2026-07-30)
 
 FEATURES:
