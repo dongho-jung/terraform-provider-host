@@ -20,11 +20,13 @@ type HostProvider struct {
 }
 
 type HostProviderModel struct {
-	RuntimeDir       types.String `tfsdk:"runtime_dir"`
-	HomeDir          types.String `tfsdk:"home_dir"`
-	TargetUser       types.String `tfsdk:"target_user"`
-	AURHelper        types.String `tfsdk:"aur_helper"`
-	AURHelperPackage types.String `tfsdk:"aur_helper_package"`
+	RuntimeDir                types.String `tfsdk:"runtime_dir"`
+	HomeDir                   types.String `tfsdk:"home_dir"`
+	TargetUser                types.String `tfsdk:"target_user"`
+	AURHelper                 types.String `tfsdk:"aur_helper"`
+	AURHelperPackage          types.String `tfsdk:"aur_helper_package"`
+	AURRemoveMakeDependencies types.Bool   `tfsdk:"aur_remove_make_dependencies"`
+	AURCleanAfter             types.Bool   `tfsdk:"aur_clean_after"`
 }
 
 func (p *HostProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -56,6 +58,14 @@ func (p *HostProvider) Schema(ctx context.Context, req provider.SchemaRequest, r
 				Optional:            true,
 				MarkdownDescription: "AUR package that provides the configured `aur_helper`. Defaults to the helper name; set this for variants such as `yay-bin`.",
 			},
+			"aur_remove_make_dependencies": schema.BoolAttribute{
+				Optional:            true,
+				MarkdownDescription: "Pass `--removemake` to `yay` or `paru` package installs and upgrades so build-only dependencies installed by the helper are removed after a successful build. Requires `target_user` and defaults to false.",
+			},
+			"aur_clean_after": schema.BoolAttribute{
+				Optional:            true,
+				MarkdownDescription: "Pass `--cleanafter` to `yay` or `paru` package installs and upgrades so package source and build directories are removed after a successful build. Requires `target_user` and defaults to false.",
+			},
 		},
 	}
 }
@@ -81,6 +91,19 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 	if config.AURHelperPackage.IsUnknown() {
 		resp.Diagnostics.AddError("Unknown aur_helper_package", "`aur_helper_package` must be known while configuring the Host provider.")
 		return
+	}
+	if config.AURRemoveMakeDependencies.IsUnknown() {
+		resp.Diagnostics.AddError("Unknown aur_remove_make_dependencies", "`aur_remove_make_dependencies` must be known while configuring the Host provider.")
+		return
+	}
+	if config.AURCleanAfter.IsUnknown() {
+		resp.Diagnostics.AddError("Unknown aur_clean_after", "`aur_clean_after` must be known while configuring the Host provider.")
+		return
+	}
+
+	aurOptions := AURPackageOptions{
+		RemoveMakeDependencies: !config.AURRemoveMakeDependencies.IsNull() && config.AURRemoveMakeDependencies.ValueBool(),
+		CleanAfter:             !config.AURCleanAfter.IsNull() && config.AURCleanAfter.ValueBool(),
 	}
 
 	var aurHelperSpec *AURHelperSpec
@@ -108,6 +131,10 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 	}
 
 	if config.TargetUser.IsNull() {
+		if !config.AURRemoveMakeDependencies.IsNull() || !config.AURCleanAfter.IsNull() {
+			resp.Diagnostics.AddError("AUR cleanup requires target_user", "AUR helpers run as an unprivileged user. Configure `target_user` with the AUR cleanup settings, or omit those settings.")
+			return
+		}
 		if !config.HomeDir.IsNull() {
 			resp.Diagnostics.AddError("home_dir requires target_user", "`home_dir` belongs to a user context. Configure `target_user`, or omit both arguments for a system-only provider configuration.")
 			return
@@ -176,9 +203,9 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		if data.TargetUser != "" {
 			helperManager := NewCLIAURHelperManager(pacmanManager)
 			if aurHelperSpec == nil {
-				data.AURManager = NewResolvingAURPackageManager(pacmanManager)
+				data.AURManager = NewResolvingAURPackageManager(pacmanManager, aurOptions)
 			} else {
-				data.AURManager = NewBootstrappingAURPackageManager(pacmanManager, helperManager, *aurHelperSpec)
+				data.AURManager = NewBootstrappingAURPackageManager(pacmanManager, helperManager, *aurHelperSpec, aurOptions)
 			}
 			data.AURHelperManager = helperManager
 		}

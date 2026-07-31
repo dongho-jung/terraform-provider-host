@@ -23,6 +23,10 @@ explicitly.
 
 With the default `ignore_version = true`, refresh skips AUR network lookups and manages only package presence and explicit install reason. Set it to false to plan upgrades to the candidate version reported by the helper.
 
+Provider-level `aur_remove_make_dependencies` and `aur_clean_after` settings
+optionally pass the corresponding cleanup flags to the helper after successful
+installs and upgrades.
+
 > **Security:** AUR packages are user-contributed. Their mutable `PKGBUILD`
 > files execute unsandboxed code as the Terraform process user. Review and
 > trust every package before applying it. Helper ownership verification does

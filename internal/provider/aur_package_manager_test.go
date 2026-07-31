@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -58,6 +59,34 @@ func TestCLIAURPackageManagerCandidateIsNewer(t *testing.T) {
 	}
 	if newer {
 		t.Fatal("expected 1.0.0-1 to not be newer than 1.0.0-2")
+	}
+}
+
+func TestCLIAURPackageManagerInstallArguments(t *testing.T) {
+	t.Parallel()
+
+	manager := NewCLIAURPackageManager(
+		"yay",
+		"/usr/bin/yay",
+		"",
+		nil,
+		AURPackageOptions{
+			RemoveMakeDependencies: true,
+			CleanAfter:             true,
+		},
+	)
+	got := manager.installArguments([]string{"slack-desktop", "visual-studio-code-bin"})
+	want := []string{
+		"-S",
+		"--needed",
+		"--noconfirm",
+		"--removemake",
+		"--cleanafter",
+		"slack-desktop",
+		"visual-studio-code-bin",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("install arguments = %#v, want %#v", got, want)
 	}
 }
 

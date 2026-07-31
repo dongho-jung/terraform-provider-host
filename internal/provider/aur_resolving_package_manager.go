@@ -20,22 +20,31 @@ type ResolvingAURPackageManager struct {
 	helperNames     []string
 	helperManager   AURHelperManager
 	bootstrapHelper *AURHelperSpec
+	options         AURPackageOptions
 }
 
-func NewResolvingAURPackageManager(pacman *CLIPacmanPackageManager) *ResolvingAURPackageManager {
-	return &ResolvingAURPackageManager{
+func NewResolvingAURPackageManager(pacman *CLIPacmanPackageManager, options ...AURPackageOptions) *ResolvingAURPackageManager {
+	manager := &ResolvingAURPackageManager{
 		pacman:      pacman,
 		helperNames: []string{"yay", "paru"},
 	}
+	if len(options) > 0 {
+		manager.options = options[0]
+	}
+	return manager
 }
 
-func NewBootstrappingAURPackageManager(pacman *CLIPacmanPackageManager, helperManager AURHelperManager, spec AURHelperSpec) *ResolvingAURPackageManager {
-	return &ResolvingAURPackageManager{
+func NewBootstrappingAURPackageManager(pacman *CLIPacmanPackageManager, helperManager AURHelperManager, spec AURHelperSpec, options ...AURPackageOptions) *ResolvingAURPackageManager {
+	manager := &ResolvingAURPackageManager{
 		pacman:          pacman,
 		helperNames:     []string{spec.Name},
 		helperManager:   helperManager,
 		bootstrapHelper: &spec,
 	}
+	if len(options) > 0 {
+		manager.options = options[0]
+	}
+	return manager
 }
 
 func (m *ResolvingAURPackageManager) PackageStatus(ctx context.Context, name string, includeRemote bool) (PackageStatus, error) {
@@ -97,7 +106,7 @@ func (m *ResolvingAURPackageManager) resolve(ctx context.Context) (*CLIAURPackag
 		if !exists {
 			return nil, fmt.Errorf("configured AUR helper %q is not installed yet", m.bootstrapHelper.Name)
 		}
-		return NewCLIAURPackageManager(status.Name, status.Path, executablePath("vercmp"), m.pacman), nil
+		return NewCLIAURPackageManager(status.Name, status.Path, executablePath("vercmp"), m.pacman, m.options), nil
 	}
 
 	for _, helperName := range m.helperNames {
@@ -107,7 +116,7 @@ func (m *ResolvingAURPackageManager) resolve(ctx context.Context) (*CLIAURPackag
 				return nil, err
 			}
 			if verified {
-				return NewCLIAURPackageManager(helperName, path, executablePath("vercmp"), m.pacman), nil
+				return NewCLIAURPackageManager(helperName, path, executablePath("vercmp"), m.pacman, m.options), nil
 			}
 			m.pacman.forgetVerifiedAURHelper(AURHelperSpec{Name: helperName, Package: helper.Package})
 		}
@@ -128,7 +137,7 @@ func (m *ResolvingAURPackageManager) resolve(ctx context.Context) (*CLIAURPackag
 			continue
 		}
 		m.pacman.rememberVerifiedAURHelper(verifiedAURHelper{Name: helperName, Package: owner, Path: helperPath})
-		return NewCLIAURPackageManager(helperName, helperPath, executablePath("vercmp"), m.pacman), nil
+		return NewCLIAURPackageManager(helperName, helperPath, executablePath("vercmp"), m.pacman, m.options), nil
 	}
 
 	return nil, fmt.Errorf("verified AUR helper not found in PATH; configure aur_helper on the provider, declare a host_aur_helper dependency, or install yay/paru")
@@ -146,7 +155,7 @@ func (m *ResolvingAURPackageManager) resolveForMutation(ctx context.Context) (*C
 	if err != nil {
 		return nil, err
 	}
-	return NewCLIAURPackageManager(status.Name, status.Path, executablePath("vercmp"), m.pacman), nil
+	return NewCLIAURPackageManager(status.Name, status.Path, executablePath("vercmp"), m.pacman, m.options), nil
 }
 
 func (m *ResolvingAURPackageManager) verifyHelperPath(ctx context.Context, name string, packageName string, path string) (string, bool, error) {

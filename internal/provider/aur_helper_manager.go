@@ -168,7 +168,7 @@ func (m *CLIAURHelperManager) ensureHelper(ctx context.Context, spec AURHelperSp
 	if err != nil {
 		return AURHelperStatus{}, err
 	}
-	makepkgArgs := []string{"--config", makepkgConfigPath, "--syncdeps", "--install", "--needed", "--noconfirm"}
+	makepkgArgs := []string{"--config", makepkgConfigPath, "--syncdeps", "--rmdeps", "--install", "--needed", "--noconfirm"}
 	if err := m.pacman.authenticateSudo(ctx, makepkgPath, makepkgArgs...); err != nil {
 		return AURHelperStatus{}, err
 	}

@@ -72,6 +72,16 @@ func TestProviderAURHelperConfigurationIsOptional(t *testing.T) {
 			t.Fatalf("%s Optional=%t Required=%t, want optional only", name, attribute.Optional, attribute.Required)
 		}
 	}
+
+	for _, name := range []string{"aur_remove_make_dependencies", "aur_clean_after"} {
+		attribute, ok := resp.Schema.Attributes[name].(providerschema.BoolAttribute)
+		if !ok {
+			t.Fatalf("%s attribute has type %T", name, resp.Schema.Attributes[name])
+		}
+		if !attribute.Optional || attribute.Required {
+			t.Fatalf("%s Optional=%t Required=%t, want optional only", name, attribute.Optional, attribute.Required)
+		}
+	}
 }
 
 func TestProviderRejectsInvalidAURHelperConfiguration(t *testing.T) {
@@ -114,6 +124,19 @@ func TestProviderRejectsInvalidAURHelperConfiguration(t *testing.T) {
 				AURHelperPackage: types.StringNull(),
 			},
 			want: "Invalid AUR helper configuration",
+		},
+		{
+			name: "cleanup without target user",
+			config: HostProviderModel{
+				TargetUser:                types.StringNull(),
+				HomeDir:                   types.StringNull(),
+				RuntimeDir:                types.StringNull(),
+				AURHelper:                 types.StringNull(),
+				AURHelperPackage:          types.StringNull(),
+				AURRemoveMakeDependencies: types.BoolValue(true),
+				AURCleanAfter:             types.BoolNull(),
+			},
+			want: "AUR cleanup requires target_user",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

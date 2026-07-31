@@ -21,8 +21,10 @@ terraform {
 }
 
 provider "host" {
-  target_user = "dongho"
-  aur_helper  = "yay"
+  target_user                  = "dongho"
+  aur_helper                   = "yay"
+  aur_remove_make_dependencies = true
+  aur_clean_after              = true
 
   # runtime_dir defaults to ~/.local/state/terraform-provider-host for this user.
 }
@@ -63,8 +65,12 @@ The provider installs missing `base-devel` and `git` prerequisites before
 bootstrapping the helper. Planning, refresh, and data-source reads do not
 perform this bootstrap.
 
+Set `aur_remove_make_dependencies` and `aur_clean_after` to remove build-only
+dependencies and helper build directories after successful AUR installs. Both
+settings default to false.
+
 ## Further Guidance
 
 - [Runtime and security](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/runtime-and-security)
 
-Provider arguments include [`target_user`](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts#user-context), [`home_dir`](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts#user-context), [`runtime_dir`](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/runtime-and-security#runtime-metadata), and optional AUR helper bootstrap settings.
+Provider arguments include [`target_user`](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts#user-context), [`home_dir`](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts#user-context), [`runtime_dir`](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/runtime-and-security#runtime-metadata), and optional AUR helper and cleanup settings.

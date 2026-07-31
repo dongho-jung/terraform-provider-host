@@ -21,20 +21,30 @@ type AURPackageManager interface {
 	RemovePackages(ctx context.Context, names []string, autoremove bool) error
 }
 
+type AURPackageOptions struct {
+	RemoveMakeDependencies bool
+	CleanAfter             bool
+}
+
 type CLIAURPackageManager struct {
 	helperName string
 	helperPath string
 	vercmpPath string
 	pacman     *CLIPacmanPackageManager
+	options    AURPackageOptions
 }
 
-func NewCLIAURPackageManager(helperName string, helperPath string, vercmpPath string, pacman *CLIPacmanPackageManager) *CLIAURPackageManager {
-	return &CLIAURPackageManager{
+func NewCLIAURPackageManager(helperName string, helperPath string, vercmpPath string, pacman *CLIPacmanPackageManager, options ...AURPackageOptions) *CLIAURPackageManager {
+	manager := &CLIAURPackageManager{
 		helperName: helperName,
 		helperPath: helperPath,
 		vercmpPath: vercmpPath,
 		pacman:     pacman,
 	}
+	if len(options) > 0 {
+		manager.options = options[0]
+	}
+	return manager
 }
 
 // PackageStatus reads install state and install reason from the local pacman
@@ -84,7 +94,7 @@ func (m *CLIAURPackageManager) InstallPackages(ctx context.Context, names []stri
 		return nil
 	}
 
-	args := append([]string{"-S", "--needed", "--noconfirm"}, names...)
+	args := m.installArguments(names)
 	_, err := m.runHelperMutate(ctx, args...)
 	return err
 }
@@ -103,6 +113,17 @@ func (m *CLIAURPackageManager) RemovePackages(ctx context.Context, names []strin
 
 func (m *CLIAURPackageManager) NeedsPrivilegeEscalation() bool {
 	return os.Geteuid() != 0
+}
+
+func (m *CLIAURPackageManager) installArguments(names []string) []string {
+	args := []string{"-S", "--needed", "--noconfirm"}
+	if m.options.RemoveMakeDependencies {
+		args = append(args, "--removemake")
+	}
+	if m.options.CleanAfter {
+		args = append(args, "--cleanafter")
+	}
+	return append(args, names...)
 }
 
 // candidateIsNewer reports whether candidate sorts after installed. pacman

@@ -13,8 +13,9 @@ Bootstraps and manages an AUR helper package without requiring an existing AUR h
 This resource bootstraps `yay` or `paru` directly from its AUR Git repository
 with `makepkg`; it does not require an existing AUR helper. Missing
 `base-devel` and `git` prerequisites are installed automatically before the
-helper is built. Use this standalone resource when helper lifecycle or a
-package variant should be represented explicitly. For the common case,
+helper is built. Build-only dependencies installed by `makepkg` are removed
+after a successful build. Use this standalone resource when helper lifecycle
+or a package variant should be represented explicitly. For the common case,
 configure `aur_helper` once on the provider instead.
 
 The provider runs `makepkg` as the unprivileged Terraform process user. Run

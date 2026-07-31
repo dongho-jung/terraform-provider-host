@@ -3,10 +3,12 @@
 FEATURES:
 
 - Add `host_link.stage_source` to copy a file or directory into content-addressed provider runtime storage before linking it, keeping live configuration independent from a temporary Terraform checkout or worktree.
+- Add provider-level `aur_remove_make_dependencies` and `aur_clean_after` settings for opt-in `yay` and `paru` build cleanup.
 
 IMPROVEMENTS:
 
 - Replace managed symbolic links atomically when their source changes.
+- Remove build-only dependencies installed while bootstrapping an AUR helper after a successful build.
 
 ## 0.16.0 (2026-07-31)
 
