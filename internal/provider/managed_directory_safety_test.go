@@ -32,7 +32,6 @@ func TestValidateRecursiveDirectoryRemovalRefusesProtectedTrees(t *testing.T) {
 		"working directory": workingDir,
 		"working parent":    filepath.Dir(workingDir),
 	} {
-		path := path
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			if err := validateDirectoryRemoval(path, homeDir, runtimeDir, true); err == nil {
