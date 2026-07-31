@@ -17,9 +17,7 @@ configured helper exactly once. Planning, refresh, and data-source reads never
 bootstrap tools or install packages.
 
 When `aur_helper` is omitted, this resource only uses an already installed,
-verified `yay` or `paru`. The standalone `host_aur_helper` resource remains
-available when helper lifecycle or a package variant should be modeled
-explicitly.
+verified `yay` or `paru`.
 
 With the default `ignore_version = true`, refresh skips AUR network lookups and manages only package presence and explicit install reason. Set it to false to plan upgrades to the candidate version reported by the helper.
 

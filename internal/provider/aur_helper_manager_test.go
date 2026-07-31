@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,21 @@ import (
 	"sync"
 	"testing"
 )
+
+type fakeAURHelperManager struct {
+	status  AURHelperStatus
+	exists  bool
+	ensured []AURHelperSpec
+}
+
+func (m *fakeAURHelperManager) HelperStatus(context.Context, AURHelperSpec) (AURHelperStatus, bool, error) {
+	return m.status, m.exists, nil
+}
+
+func (m *fakeAURHelperManager) EnsureHelper(_ context.Context, spec AURHelperSpec) (AURHelperStatus, error) {
+	m.ensured = append(m.ensured, spec)
+	return m.status, nil
+}
 
 func TestValidateAURHelperSpec(t *testing.T) {
 	t.Parallel()

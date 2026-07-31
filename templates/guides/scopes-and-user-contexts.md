@@ -18,7 +18,7 @@ A provider configured with `target_user` can manage both scopes. Use `provider "
 | Scope | Resources | Data sources |
 |---|---|---|
 | System | `host_package_dnf`, `host_package_pacman`, `host_hostname`, `host_timezone`, `host_locale`, `host_keymap`, `host_sysctl`, `host_systemd_unit`, `host_systemd_service`, `host_fstab_entry`, `host_system_file`, `host_sudoers_rule`, `host_group`, `host_user` | `host_package_dnf`, `host_package_pacman` |
-| User | `host_aur_helper`, `host_package_aur`, `host_package_brew`, `host_dir`, `host_file`, `host_file_block`, `host_link`, `host_git_repo`, `host_ssh_key`, `host_ssh_config_host`, `host_schedule`, all `host_mac_*` resources | `host_package_aur`, `host_package_brew`, `host_mac_audio_device` |
+| User | `host_package_aur`, `host_package_brew`, `host_dir`, `host_file`, `host_file_block`, `host_link`, `host_git_repo`, `host_ssh_key`, `host_ssh_config_host`, `host_schedule`, all `host_mac_*` resources | `host_package_aur`, `host_package_brew`, `host_mac_audio_device` |
 
 AUR objects are user-scoped because their helper and package builds run as the invoking user, even though installation ultimately changes Pacman state. `host_user` and `host_sudoers_rule` are system-scoped and may refer to users other than `target_user`.
 

@@ -140,7 +140,7 @@ func (m *ResolvingAURPackageManager) resolve(ctx context.Context) (*CLIAURPackag
 		return NewCLIAURPackageManager(helperName, helperPath, executablePath("vercmp"), m.pacman, m.options), nil
 	}
 
-	return nil, fmt.Errorf("verified AUR helper not found in PATH; configure aur_helper on the provider, declare a host_aur_helper dependency, or install yay/paru")
+	return nil, fmt.Errorf("verified AUR helper not found in PATH; configure aur_helper on the provider or install yay/paru")
 }
 
 func (m *ResolvingAURPackageManager) resolveForMutation(ctx context.Context) (*CLIAURPackageManager, error) {

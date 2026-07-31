@@ -31,6 +31,6 @@ versions are removed only after the replacement link has been published.
 
 ## AUR Trust Boundary
 
-Provider-level AUR bootstrap and `host_aur_helper` both build `yay` or `paru` from the current AUR Git HEAD. AUR repositories and `PKGBUILD` files are user-contributed and mutable, and builds execute unsandboxed code as the Terraform user.
+Provider-configured AUR bootstrap builds `yay` or `paru` from the current AUR Git HEAD. AUR repositories and `PKGBUILD` files are user-contributed and mutable, and builds execute unsandboxed code as the Terraform user.
 
 Review and trust every AUR package before applying it. Verifying that Pacman owns the helper executable does not audit the helper or package source.

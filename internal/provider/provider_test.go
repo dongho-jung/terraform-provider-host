@@ -7,6 +7,7 @@ import (
 	frameworkprovider "github.com/hashicorp/terraform-plugin-framework/provider"
 	providerschema "github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
+	frameworkresource "github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
@@ -80,6 +81,23 @@ func TestProviderAURHelperConfigurationIsOptional(t *testing.T) {
 		}
 		if !attribute.Optional || attribute.Required {
 			t.Fatalf("%s Optional=%t Required=%t, want optional only", name, attribute.Optional, attribute.Required)
+		}
+	}
+}
+
+func TestProviderDoesNotRegisterAURHelperResource(t *testing.T) {
+	t.Parallel()
+
+	provider := New("test")()
+	for _, factory := range provider.Resources(t.Context()) {
+		var resp frameworkresource.MetadataResponse
+		factory().Metadata(
+			t.Context(),
+			frameworkresource.MetadataRequest{ProviderTypeName: "host"},
+			&resp,
+		)
+		if resp.TypeName == "host_aur_helper" {
+			t.Fatal("host_aur_helper resource must not be registered")
 		}
 	}
 }

@@ -15,8 +15,6 @@ import (
 type AURHelperManager interface {
 	HelperStatus(ctx context.Context, spec AURHelperSpec) (AURHelperStatus, bool, error)
 	EnsureHelper(ctx context.Context, spec AURHelperSpec) (AURHelperStatus, error)
-	RemoveHelper(ctx context.Context, spec AURHelperSpec) error
-	NeedsPrivilegeEscalation() bool
 }
 
 type AURHelperSpec struct {
@@ -195,28 +193,6 @@ func (m *CLIAURHelperManager) ensureHelper(ctx context.Context, spec AURHelperSp
 		return AURHelperStatus{}, err
 	}
 	return m.requireHelperStatus(ctx, spec)
-}
-
-func (m *CLIAURHelperManager) RemoveHelper(ctx context.Context, spec AURHelperSpec) error {
-	if err := validateAURHelperSpec(spec); err != nil {
-		return err
-	}
-	_, exists, err := m.HelperStatus(ctx, spec)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return nil
-	}
-	if err := m.pacman.RemovePackages(ctx, []string{spec.Package}, false); err != nil {
-		return err
-	}
-	m.pacman.forgetVerifiedAURHelper(spec)
-	return nil
-}
-
-func (m *CLIAURHelperManager) NeedsPrivilegeEscalation() bool {
-	return m.getEffectiveUID() != 0
 }
 
 func (m *CLIAURHelperManager) requireHelperStatus(ctx context.Context, spec AURHelperSpec) (AURHelperStatus, error) {
