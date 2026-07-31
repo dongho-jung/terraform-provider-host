@@ -4,6 +4,7 @@ FEATURES:
 
 - Add `host_link.stage_source` to copy a file or directory into content-addressed provider runtime storage before linking it, keeping live configuration independent from a temporary Terraform checkout or worktree.
 - Add provider-level `aur_remove_make_dependencies` and `aur_clean_after` settings for opt-in `yay` and `paru` build cleanup.
+- Add `host_systemd_service.restart_trigger` to restart an already-running service when a configuration digest changes.
 
 IMPROVEMENTS:
 

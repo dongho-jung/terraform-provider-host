@@ -12,6 +12,12 @@ Manages one systemd service unit's enabled and running state.
 
 This resource uses `systemctl` and is intended for Linux hosts with systemd. Destroying the resource removes it from Terraform state and leaves the live service unchanged.
 
+Set `restart_trigger` to a file hash or combined configuration digest when an
+already-running service must restart after related configuration changes.
+Changing the value restarts the service only when both its prior and desired
+states are running; a stopped service that is being started is not restarted a
+second time.
+
 ## Example Usage
 
 ```terraform
@@ -48,6 +54,7 @@ terraform import host_systemd_service.sshd sshd.service
 ### Optional
 
 - `enabled` (Boolean) Whether the service should be enabled at boot.
+- `restart_trigger` (String) Opaque value stored in state. When it changes while the service is meant to remain running, the provider restarts the service after synchronizing its enabled and running state. Use a file hash or combined configuration digest.
 - `running` (Boolean) Whether the service should be running now.
 
 ### Read-Only

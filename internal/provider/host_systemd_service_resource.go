@@ -27,10 +27,11 @@ type HostSystemdServiceResource struct {
 }
 
 type HostSystemdServiceResourceModel struct {
-	ID      types.String `tfsdk:"id"`
-	Name    types.String `tfsdk:"name"`
-	Enabled types.Bool   `tfsdk:"enabled"`
-	Running types.Bool   `tfsdk:"running"`
+	ID             types.String `tfsdk:"id"`
+	Name           types.String `tfsdk:"name"`
+	Enabled        types.Bool   `tfsdk:"enabled"`
+	Running        types.Bool   `tfsdk:"running"`
+	RestartTrigger types.String `tfsdk:"restart_trigger"`
 }
 
 func NewHostSystemdServiceResource() resource.Resource {
@@ -70,6 +71,10 @@ func (r *HostSystemdServiceResource) Schema(ctx context.Context, req resource.Sc
 				Computed:            true,
 				Default:             booldefault.StaticBool(true),
 				MarkdownDescription: "Whether the service should be running now.",
+			},
+			"restart_trigger": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Opaque value stored in state. When it changes while the service is meant to remain running, the provider restarts the service after synchronizing its enabled and running state. Use a file hash or combined configuration digest.",
 			},
 		},
 	}
@@ -166,7 +171,9 @@ func (r *HostSystemdServiceResource) Read(ctx context.Context, req resource.Read
 }
 
 func (r *HostSystemdServiceResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var state HostSystemdServiceResourceModel
 	var plan HostSystemdServiceResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -176,8 +183,14 @@ func (r *HostSystemdServiceResource) Update(ctx context.Context, req resource.Up
 		resp.Diagnostics.AddError("Failed to sync systemd service", err.Error())
 		return
 	}
+	if systemdServiceShouldRestart(state, plan) {
+		if err := r.manager.RestartService(ctx, plan.Name.ValueString()); err != nil {
+			resp.Diagnostics.AddError("Failed to restart systemd service", err.Error())
+			return
+		}
+	}
 
-	state, exists, err := r.refreshState(ctx, plan)
+	next, exists, err := r.refreshState(ctx, plan)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to read systemd service", err.Error())
 		return
@@ -187,7 +200,7 @@ func (r *HostSystemdServiceResource) Update(ctx context.Context, req resource.Up
 		return
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
 }
 
 func (r *HostSystemdServiceResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -235,6 +248,18 @@ func systemdServiceSpecFromModel(model HostSystemdServiceResourceModel) SystemdS
 	}
 }
 
+func systemdServiceShouldRestart(state HostSystemdServiceResourceModel, plan HostSystemdServiceResourceModel) bool {
+	if plan.RestartTrigger.IsNull() || plan.RestartTrigger.IsUnknown() ||
+		state.RestartTrigger.IsUnknown() ||
+		plan.Running.IsNull() || plan.Running.IsUnknown() || !plan.Running.ValueBool() ||
+		state.Running.IsNull() || state.Running.IsUnknown() || !state.Running.ValueBool() {
+		return false
+	}
+
+	return state.RestartTrigger.IsNull() ||
+		state.RestartTrigger.ValueString() != plan.RestartTrigger.ValueString()
+}
+
 func hostSystemdServicePlanRequiresMutationWarning(ctx context.Context, stateData tfsdk.State, plan HostSystemdServiceResourceModel, diags *diag.Diagnostics) bool {
 	if stateData.Raw.IsNull() {
 		return true
@@ -248,5 +273,6 @@ func hostSystemdServicePlanRequiresMutationWarning(ctx context.Context, stateDat
 
 	return plan.Name.ValueString() != state.Name.ValueString() ||
 		plan.Enabled.ValueBool() != state.Enabled.ValueBool() ||
-		plan.Running.ValueBool() != state.Running.ValueBool()
+		plan.Running.ValueBool() != state.Running.ValueBool() ||
+		systemdServiceShouldRestart(state, plan)
 }

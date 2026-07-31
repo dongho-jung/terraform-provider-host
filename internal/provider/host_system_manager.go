@@ -36,6 +36,7 @@ type KeymapManager interface {
 type SystemdServiceManager interface {
 	ServiceStatus(ctx context.Context, name string) (SystemdServiceStatus, error)
 	SyncService(ctx context.Context, spec SystemdServiceSpec) error
+	RestartService(ctx context.Context, name string) error
 	NeedsPrivilegeEscalation() bool
 }
 
@@ -280,6 +281,14 @@ func (m *CLISystemdServiceManager) SyncService(ctx context.Context, spec Systemd
 	}
 
 	_, err := m.run(ctx, true, m.systemctlPath, "stop", spec.Name)
+	return err
+}
+
+func (m *CLISystemdServiceManager) RestartService(ctx context.Context, name string) error {
+	if err := validateSystemdServiceName(name); err != nil {
+		return err
+	}
+	_, err := m.run(ctx, true, m.systemctlPath, "restart", name)
 	return err
 }
 
