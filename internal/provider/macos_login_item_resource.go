@@ -471,9 +471,11 @@ func (m *CLIMacOSLoginItemManager) runOSAScript(ctx context.Context, scriptLines
 	}
 	commandArgs = append(commandArgs, args...)
 
-	cmd := exec.CommandContext(ctx, m.osascriptPath, commandArgs...)
-	cmd.Env = environmentWithCLocale(cmd.Environ())
-	out, err := cmd.CombinedOutput()
+	out, err := combinedOutputWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		cmd := exec.CommandContext(ctx, m.osascriptPath, commandArgs...)
+		cmd.Env = environmentWithCLocale(cmd.Environ())
+		return cmd
+	})
 	if err != nil {
 		return nil, fmt.Errorf("run osascript: %w%s", err, commandOutputSuffix(out))
 	}

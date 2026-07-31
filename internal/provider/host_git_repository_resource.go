@@ -993,12 +993,17 @@ func runGit(ctx context.Context, gitPath string, workDir string, args ...string)
 		commandArgs = append([]string{"-C", workDir}, args...)
 	}
 
-	cmd := exec.CommandContext(ctx, gitPath, commandArgs...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	err := runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		stdout.Reset()
+		stderr.Reset()
+		cmd := exec.CommandContext(ctx, gitPath, commandArgs...)
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		return cmd
+	})
+	if err != nil {
 		return nil, fmt.Errorf("%s %s failed: %w\n%s", gitPath, strings.Join(commandArgs, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), nil

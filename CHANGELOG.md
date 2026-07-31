@@ -1,3 +1,9 @@
+## 0.17.2 (2026-07-31)
+
+FIXES:
+
+- Retry transient executable-busy failures across host command backends when a newly installed or generated executable is still open for writing.
+
 ## 0.17.1 (2026-07-31)
 
 FIXES:

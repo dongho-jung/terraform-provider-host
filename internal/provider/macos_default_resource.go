@@ -487,13 +487,18 @@ func (m *CLIMacOSDefaultsManager) defaultsArgs(currentHost bool, args ...string)
 }
 
 func runMacOSCommand(ctx context.Context, command string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, command, args...)
-	cmd.Env = environmentWithCLocale(cmd.Environ())
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	err := runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		stdout.Reset()
+		stderr.Reset()
+		cmd := exec.CommandContext(ctx, command, args...)
+		cmd.Env = environmentWithCLocale(cmd.Environ())
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		return cmd
+	})
+	if err != nil {
 		return nil, fmt.Errorf("%s %s failed: %w\n%s", command, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), nil

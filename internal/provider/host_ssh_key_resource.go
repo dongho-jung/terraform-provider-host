@@ -474,8 +474,10 @@ func (m *CLISSHKeyManager) generateKey(ctx context.Context, spec HostSSHKeySpec)
 		args = append(args, "-b", strconv.FormatInt(spec.Bits, 10))
 	}
 
-	cmd := exec.CommandContext(ctx, sshKeygenPath, args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := combinedOutputWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		return exec.CommandContext(ctx, sshKeygenPath, args...)
+	})
+	if err != nil {
 		return fmt.Errorf("run ssh-keygen %s: %w%s", strings.Join(args, " "), err, commandOutputSuffix(out))
 	}
 
@@ -503,8 +505,9 @@ func (m *CLISSHKeyManager) readPublicKey(ctx context.Context, publicKeyPath stri
 	if err != nil {
 		return "", err
 	}
-	cmd := exec.CommandContext(ctx, sshKeygenPath, "-y", "-f", privateKeyPath)
-	out, err := cmd.CombinedOutput()
+	out, err := combinedOutputWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		return exec.CommandContext(ctx, sshKeygenPath, "-y", "-f", privateKeyPath)
+	})
 	if err != nil {
 		return "", fmt.Errorf("derive public key from %q: %w%s", privateKeyPath, err, commandOutputSuffix(out))
 	}

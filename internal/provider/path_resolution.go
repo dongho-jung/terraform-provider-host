@@ -50,7 +50,9 @@ func darwinUserHomeDir(ctx context.Context, username string) (string, error) {
 		return "", fmt.Errorf("dscl command not found")
 	}
 
-	out, err := exec.CommandContext(ctx, dsclPath, ".", "-read", "/Users/"+username, "NFSHomeDirectory").CombinedOutput()
+	out, err := combinedOutputWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		return exec.CommandContext(ctx, dsclPath, ".", "-read", "/Users/"+username, "NFSHomeDirectory")
+	})
 	if err != nil {
 		return "", fmt.Errorf("read macOS user home: %w%s", err, commandOutputSuffix(out))
 	}
@@ -69,7 +71,9 @@ func getentUserHomeDir(ctx context.Context, username string) (string, error) {
 	if getentPath == "" {
 		return "", fmt.Errorf("getent command not found")
 	}
-	out, err := exec.CommandContext(ctx, getentPath, "passwd", username).CombinedOutput()
+	out, err := combinedOutputWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		return exec.CommandContext(ctx, getentPath, "passwd", username)
+	})
 	if err != nil {
 		return "", fmt.Errorf("read passwd entry: %w%s", err, commandOutputSuffix(out))
 	}

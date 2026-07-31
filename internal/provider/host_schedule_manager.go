@@ -491,10 +491,14 @@ func startCrondService(ctx context.Context) error {
 		return nil
 	}
 
-	cmd := exec.CommandContext(ctx, systemctlPath, "enable", "--now", hostScheduleCrondSystemdUnit)
 	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	err := runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		stderr.Reset()
+		cmd := exec.CommandContext(ctx, systemctlPath, "enable", "--now", hostScheduleCrondSystemdUnit)
+		cmd.Stderr = &stderr
+		return cmd
+	})
+	if err != nil {
 		return fmt.Errorf("start %s: %w\n%s", hostScheduleCrondSystemdUnit, err, strings.TrimSpace(stderr.String()))
 	}
 
@@ -512,10 +516,16 @@ func (m *CLICronScheduleManager) readCrontab(ctx context.Context, targetUser str
 	}
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
+	err = runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		stdout.Reset()
+		stderr.Reset()
+		retryCmd := exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
+		retryCmd.Env = append([]string(nil), cmd.Env...)
+		retryCmd.Stdout = &stdout
+		retryCmd.Stderr = &stderr
+		return retryCmd
+	})
+	if err != nil {
 		output := strings.ToLower(strings.TrimSpace(stderr.String() + "\n" + stdout.String()))
 		if strings.Contains(output, hostScheduleCronNoCrontabToken) {
 			return nil, nil
@@ -555,8 +565,14 @@ func (m *CLICronScheduleManager) writeCrontab(ctx context.Context, targetUser st
 		return err
 	}
 	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	err = runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		stderr.Reset()
+		retryCmd := exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
+		retryCmd.Env = append([]string(nil), cmd.Env...)
+		retryCmd.Stderr = &stderr
+		return retryCmd
+	})
+	if err != nil {
 		return fmt.Errorf("%s failed: %w\n%s", display, err, strings.TrimSpace(stderr.String()))
 	}
 
@@ -601,20 +617,22 @@ func hostScheduleCrontabArgs(targetUser string, currentUser string, args ...stri
 }
 
 func (m *CLICronScheduleManager) authenticateSudo(ctx context.Context, name string, args ...string) error {
-	check := exec.CommandContext(ctx, m.sudoPath, "-n", "-v")
-	if err := check.Run(); err == nil {
+	if err := runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		return exec.CommandContext(ctx, m.sudoPath, "-n", "-v")
+	}); err == nil {
 		return nil
 	}
 
 	fmt.Fprintf(os.Stderr, "\nTerraform provider host needs sudo privileges for: %s %s\n", name, strings.Join(args, " "))
 	fmt.Fprintln(os.Stderr, "Enter your sudo password at the prompt below, or run `sudo -v` before `terraform apply`.")
 
-	cmd := exec.CommandContext(ctx, m.sudoPath, "-v")
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
+	if err := runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		cmd := exec.CommandContext(ctx, m.sudoPath, "-v")
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd
+	}); err != nil {
 		return fmt.Errorf("sudo authentication failed: %w. Run `sudo -v` before `terraform apply`, or configure passwordless sudo for local schedule management", err)
 	}
 

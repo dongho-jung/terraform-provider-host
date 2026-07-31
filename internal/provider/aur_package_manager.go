@@ -134,12 +134,17 @@ func (m *CLIAURPackageManager) candidateIsNewer(ctx context.Context, candidate s
 		return true, nil
 	}
 
-	cmd := exec.CommandContext(ctx, m.vercmpPath, candidate, installed)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	err := runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		stdout.Reset()
+		stderr.Reset()
+		cmd := exec.CommandContext(ctx, m.vercmpPath, candidate, installed)
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		return cmd
+	})
+	if err != nil {
 		return false, fmt.Errorf("%s %s %s failed: %w\n%s", m.vercmpPath, candidate, installed, err, strings.TrimSpace(stderr.String()))
 	}
 
@@ -191,15 +196,18 @@ func (m *CLIAURPackageManager) runHelperMutate(ctx context.Context, args ...stri
 }
 
 func (m *CLIAURPackageManager) runHelper(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, m.helperPath, args...)
-	cmd.Env = environmentWithCLocale(cmd.Environ())
-
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
+	err := runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		stdout.Reset()
+		stderr.Reset()
+		cmd := exec.CommandContext(ctx, m.helperPath, args...)
+		cmd.Env = environmentWithCLocale(cmd.Environ())
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		return cmd
+	})
+	if err != nil {
 		return nil, fmt.Errorf("%s %s failed: %w\n%s", m.helperPath, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 

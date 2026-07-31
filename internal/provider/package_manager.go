@@ -391,15 +391,18 @@ func (m *CLIPackageManager) run(ctx context.Context, mutate bool, name string, a
 		commandArgs = append([]string{name}, args...)
 	}
 
-	cmd := exec.CommandContext(ctx, commandName, commandArgs...)
-	cmd.Env = environmentWithCLocale(cmd.Environ())
-
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
+	err := runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		stdout.Reset()
+		stderr.Reset()
+		cmd := exec.CommandContext(ctx, commandName, commandArgs...)
+		cmd.Env = environmentWithCLocale(cmd.Environ())
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		return cmd
+	})
+	if err != nil {
 		return nil, fmt.Errorf("%s %s failed: %w\n%s", commandName, strings.Join(commandArgs, " "), err, strings.TrimSpace(stderr.String()))
 	}
 
@@ -407,20 +410,22 @@ func (m *CLIPackageManager) run(ctx context.Context, mutate bool, name string, a
 }
 
 func (m *CLIPackageManager) authenticateSudo(ctx context.Context, name string, args ...string) error {
-	check := exec.CommandContext(ctx, m.sudoPath, "-n", "-v")
-	if err := check.Run(); err == nil {
+	if err := runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		return exec.CommandContext(ctx, m.sudoPath, "-n", "-v")
+	}); err == nil {
 		return nil
 	}
 
 	fmt.Fprintf(os.Stderr, "\nTerraform provider host needs sudo privileges for: %s %s\n", name, strings.Join(args, " "))
 	fmt.Fprintln(os.Stderr, "Enter your sudo password at the prompt below, or run `sudo -v` before `terraform apply`.")
 
-	cmd := exec.CommandContext(ctx, m.sudoPath, "-v")
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
+	if err := runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		cmd := exec.CommandContext(ctx, m.sudoPath, "-v")
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd
+	}); err != nil {
 		return fmt.Errorf("sudo authentication failed: %w. Run `sudo -v` before `terraform apply`, or configure passwordless sudo for local package management", err)
 	}
 

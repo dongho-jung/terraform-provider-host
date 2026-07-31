@@ -120,14 +120,17 @@ func removeProtectedFile(ctx context.Context, sudoPath string, path string) erro
 
 func runProtectedFileCommand(ctx context.Context, sudoPath string, name string, args ...string) error {
 	commandArgs := append([]string{"-n", "--", name}, args...)
-	cmd := exec.CommandContext(ctx, sudoPath, commandArgs...)
-
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
+	err := runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		stdout.Reset()
+		stderr.Reset()
+		cmd := exec.CommandContext(ctx, sudoPath, commandArgs...)
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		return cmd
+	})
+	if err != nil {
 		return fmt.Errorf("%s %s failed: %w\n%s", sudoPath, strings.Join(commandArgs, " "), err, strings.TrimSpace(stderr.String()))
 	}
 

@@ -114,13 +114,17 @@ func (r *hostRootCommandRunner) Run(ctx context.Context, stdin io.Reader, name s
 		commandArgs = append([]string{"-n", "--", resolvedName}, args...)
 	}
 
-	cmd := exec.CommandContext(ctx, commandName, commandArgs...)
-	cmd.Stdin = stdin
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err = cmd.Run()
+	err = runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		stdout.Reset()
+		stderr.Reset()
+		cmd := exec.CommandContext(ctx, commandName, commandArgs...)
+		cmd.Stdin = stdin
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		return cmd
+	})
 	result := hostSystemFileCommandResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}
 	if err == nil {
 		return result, nil

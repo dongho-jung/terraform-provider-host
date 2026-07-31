@@ -271,15 +271,18 @@ func (m *CLIBrewPackageManager) run(ctx context.Context, args ...string) ([]byte
 }
 
 func (m *CLIBrewPackageManager) runWithEnv(ctx context.Context, extraEnv []string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, m.brewPath, args...)
-	cmd.Env = append(cmd.Environ(), extraEnv...)
-
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
+	err := runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		stdout.Reset()
+		stderr.Reset()
+		cmd := exec.CommandContext(ctx, m.brewPath, args...)
+		cmd.Env = append(cmd.Environ(), extraEnv...)
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		return cmd
+	})
+	if err != nil {
 		return nil, fmt.Errorf("%s %s failed: %w\n%s", m.brewPath, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 
@@ -293,13 +296,15 @@ func (m *CLIBrewPackageManager) runInteractive(ctx context.Context, extraEnv []s
 	}
 	defer tty.close()
 
-	cmd := exec.CommandContext(ctx, m.brewPath, args...)
-	cmd.Env = append(cmd.Environ(), extraEnv...)
-	cmd.Stdin = tty.file
-	cmd.Stdout = tty.file
-	cmd.Stderr = tty.file
-
-	if err := cmd.Run(); err != nil {
+	err = runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		cmd := exec.CommandContext(ctx, m.brewPath, args...)
+		cmd.Env = append(cmd.Environ(), extraEnv...)
+		cmd.Stdin = tty.file
+		cmd.Stdout = tty.file
+		cmd.Stderr = tty.file
+		return cmd
+	})
+	if err != nil {
 		return fmt.Errorf("%s %s failed: %w", m.brewPath, strings.Join(args, " "), err)
 	}
 
@@ -469,14 +474,13 @@ func (m *CLIBrewPackageManager) validateSudo(ctx context.Context) error {
 	}
 	defer tty.close()
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, m.sudoPath, "-n", "-v")
-	cmd.Stdin = tty.file
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	return cmd.Run()
+	return runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		cmd := exec.CommandContext(ctx, m.sudoPath, "-n", "-v")
+		cmd.Stdin = tty.file
+		cmd.Stdout = &bytes.Buffer{}
+		cmd.Stderr = &bytes.Buffer{}
+		return cmd
+	})
 }
 
 func (m *CLIBrewPackageManager) authenticateSudoForCask(ctx context.Context, reason string) error {
@@ -504,12 +508,13 @@ func (m *CLIBrewPackageManager) authenticateSudoForCask(ctx context.Context, rea
 		reminder.Wait()
 	}()
 
-	cmd := exec.CommandContext(ctx, m.sudoPath, "-p", "\nTerraform provider host sudo password (input hidden): ", "-v")
-	cmd.Stdin = tty.file
-	cmd.Stdout = tty.file
-	cmd.Stderr = tty.file
-
-	if err := cmd.Run(); err != nil {
+	if err := runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		cmd := exec.CommandContext(ctx, m.sudoPath, "-p", "\nTerraform provider host sudo password (input hidden): ", "-v")
+		cmd.Stdin = tty.file
+		cmd.Stdout = tty.file
+		cmd.Stderr = tty.file
+		return cmd
+	}); err != nil {
 		return fmt.Errorf("sudo authentication failed: %w. Run `sudo -v` before `terraform apply`, or configure passwordless sudo for local package management", err)
 	}
 

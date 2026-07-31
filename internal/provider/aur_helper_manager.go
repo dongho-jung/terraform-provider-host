@@ -386,15 +386,19 @@ func validateAURHelperName(name string) error {
 }
 
 func runAURHelperBootstrapCommand(ctx context.Context, dir string, name string, args ...string) error {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Env = environmentWithCLocale(cmd.Environ())
-	cmd.Dir = dir
-
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	err := runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		stdout.Reset()
+		stderr.Reset()
+		cmd := exec.CommandContext(ctx, name, args...)
+		cmd.Env = environmentWithCLocale(cmd.Environ())
+		cmd.Dir = dir
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		return cmd
+	})
+	if err != nil {
 		output := strings.TrimSpace(stderr.String())
 		if output == "" {
 			output = strings.TrimSpace(stdout.String())

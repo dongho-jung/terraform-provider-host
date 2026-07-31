@@ -20,9 +20,7 @@ import (
 )
 
 const (
-	macOSAudioDeviceCacheTTL       = 500 * time.Millisecond
-	macOSAudioHelperExecAttempts   = 10
-	macOSAudioHelperExecRetryDelay = 20 * time.Millisecond
+	macOSAudioDeviceCacheTTL = 500 * time.Millisecond
 )
 
 type MacOSAudioDevice struct {
@@ -155,30 +153,20 @@ func runMacOSAudioHelper(ctx context.Context, helperPath string, command string,
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	for attempt := 1; ; attempt++ {
+	err := runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
 		stdout.Reset()
 		stderr.Reset()
 
 		cmd := exec.CommandContext(ctx, helperPath, args...)
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
-			if attempt < macOSAudioHelperExecAttempts && isExecutableBusyError(err) {
-				timer := time.NewTimer(macOSAudioHelperExecRetryDelay)
-				select {
-				case <-ctx.Done():
-					timer.Stop()
-					return ctx.Err()
-				case <-timer.C:
-					continue
-				}
-			}
-			if stderr.Len() > 0 {
-				return fmt.Errorf("%w: %s", err, stderr.String())
-			}
-			return err
+		return cmd
+	})
+	if err != nil {
+		if stderr.Len() > 0 {
+			return fmt.Errorf("%w: %s", err, stderr.String())
 		}
-		break
+		return err
 	}
 	if output == nil {
 		return nil
@@ -264,12 +252,17 @@ func (m *CLIMacOSAudioManager) compileHelper(ctx context.Context, helperDir stri
 		}
 	}()
 
-	cmd := exec.CommandContext(ctx, m.swiftPath, "-O", "-o", tempPath, sourcePath)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	err = runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		stdout.Reset()
+		stderr.Reset()
+		cmd := exec.CommandContext(ctx, m.swiftPath, "-O", "-o", tempPath, sourcePath)
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		return cmd
+	})
+	if err != nil {
 		return fmt.Errorf(
 			"compile macOS audio helper with %s: %w\n%s",
 			m.swiftPath,

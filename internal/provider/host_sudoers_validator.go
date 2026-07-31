@@ -55,12 +55,17 @@ func (v *CLIHostSudoersValidator) Validate(ctx context.Context, content []byte) 
 		return fmt.Errorf("close sudoers validation file: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, visudoPath, "-c", "-s", "-f", stagingPath)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	err = runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
+		stdout.Reset()
+		stderr.Reset()
+		cmd := exec.CommandContext(ctx, visudoPath, "-c", "-s", "-f", stagingPath)
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		return cmd
+	})
+	if err != nil {
 		detail := strings.TrimSpace(stderr.String())
 		if detail == "" {
 			detail = strings.TrimSpace(stdout.String())
