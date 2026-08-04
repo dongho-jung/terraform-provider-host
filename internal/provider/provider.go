@@ -69,7 +69,7 @@ func (p *HostProvider) Schema(ctx context.Context, req provider.SchemaRequest, r
 			},
 			"sudo_preauth": schema.BoolAttribute{
 				Optional:            true,
-				MarkdownDescription: "Authenticate `sudo` once while the provider is configured, before any resource is read or changed, and renew that timestamp in the background for the rest of the run. Without it a password prompt appears wherever the first privileged operation happens to land, buried in Terraform's progress output. Defaults to false. Enable it for configurations that manage system-scoped objects, and leave it off for user-scoped configurations that never need root.",
+				MarkdownDescription: "Authenticate `sudo` once while the provider is configured, before any resource is read or changed, and renew that timestamp in the background for the rest of the run. Defaults to true. Terraform streams progress output while a resource operation blocks, so a prompt raised later is interleaved with it and easily missed. Set this to false for user-scoped configurations that never need root, so a run that would not otherwise touch `sudo` does not ask for a password.",
 			},
 		},
 	}
@@ -201,8 +201,10 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 
 	// Configure runs once, before Terraform reads or changes any resource, so
 	// authenticating here puts the password prompt ahead of the run's output
-	// instead of somewhere inside it.
-	if !config.SudoPreauth.IsNull() && config.SudoPreauth.ValueBool() {
+	// instead of somewhere inside it. Nothing the provider prints later can
+	// compete with Terraform's own progress lines on the same terminal, which
+	// is why this is on unless a configuration opts out.
+	if config.SudoPreauth.IsNull() || config.SudoPreauth.ValueBool() {
 		if err := preauthenticateHostSudo(ctx, sudoPath); err != nil {
 			resp.Diagnostics.AddWarning(
 				"sudo pre-authentication skipped",

@@ -210,12 +210,29 @@ func TestProviderSudoPreauthWarnsRatherThanFailingWithoutATerminal(t *testing.T)
 	}
 }
 
-func TestProviderWithoutSudoPreauthNeverAuthenticates(t *testing.T) {
-	resp, logPath := configureHostProviderWithStubSudo(t, HostProviderModel{
+func TestProviderSudoPreauthDefaultsToEnabled(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root never authenticates through sudo")
+	}
+
+	_, logPath := configureHostProviderWithStubSudo(t, HostProviderModel{
 		TargetUser:  types.StringNull(),
 		HomeDir:     types.StringNull(),
 		RuntimeDir:  types.StringNull(),
 		SudoPreauth: types.BoolNull(),
+	})
+
+	if invocations := readStubSudoInvocations(t, logPath); len(invocations) == 0 {
+		t.Fatal("expected an unset sudo_preauth to authenticate up front")
+	}
+}
+
+func TestProviderSudoPreauthCanBeDisabled(t *testing.T) {
+	resp, logPath := configureHostProviderWithStubSudo(t, HostProviderModel{
+		TargetUser:  types.StringNull(),
+		HomeDir:     types.StringNull(),
+		RuntimeDir:  types.StringNull(),
+		SudoPreauth: types.BoolValue(false),
 	})
 
 	if resp.Diagnostics.HasError() {
@@ -225,7 +242,7 @@ func TestProviderWithoutSudoPreauthNeverAuthenticates(t *testing.T) {
 		t.Fatalf("expected no warnings, got %v", resp.Diagnostics.Warnings())
 	}
 	if invocations := readStubSudoInvocations(t, logPath); len(invocations) != 0 {
-		t.Fatalf("expected sudo to stay untouched when sudo_preauth is unset, got %#v", invocations)
+		t.Fatalf("expected sudo to stay untouched when sudo_preauth is false, got %#v", invocations)
 	}
 }
 

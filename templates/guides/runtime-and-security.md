@@ -14,17 +14,22 @@ The provider runs commands on the machine executing Terraform. Required tools va
 
 ## Sudo Authentication
 
-Privileged operations authenticate through `sudo` on the controlling terminal. By default that happens lazily, when the first operation that needs root runs. Refresh counts: reading a `host_sudoers_rule` or a root-only `host_system_file` needs root to detect drift, so `terraform plan` can ask for a password even though it changes nothing.
+Privileged operations authenticate through `sudo` on the controlling terminal. The provider does this while it is being configured, before any resource is read or changed, and renews the timestamp in the background every 60 seconds for the rest of the run. Renewal matters because sudo's default `timestamp_timeout` is five minutes, which a large refresh or apply outlives.
 
-A lazy prompt appears wherever that first operation lands, surrounded by Terraform's own progress output. Set `sudo_preauth = true` to move it:
+Authenticating up front is not cosmetic. Terraform keeps streaming progress lines while a resource operation blocks, so a prompt raised partway through a run is interleaved with that output and easily missed. Only a prompt that precedes the run avoids it.
+
+Refresh needs root too: reading a `host_sudoers_rule` or a root-only `host_system_file` requires root to detect drift, so `terraform plan` can ask for a password even though it changes nothing.
+
+Set `sudo_preauth = false` for a user-scoped configuration that never needs root, so a run that would not otherwise touch `sudo` does not ask for a password:
 
 ```terraform
 provider "host" {
-  sudo_preauth = true
+  target_user  = "alice"
+  sudo_preauth = false
 }
 ```
 
-The provider then authenticates while it is being configured, before any resource is read or changed, and renews the timestamp in the background every 60 seconds for the rest of the run. Renewal matters because sudo's default `timestamp_timeout` is five minutes, which a large refresh or apply outlives. On-demand authentication remains as a fallback.
+Privileged operations then authenticate on demand instead, which is also the fallback whenever pre-authentication does not happen.
 
 Pre-authentication is skipped, with a warning rather than an error, when the run is already root, when `sudo` is missing, or when no controlling terminal is available. A valid sudo timestamp is always reused, so a passwordless `sudo` configuration and a preceding `sudo -v` both prompt for nothing.
 
