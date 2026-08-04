@@ -94,6 +94,25 @@ func hostLinkStagePath(stageRoot string, sourceDigest string) string {
 	return filepath.Join(stageRoot, "versions", sourceDigest)
 }
 
+// hostLinkStageCurrentPath is the stable path every staged link points at. The
+// versioned copies keep content-addressed names, but routing the host link
+// through a fixed indirection keeps `source_path` out of the plan diff when only
+// the source content changed.
+func hostLinkStageCurrentPath(stageRoot string) string {
+	return filepath.Join(stageRoot, "current")
+}
+
+// hostLinkStagedSourceDigest digests the version that the stable `current`
+// indirection resolves to, rather than the symbolic link itself.
+func hostLinkStagedSourceDigest(currentPath string) (string, error) {
+	versionPath, err := filepath.EvalSymlinks(currentPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve staged source %q: %w", currentPath, err)
+	}
+
+	return hostLinkSourceDigest(versionPath)
+}
+
 func stageHostLinkSource(sourcePath string, destinationPath string, expectedDigest string) error {
 	if !isSHA256Hex(expectedDigest) {
 		return fmt.Errorf("staged source digest must be a lowercase SHA256, got %q", expectedDigest)

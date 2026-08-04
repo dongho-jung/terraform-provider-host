@@ -217,6 +217,68 @@ func TestHostLinkResourceStagesSourceOutsideWorkingTree(t *testing.T) {
 	}
 }
 
+func TestHostLinkResourceKeepsStagedSourcePathAcrossContentChanges(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	source := filepath.Join(root, "checkout", "CLAUDE.md")
+	if err := os.MkdirAll(filepath.Dir(source), 0o750); err != nil {
+		t.Fatalf("create source parent: %s", err)
+	}
+	if err := os.WriteFile(source, []byte("first"), 0o640); err != nil {
+		t.Fatalf("write source: %s", err)
+	}
+
+	homeDir := filepath.Join(root, "home")
+	resource := &HostLinkResource{
+		homeDir:    homeDir,
+		runtimeDir: filepath.Join(homeDir, ".local", "state", "terraform-provider-host"),
+	}
+	model := HostLinkResourceModel{
+		Source:      types.StringValue(source),
+		StageSource: types.BoolValue(true),
+		Destination: types.StringValue("~/.claude/CLAUDE.md"),
+	}
+
+	before, err := resource.syncLink(model)
+	if err != nil {
+		t.Fatalf("sync staged link: %s", err)
+	}
+	if err := os.WriteFile(source, []byte("second"), 0o640); err != nil {
+		t.Fatalf("rewrite source: %s", err)
+	}
+	after, err := resource.syncLink(model)
+	if err != nil {
+		t.Fatalf("resync staged link: %s", err)
+	}
+
+	// Only the digest tracks content, so a source edit does not drag a pair of
+	// content-addressed paths through the plan diff.
+	if after.SourcePath.ValueString() != before.SourcePath.ValueString() {
+		t.Fatalf("staged source_path churned: %q -> %q", before.SourcePath.ValueString(), after.SourcePath.ValueString())
+	}
+	if after.SourceDigest.ValueString() == before.SourceDigest.ValueString() {
+		t.Fatalf("source_digest %q did not track the content change", after.SourceDigest.ValueString())
+	}
+	if got, err := os.ReadFile(after.DestinationPath.ValueString()); err != nil || string(got) != "second" {
+		t.Fatalf("managed link content got %q, err=%v", string(got), err)
+	}
+
+	// The refresh digests what the stable indirection resolves to, otherwise it
+	// would hash the symbolic link itself and report drift on every read.
+	linkSource, exists, err := readHostLinkSource(after.DestinationPath.ValueString())
+	if err != nil || !exists {
+		t.Fatalf("read managed link: exists=%t, err=%v", exists, err)
+	}
+	refreshed, err := hostLinkStagedSourceDigest(linkSource)
+	if err != nil {
+		t.Fatalf("digest staged source: %s", err)
+	}
+	if refreshed != after.SourceDigest.ValueString() {
+		t.Fatalf("refreshed digest %q, want %q", refreshed, after.SourceDigest.ValueString())
+	}
+}
+
 func TestRemoveHostLinkStageRootRejectsBroadPath(t *testing.T) {
 	t.Parallel()
 

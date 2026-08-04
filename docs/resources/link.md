@@ -59,11 +59,11 @@ terraform import host_link.neovim_config '~/.config/nvim'
 
 ### Optional
 
-- `stage_source` (Boolean) Copy the source into a content-addressed directory under the provider `runtime_dir` and point the symbolic link at that stable copy. This isolates managed links from temporary Terraform worktrees; source content changes take effect on the next apply instead of immediately.
+- `stage_source` (Boolean) Copy the source into a content-addressed directory under the provider `runtime_dir` and point the symbolic link at that stable copy. This isolates managed links from temporary Terraform worktrees; source content changes take effect on the next apply instead of immediately. Each apply publishes the new copy by atomically repointing a fixed `current` indirection, so `source_path` stays constant and `source_digest` is the only attribute that tracks content.
 
 ### Read-Only
 
 - `destination_path` (String) Resolved absolute symbolic link destination path.
 - `id` (String) Resource identifier, equal to `destination`.
 - `source_digest` (String) Content and permission SHA256 for a staged source. Null when `stage_source` is false.
-- `source_path` (String) Resolved absolute source path currently stored in the symbolic link.
+- `source_path` (String) Resolved absolute source path currently stored in the symbolic link. When `stage_source` is true this is a fixed path under the provider `runtime_dir` that stays the same across source content changes, so only `source_digest` moves in the plan.

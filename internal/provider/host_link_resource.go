@@ -84,7 +84,7 @@ func (r *HostLinkResource) Schema(ctx context.Context, req resource.SchemaReques
 				Optional:            true,
 				Computed:            true,
 				Default:             booldefault.StaticBool(false),
-				MarkdownDescription: "Copy the source into a content-addressed directory under the provider `runtime_dir` and point the symbolic link at that stable copy. This isolates managed links from temporary Terraform worktrees; source content changes take effect on the next apply instead of immediately.",
+				MarkdownDescription: "Copy the source into a content-addressed directory under the provider `runtime_dir` and point the symbolic link at that stable copy. This isolates managed links from temporary Terraform worktrees; source content changes take effect on the next apply instead of immediately. Each apply publishes the new copy by atomically repointing a fixed `current` indirection, so `source_path` stays constant and `source_digest` is the only attribute that tracks content.",
 			},
 			"destination": schema.StringAttribute{
 				Required:            true,
@@ -92,7 +92,7 @@ func (r *HostLinkResource) Schema(ctx context.Context, req resource.SchemaReques
 			},
 			"source_path": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "Resolved absolute source path currently stored in the symbolic link.",
+				MarkdownDescription: "Resolved absolute source path currently stored in the symbolic link. When `stage_source` is true this is a fixed path under the provider `runtime_dir` that stays the same across source content changes, so only `source_digest` moves in the plan.",
 			},
 			"source_digest": schema.StringAttribute{
 				Computed:            true,
@@ -188,7 +188,7 @@ func (r *HostLinkResource) Read(ctx context.Context, req resource.ReadRequest, r
 		state.StageSource = types.BoolValue(false)
 	}
 	if state.StageSource.ValueBool() {
-		digest, digestErr := hostLinkSourceDigest(actualSource)
+		digest, digestErr := hostLinkStagedSourceDigest(actualSource)
 		if digestErr != nil {
 			state.SourceDigest = types.StringNull()
 		} else {
@@ -292,7 +292,10 @@ func (r *HostLinkResource) syncLink(model HostLinkResourceModel) (HostLinkResour
 	}
 
 	if resolved.StageRoot != "" {
-		if err := stageHostLinkSource(resolved.OriginalSourcePath, resolved.Link.SourcePath, resolved.SourceDigest); err != nil {
+		if err := stageHostLinkSource(resolved.OriginalSourcePath, resolved.StagedVersionPath, resolved.SourceDigest); err != nil {
+			return model, err
+		}
+		if err := writeHostLink(resolved.Link.SourcePath, resolved.StagedVersionPath); err != nil {
 			return model, err
 		}
 	}
@@ -332,6 +335,7 @@ type resolvedHostLink struct {
 	OriginalSourcePath string
 	SourceDigest       string
 	StageRoot          string
+	StagedVersionPath  string
 }
 
 func resolveHostLinkModel(model HostLinkResourceModel, homeDir string, runtimeDir string) (resolvedHostLink, error) {
@@ -362,7 +366,8 @@ func resolveHostLinkModel(model HostLinkResourceModel, homeDir string, runtimeDi
 
 	resolved.SourceDigest = digest
 	resolved.StageRoot = stageRoot
-	resolved.Link.SourcePath = hostLinkStagePath(stageRoot, digest)
+	resolved.StagedVersionPath = hostLinkStagePath(stageRoot, digest)
+	resolved.Link.SourcePath = hostLinkStageCurrentPath(stageRoot)
 	return resolved, nil
 }
 
