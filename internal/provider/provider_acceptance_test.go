@@ -3,7 +3,6 @@ package provider
 import (
 	"fmt"
 	osuser "os/user"
-	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -20,20 +19,23 @@ func TestAccProviderConfig(t *testing.T) {
 		Steps: []resource.TestStep{
 			{
 				Config: fmt.Sprintf(`provider "host" {
-  target_user = %q
+  target_user  = %q
+  sudo_preauth = false
 }`, current.Username),
 			},
 		},
 	})
 }
 
-func TestAccProviderConfigAllowsSystemOnlyScope(t *testing.T) {
+func TestAccProviderConfigPlansSystemScopedResource(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
 				Config: `
-provider "host" {}
+provider "host" {
+  sudo_preauth = false
+}
 
 resource "host_system_file" "scope_test" {
   destination = "/etc/terraform-provider-host-system-scope-test"
@@ -47,32 +49,38 @@ resource "host_system_file" "scope_test" {
 	})
 }
 
-func TestAccUserScopedResourceRequiresTargetUser(t *testing.T) {
+// An empty provider block used to be system-only. target_user now defaults to
+// whoever runs Terraform, so user-scoped resources work without naming them.
+func TestAccProviderConfigDefaultsTargetUser(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
 				Config: `
-provider "host" {}
+provider "host" {
+  sudo_preauth = false
+}
 
 resource "host_dir" "test" {
   path = "/tmp/terraform-provider-host-user-scope-test"
 }
 `,
-				ExpectError: regexp.MustCompile(`User-scoped Host object requires target_user`),
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
 			},
 		},
 	})
 }
 
-func TestAccProviderUserDirectoriesRequireTargetUser(t *testing.T) {
+// home_dir and runtime_dir used to require an explicit target_user. They now
+// attach to the defaulted one.
+func TestAccProviderUserDirectoriesUseDefaultedTargetUser(t *testing.T) {
 	for _, test := range []struct {
-		name        string
-		argument    string
-		expectError string
+		name     string
+		argument string
 	}{
-		{name: "home_dir", argument: `home_dir = "/tmp/terraform-provider-host-home"`, expectError: "home_dir requires target_user"},
-		{name: "runtime_dir", argument: `runtime_dir = "/tmp/terraform-provider-host-runtime"`, expectError: "runtime_dir requires target_user"},
+		{name: "home_dir", argument: `home_dir = "/tmp/terraform-provider-host-home"`},
+		{name: "runtime_dir", argument: `runtime_dir = "/tmp/terraform-provider-host-runtime"`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			resource.Test(t, resource.TestCase{
@@ -81,6 +89,7 @@ func TestAccProviderUserDirectoriesRequireTargetUser(t *testing.T) {
 					{
 						Config: fmt.Sprintf(`
 provider "host" {
+  sudo_preauth = false
   %s
 }
 
@@ -88,7 +97,8 @@ resource "host_dir" "test" {
   path = "/tmp/terraform-provider-host-user-directory-test"
 }
 `, test.argument),
-						ExpectError: regexp.MustCompile(test.expectError),
+						PlanOnly:           true,
+						ExpectNonEmptyPlan: true,
 					},
 				},
 			})
@@ -102,8 +112,9 @@ func TestAccProviderConfigAllowsExplicitHomeDirForMissingTargetUser(t *testing.T
 		Steps: []resource.TestStep{
 			{
 				Config: `provider "host" {
-  target_user = "tfhostmissingtargetuser"
-  home_dir    = "/tmp/tfhostmissingtargetuser"
+  target_user  = "tfhostmissingtargetuser"
+  home_dir     = "/tmp/tfhostmissingtargetuser"
+  sudo_preauth = false
 }`,
 			},
 		},
