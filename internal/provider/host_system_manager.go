@@ -334,27 +334,11 @@ func runHostSystemCommand(ctx context.Context, mutate bool, sudoPath string, lab
 	return stdout.Bytes(), nil
 }
 
+// authenticateHostSystemSudo is the on-demand fallback for privileged commands.
+// A provider configured with `sudo_preauth` authenticates before the run starts
+// and keeps that timestamp alive, so this path normally finds nothing to do.
 func authenticateHostSystemSudo(ctx context.Context, sudoPath string, name string, args ...string) error {
-	if err := runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
-		return exec.CommandContext(ctx, sudoPath, "-n", "-v")
-	}); err == nil {
-		return nil
-	}
-
-	fmt.Fprintf(os.Stderr, "\nTerraform provider host needs sudo privileges for: %s %s\n", name, strings.Join(args, " "))
-	fmt.Fprintln(os.Stderr, "Enter your sudo password at the prompt below, or run `sudo -v` before `terraform apply`.")
-
-	if err := runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
-		cmd := exec.CommandContext(ctx, sudoPath, "-v")
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd
-	}); err != nil {
-		return fmt.Errorf("sudo authentication failed: %w. Run `sudo -v` before `terraform apply`, or configure passwordless sudo for local system management", err)
-	}
-
-	return nil
+	return authenticateHostSudo(ctx, sudoPath, hostSudoReason(name, args...))
 }
 
 func parseSystemSetupTimezone(out string) (string, error) {

@@ -552,26 +552,7 @@ func (m *CLIIdentityManager) run(ctx context.Context, mutate bool, name string, 
 }
 
 func (m *CLIIdentityManager) authenticateSudo(ctx context.Context, name string, args ...string) error {
-	if err := runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
-		return exec.CommandContext(ctx, m.sudoPath, "-n", "-v")
-	}); err == nil {
-		return nil
-	}
-
-	fmt.Fprintf(os.Stderr, "\nTerraform provider host needs sudo privileges for: %s %s\n", name, strings.Join(args, " "))
-	fmt.Fprintln(os.Stderr, "Enter your sudo password at the prompt below, or run `sudo -v` before `terraform apply`.")
-
-	if err := runCommandWithExecutableBusyRetry(ctx, func() *exec.Cmd {
-		cmd := exec.CommandContext(ctx, m.sudoPath, "-v")
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd
-	}); err != nil {
-		return fmt.Errorf("sudo authentication failed: %w. Run `sudo -v` before `terraform apply`, or configure passwordless sudo for local identity management", err)
-	}
-
-	return nil
+	return authenticateHostSudo(ctx, m.sudoPath, hostSudoReason(name, args...))
 }
 
 func parseGetentGroup(line string) (HostGroupStatus, error) {

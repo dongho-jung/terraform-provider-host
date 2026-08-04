@@ -27,6 +27,7 @@ type HostProviderModel struct {
 	AURHelperPackage          types.String `tfsdk:"aur_helper_package"`
 	AURRemoveMakeDependencies types.Bool   `tfsdk:"aur_remove_make_dependencies"`
 	AURCleanAfter             types.Bool   `tfsdk:"aur_clean_after"`
+	SudoPreauth               types.Bool   `tfsdk:"sudo_preauth"`
 }
 
 func (p *HostProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -66,6 +67,10 @@ func (p *HostProvider) Schema(ctx context.Context, req provider.SchemaRequest, r
 				Optional:            true,
 				MarkdownDescription: "Pass `--cleanafter` to `yay` or `paru` package installs and upgrades so package source and build directories are removed after a successful build. Requires `target_user` and defaults to false.",
 			},
+			"sudo_preauth": schema.BoolAttribute{
+				Optional:            true,
+				MarkdownDescription: "Authenticate `sudo` once while the provider is configured, before any resource is read or changed, and renew that timestamp in the background for the rest of the run. Without it a password prompt appears wherever the first privileged operation happens to land, buried in Terraform's progress output. Defaults to false. Enable it for configurations that manage system-scoped objects, and leave it off for user-scoped configurations that never need root.",
+			},
 		},
 	}
 }
@@ -98,6 +103,10 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 	}
 	if config.AURCleanAfter.IsUnknown() {
 		resp.Diagnostics.AddError("Unknown aur_clean_after", "`aur_clean_after` must be known while configuring the Host provider.")
+		return
+	}
+	if config.SudoPreauth.IsUnknown() {
+		resp.Diagnostics.AddError("Unknown sudo_preauth", "`sudo_preauth` must be known while configuring the Host provider.")
 		return
 	}
 
@@ -189,6 +198,19 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 	}
 
 	sudoPath := executablePath("sudo")
+
+	// Configure runs once, before Terraform reads or changes any resource, so
+	// authenticating here puts the password prompt ahead of the run's output
+	// instead of somewhere inside it.
+	if !config.SudoPreauth.IsNull() && config.SudoPreauth.ValueBool() {
+		if err := preauthenticateHostSudo(ctx, sudoPath); err != nil {
+			resp.Diagnostics.AddWarning(
+				"sudo pre-authentication skipped",
+				fmt.Sprintf("%s. Privileged operations will authenticate on demand instead, which can interrupt this run with a password prompt.", err),
+			)
+		}
+	}
+
 	data.IdentityManager = NewCLIIdentityManager(sudoPath)
 
 	dnfPath := executablePath("dnf")

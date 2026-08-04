@@ -12,6 +12,24 @@ The provider runs commands on the machine executing Terraform. Required tools va
 
 `git`, `ssh-keygen`, and AUR helpers are resolved when their operations run. When `aur_helper` is configured, AUR package mutations install missing `base-devel` and `git` prerequisites and bootstrap that helper. Planning, refresh, and data-source reads do not install bootstrap tooling. Pacman itself must already exist before Pacman or AUR objects are configured.
 
+## Sudo Authentication
+
+Privileged operations authenticate through `sudo` on the controlling terminal. By default that happens lazily, when the first operation that needs root runs. Refresh counts: reading a `host_sudoers_rule` or a root-only `host_system_file` needs root to detect drift, so `terraform plan` can ask for a password even though it changes nothing.
+
+A lazy prompt appears wherever that first operation lands, surrounded by Terraform's own progress output. Set `sudo_preauth = true` to move it:
+
+```terraform
+provider "host" {
+  sudo_preauth = true
+}
+```
+
+The provider then authenticates while it is being configured, before any resource is read or changed, and renews the timestamp in the background every 60 seconds for the rest of the run. Renewal matters because sudo's default `timestamp_timeout` is five minutes, which a large refresh or apply outlives. On-demand authentication remains as a fallback.
+
+Pre-authentication is skipped, with a warning rather than an error, when the run is already root, when `sudo` is missing, or when no controlling terminal is available. A valid sudo timestamp is always reused, so a passwordless `sudo` configuration and a preceding `sudo -v` both prompt for nothing.
+
+Each Terraform command runs its own provider process, so `terraform plan` and a later `terraform apply` authenticate separately unless the timestamp from the earlier command is still valid.
+
 ## Packages and Data Sources
 
 Each `host_package_*` backend has a resource for lifecycle ownership and a data source for read-only lookup. AUR data sources use local Pacman state by default and query a verified AUR helper only when `include_remote = true`.

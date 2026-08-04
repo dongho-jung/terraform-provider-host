@@ -19,6 +19,6 @@ func addSudoPrivilegeWarningOnce(diags *diag.Diagnostics) {
 
 	diags.AddWarning(
 		"sudo authentication may be required",
-		"At least one planned host operation may need sudo. During apply, the provider will authenticate through `sudo -v` in the current terminal when sudo is not already authenticated, reuse the sudo lease while it remains valid, and print reminders if Terraform status lines hide the prompt. You can also run `sudo -v` before `terraform apply`.",
+		"At least one planned host operation may need sudo. The provider authenticates through `sudo` on the controlling terminal when no valid timestamp exists, and reuses that timestamp while it remains valid. Set `sudo_preauth = true` on the provider to authenticate once before the run starts, instead of wherever the first privileged operation lands in Terraform's output. Running `sudo -v` beforehand works too.",
 	)
 }

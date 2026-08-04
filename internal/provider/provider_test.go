@@ -85,6 +85,25 @@ func TestProviderAURHelperConfigurationIsOptional(t *testing.T) {
 	}
 }
 
+func TestProviderSudoPreauthIsOptional(t *testing.T) {
+	t.Parallel()
+
+	provider := New("test")()
+	var resp frameworkprovider.SchemaResponse
+	provider.Schema(t.Context(), frameworkprovider.SchemaRequest{}, &resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", resp.Diagnostics)
+	}
+
+	attribute, ok := resp.Schema.Attributes["sudo_preauth"].(providerschema.BoolAttribute)
+	if !ok {
+		t.Fatalf("sudo_preauth attribute has type %T", resp.Schema.Attributes["sudo_preauth"])
+	}
+	if !attribute.Optional || attribute.Required {
+		t.Fatalf("sudo_preauth Optional=%t Required=%t, want optional only", attribute.Optional, attribute.Required)
+	}
+}
+
 func TestProviderDoesNotRegisterAURHelperResource(t *testing.T) {
 	t.Parallel()
 
