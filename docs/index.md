@@ -20,11 +20,10 @@ terraform {
   }
 }
 
-provider "host" {
-  target_user = "alice"
-
-  # runtime_dir defaults to ~/.local/state/terraform-provider-host for this user.
-}
+# target_user defaults to the user running Terraform, so an empty block manages
+# both system-scoped and user-scoped objects for that user. Name it explicitly
+# to manage a different user's state.
+provider "host" {}
 ```
 
 ## What It Manages
@@ -47,7 +46,7 @@ provider "host" {
 
 ## Ownership Scopes
 
-[System-scoped objects](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts#scope-reference) manage host-wide state. [User-scoped objects](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts#user-context) require a [`target_user`](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts#user-context); a provider configured with it can manage both scopes.
+[System-scoped objects](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts#scope-reference) manage host-wide state. [User-scoped objects](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts#user-context) belong to [`target_user`](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts#user-context), which defaults to the user running Terraform, so an empty provider block manages both scopes for that user.
 
 See [Scopes and user contexts](https://registry.terraform.io/providers/dongho-jung/host/latest/docs/guides/scopes-and-user-contexts) for the full classification, multi-user operation, bootstrap flow, and macOS desktop-session requirements.
 

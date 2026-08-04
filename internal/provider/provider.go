@@ -3,7 +3,9 @@ package provider
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	osuser "os/user"
 	"runtime"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -49,11 +51,11 @@ func (p *HostProvider) Schema(ctx context.Context, req provider.SchemaRequest, r
 			},
 			"target_user": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "Local user context for user-scoped resources. User-scoped resources require this argument and use the user's home directory and crontab. System-scoped resources do not require it.",
+				MarkdownDescription: "Local user context for user-scoped resources, which use that user's home directory and crontab. Defaults to the user running Terraform, or to `SUDO_USER` when Terraform runs under `sudo`. A run that would resolve to root leaves this unset, because managing root's home is never implied; name the user explicitly there. System-scoped resources do not need it.",
 			},
 			"aur_helper": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "AUR helper to bootstrap lazily when an AUR package mutation needs one. Supported values are `yay` and `paru`; missing `base-devel` and `git` prerequisites are installed first. Requires `target_user`. Planning, refresh, and data-source reads never bootstrap tools. When omitted, AUR package resources only use an already installed, verified helper.",
+				MarkdownDescription: "AUR helper to bootstrap lazily when an AUR package mutation needs one. Supported values are `yay` and `paru`; missing `base-devel` and `git` prerequisites are installed first. Defaults to `yay`. An already installed, verified helper is always preferred, so bootstrap only happens on a host that has none. Planning, refresh, and data-source reads never bootstrap tools.",
 			},
 			"aur_helper_package": schema.StringAttribute{
 				Optional:            true,
@@ -61,11 +63,11 @@ func (p *HostProvider) Schema(ctx context.Context, req provider.SchemaRequest, r
 			},
 			"aur_remove_make_dependencies": schema.BoolAttribute{
 				Optional:            true,
-				MarkdownDescription: "Pass `--removemake` to `yay` or `paru` package installs and upgrades so build-only dependencies installed by the helper are removed after a successful build. Requires `target_user` and defaults to false.",
+				MarkdownDescription: "Pass `--removemake` to `yay` or `paru` package installs and upgrades so build-only dependencies installed by the helper are removed after a successful build. Defaults to true; set it to false to keep those dependencies for faster rebuilds.",
 			},
 			"aur_clean_after": schema.BoolAttribute{
 				Optional:            true,
-				MarkdownDescription: "Pass `--cleanafter` to `yay` or `paru` package installs and upgrades so package source and build directories are removed after a successful build. Requires `target_user` and defaults to false.",
+				MarkdownDescription: "Pass `--cleanafter` to `yay` or `paru` package installs and upgrades so package source and build directories are removed after a successful build. Defaults to true; set it to false to keep the build tree for inspection.",
 			},
 			"sudo_preauth": schema.BoolAttribute{
 				Optional:            true,
@@ -111,37 +113,30 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 	}
 
 	aurOptions := AURPackageOptions{
-		RemoveMakeDependencies: !config.AURRemoveMakeDependencies.IsNull() && config.AURRemoveMakeDependencies.ValueBool(),
-		CleanAfter:             !config.AURCleanAfter.IsNull() && config.AURCleanAfter.ValueBool(),
+		RemoveMakeDependencies: config.AURRemoveMakeDependencies.IsNull() || config.AURRemoveMakeDependencies.ValueBool(),
+		CleanAfter:             config.AURCleanAfter.IsNull() || config.AURCleanAfter.ValueBool(),
+	}
+
+	// target_user defaults to whoever is running Terraform, so the checks below
+	// test the effective user rather than whether the argument was written out.
+	targetUser := hostDefaultTargetUser()
+	if !config.TargetUser.IsNull() {
+		targetUser = config.TargetUser.ValueString()
+	}
+
+	if config.AURHelper.IsNull() && !config.AURHelperPackage.IsNull() {
+		resp.Diagnostics.AddError("aur_helper_package requires aur_helper", "Configure `aur_helper`, or omit `aur_helper_package`.")
+		return
 	}
 
 	var aurHelperSpec *AURHelperSpec
-	if config.AURHelper.IsNull() {
-		if !config.AURHelperPackage.IsNull() {
-			resp.Diagnostics.AddError("aur_helper_package requires aur_helper", "Configure `aur_helper`, or omit `aur_helper_package`.")
+	if targetUser == "" {
+		if !config.AURHelper.IsNull() {
+			resp.Diagnostics.AddError("aur_helper requires target_user", "AUR helpers run as an unprivileged user, and `target_user` could not be defaulted from this run. Configure `target_user` together with `aur_helper`.")
 			return
 		}
-	} else {
-		if config.TargetUser.IsNull() {
-			resp.Diagnostics.AddError("aur_helper requires target_user", "AUR helpers run as an unprivileged user. Configure `target_user` together with `aur_helper`.")
-			return
-		}
-		helperName := config.AURHelper.ValueString()
-		helperPackage := helperName
-		if !config.AURHelperPackage.IsNull() {
-			helperPackage = config.AURHelperPackage.ValueString()
-		}
-		spec := AURHelperSpec{Name: helperName, Package: helperPackage}
-		if err := validateAURHelperSpec(spec); err != nil {
-			resp.Diagnostics.AddError("Invalid AUR helper configuration", err.Error())
-			return
-		}
-		aurHelperSpec = &spec
-	}
-
-	if config.TargetUser.IsNull() {
 		if !config.AURRemoveMakeDependencies.IsNull() || !config.AURCleanAfter.IsNull() {
-			resp.Diagnostics.AddError("AUR cleanup requires target_user", "AUR helpers run as an unprivileged user. Configure `target_user` with the AUR cleanup settings, or omit those settings.")
+			resp.Diagnostics.AddError("AUR cleanup requires target_user", "AUR helpers run as an unprivileged user, and `target_user` could not be defaulted from this run. Configure `target_user` with the AUR cleanup settings, or omit those settings.")
 			return
 		}
 		if !config.HomeDir.IsNull() {
@@ -153,11 +148,26 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 			return
 		}
 	} else {
-		targetUser := config.TargetUser.ValueString()
 		if err := validateHostUserName(targetUser); err != nil {
 			resp.Diagnostics.AddError("Invalid target_user", err.Error())
 			return
 		}
+
+		helperName := hostDefaultAURHelper
+		if !config.AURHelper.IsNull() {
+			helperName = config.AURHelper.ValueString()
+		}
+		helperPackage := helperName
+		if !config.AURHelperPackage.IsNull() {
+			helperPackage = config.AURHelperPackage.ValueString()
+		}
+		spec := AURHelperSpec{Name: helperName, Package: helperPackage}
+		if err := validateAURHelperSpec(spec); err != nil {
+			resp.Diagnostics.AddError("Invalid AUR helper configuration", err.Error())
+			return
+		}
+		aurHelperSpec = &spec
+
 		data.TargetUser = targetUser
 
 		targetHomeDir, err := resolveTargetUserHomeDir(ctx, data.TargetUser)
@@ -233,7 +243,10 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 			}
 			data.AURHelperManager = helperManager
 		}
-	} else if aurHelperSpec != nil {
+	} else if !config.AURHelper.IsNull() || !config.AURHelperPackage.IsNull() {
+		// Only a configuration that asked for a helper is an error here. The
+		// default helper must stay silent on a host without Pacman, which is
+		// every macOS host and any Linux host using another package manager.
 		resp.Diagnostics.AddError("aur_helper requires Pacman", "`aur_helper` can only be configured on a host where the `pacman` executable is available.")
 		return
 	}
@@ -315,6 +328,43 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 
 	resp.ResourceData = data
 	resp.DataSourceData = data
+}
+
+// hostDefaultAURHelper is bootstrapped when a configuration manages AUR
+// packages without naming a helper.
+const hostDefaultAURHelper = "yay"
+
+// hostDefaultTargetUser is a variable so tests can exercise a run whose target
+// user cannot be defaulted.
+var hostDefaultTargetUser = resolveDefaultHostTargetUser
+
+// resolveDefaultHostTargetUser names the user whose home directory user-scoped
+// resources belong to when the configuration does not say. Terraform is
+// normally run by that user directly, and under sudo the original login user is
+// the one that was meant.
+//
+// A run that resolves to root yields nothing instead. Quietly managing root's
+// home is never what a configuration means, so those runs have to name a
+// target_user and get the existing "requires target_user" errors.
+func resolveDefaultHostTargetUser() string {
+	if name := os.Getenv("SUDO_USER"); name != "" {
+		return usableHostTargetUserName(name)
+	}
+
+	current, err := osuser.Current()
+	if err != nil {
+		return ""
+	}
+
+	return usableHostTargetUserName(current.Username)
+}
+
+func usableHostTargetUserName(name string) string {
+	if name == "root" || validateHostUserName(name) != nil {
+		return ""
+	}
+
+	return name
 }
 
 func executablePath(name string) string {

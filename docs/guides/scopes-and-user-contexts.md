@@ -8,10 +8,10 @@ description: |-
 
 Host objects use two ownership scopes:
 
-- **System scope** manages host-wide state and does not require provider `target_user`.
-- **User scope** manages one local user's state and requires provider `target_user`.
+- **System scope** manages host-wide state and ignores provider `target_user`.
+- **User scope** manages one local user's state under provider `target_user`.
 
-A provider configured with `target_user` can manage both scopes. Use `provider "host" {}` only for a system-only configuration.
+`target_user` defaults to the user running Terraform, so `provider "host" {}` manages both scopes for that user. Name it explicitly to manage a different user's state, or when a run resolves to root and therefore has no default.
 
 ## Scope Reference
 
@@ -28,7 +28,7 @@ User-scoped paths expand `~` against the configured user's home. `home_dir` is d
 
 `target_user` selects paths and user-owned backends; it does not generally impersonate that account. Run user-scoped configurations as `target_user`, not through root or another user. `host_schedule` is the exception and can use privileged `crontab -u`.
 
-A system-only provider has no home context. For example, `host_system_file.source` must use an absolute or relative path instead of `~`.
+A run with no resolvable target user has no home context. For example, `host_system_file.source` must then use an absolute or relative path instead of `~`.
 
 ## Multiple Users
 
@@ -36,10 +36,7 @@ One provider instance carries one user context. Use separate Terraform root modu
 
 ## Bootstrapping a User
 
-Provider configuration is evaluated before resources. To create a future `target_user` with `host_user`, either:
-
-1. Start with a system-only provider, apply `host_user`, then configure `target_user`.
-2. Configure `target_user` with an explicit `home_dir`, apply `host_user` first with `-target`, then run a normal apply.
+Provider configuration is evaluated before resources, so a `target_user` that `host_user` has not created yet cannot have its home directory discovered. Configure `target_user` with an explicit `home_dir`, apply `host_user` first with `-target`, then run a normal apply.
 
 ## macOS Desktop Sessions
 

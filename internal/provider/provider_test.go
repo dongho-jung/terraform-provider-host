@@ -1,6 +1,8 @@
 package provider
 
 import (
+	"os"
+	osuser "os/user"
 	"strings"
 	"testing"
 
@@ -121,8 +123,86 @@ func TestProviderDoesNotRegisterAURHelperResource(t *testing.T) {
 	}
 }
 
-func TestProviderRejectsInvalidAURHelperConfiguration(t *testing.T) {
-	t.Parallel()
+// configureHostProvider runs the provider's Configure step against config.
+func configureHostProvider(t *testing.T, config HostProviderModel) frameworkprovider.ConfigureResponse {
+	t.Helper()
+
+	ctx := t.Context()
+	hostProvider := New("test")()
+
+	var schemaResp frameworkprovider.SchemaResponse
+	hostProvider.Schema(ctx, frameworkprovider.SchemaRequest{}, &schemaResp)
+	if schemaResp.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", schemaResp.Diagnostics)
+	}
+
+	configState := tfsdk.State{
+		Schema: schemaResp.Schema,
+		Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(ctx), nil),
+	}
+	if diags := configState.Set(ctx, &config); diags.HasError() {
+		t.Fatalf("encode provider config: %v", diags)
+	}
+
+	var resp frameworkprovider.ConfigureResponse
+	hostProvider.Configure(ctx, frameworkprovider.ConfigureRequest{
+		Config: tfsdk.Config{Schema: schemaResp.Schema, Raw: configState.Raw},
+	}, &resp)
+
+	return resp
+}
+
+func TestResolveDefaultHostTargetUser(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		sudoUser string
+		expected string
+	}{
+		"sudo run credits the original login user": {
+			sudoUser: "alice",
+			expected: "alice",
+		},
+		// SUDO_USER always names the invoking user, so root there means root
+		// ran sudo. Defaulting to root's home is never what was meant.
+		"root invoking sudo has no default": {
+			sudoUser: "root",
+			expected: "",
+		},
+		"unusable name has no default": {
+			sudoUser: "not a valid user",
+			expected: "",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("SUDO_USER", testCase.sudoUser)
+
+			if got := resolveDefaultHostTargetUser(); got != testCase.expected {
+				t.Fatalf("expected %q, got %q", testCase.expected, got)
+			}
+		})
+	}
+
+	t.Run("plain run credits the current user", func(t *testing.T) {
+		t.Setenv("SUDO_USER", "")
+
+		current, err := osuser.Current()
+		if err != nil {
+			t.Skipf("current user is unavailable: %s", err)
+		}
+		expected := current.Username
+		if expected == "root" {
+			expected = ""
+		}
+
+		if got := resolveDefaultHostTargetUser(); got != expected {
+			t.Fatalf("expected %q, got %q", expected, got)
+		}
+	})
+}
+
+func TestProviderRequiresTargetUserWhenItCannotBeDefaulted(t *testing.T) {
+	// Stand in for a root run, the only case that resolves to no default.
+	hostDefaultTargetUser = func() string { return "" }
+	t.Cleanup(func() { hostDefaultTargetUser = resolveDefaultHostTargetUser })
 
 	for _, test := range []struct {
 		name   string
@@ -132,14 +212,68 @@ func TestProviderRejectsInvalidAURHelperConfiguration(t *testing.T) {
 		{
 			name: "helper without target user",
 			config: HostProviderModel{
-				TargetUser:       types.StringNull(),
-				HomeDir:          types.StringNull(),
-				RuntimeDir:       types.StringNull(),
-				AURHelper:        types.StringValue("yay"),
-				AURHelperPackage: types.StringNull(),
+				AURHelper: types.StringValue("yay"),
 			},
 			want: "aur_helper requires target_user",
 		},
+		{
+			name: "cleanup without target user",
+			config: HostProviderModel{
+				AURRemoveMakeDependencies: types.BoolValue(true),
+			},
+			want: "AUR cleanup requires target_user",
+		},
+		{
+			name: "home_dir without target user",
+			config: HostProviderModel{
+				HomeDir: types.StringValue("/home/alice"),
+			},
+			want: "home_dir requires target_user",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resp := configureHostProvider(t, test.config)
+			if !resp.Diagnostics.HasError() {
+				t.Fatalf("expected diagnostic containing %q", test.want)
+			}
+			if got := resp.Diagnostics.Errors()[0].Summary(); !strings.Contains(got, test.want) {
+				t.Fatalf("diagnostic summary %q does not contain %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestProviderConfiguresWithoutArguments(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a root run has no default target user")
+	}
+
+	// The whole point of the defaults: an empty provider block is enough.
+	resp := configureHostProvider(t, HostProviderModel{SudoPreauth: types.BoolValue(false)})
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("configure diagnostics: %v", resp.Diagnostics.Errors())
+	}
+
+	data, ok := resp.ResourceData.(HostProviderData)
+	if !ok {
+		t.Fatalf("provider data has type %T", resp.ResourceData)
+	}
+	if data.TargetUser != resolveDefaultHostTargetUser() {
+		t.Fatalf("expected target_user %q, got %q", resolveDefaultHostTargetUser(), data.TargetUser)
+	}
+	if data.HomeDir == "" || data.RuntimeDir == "" {
+		t.Fatalf("expected a user context, got home %q and runtime %q", data.HomeDir, data.RuntimeDir)
+	}
+}
+
+func TestProviderRejectsInvalidAURHelperConfiguration(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name   string
+		config HostProviderModel
+		want   string
+	}{
 		{
 			name: "package without helper",
 			config: HostProviderModel{
@@ -162,43 +296,11 @@ func TestProviderRejectsInvalidAURHelperConfiguration(t *testing.T) {
 			},
 			want: "Invalid AUR helper configuration",
 		},
-		{
-			name: "cleanup without target user",
-			config: HostProviderModel{
-				TargetUser:                types.StringNull(),
-				HomeDir:                   types.StringNull(),
-				RuntimeDir:                types.StringNull(),
-				AURHelper:                 types.StringNull(),
-				AURHelperPackage:          types.StringNull(),
-				AURRemoveMakeDependencies: types.BoolValue(true),
-				AURCleanAfter:             types.BoolNull(),
-			},
-			want: "AUR cleanup requires target_user",
-		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			ctx := t.Context()
-			hostProvider := New("test")()
-			var schemaResp frameworkprovider.SchemaResponse
-			hostProvider.Schema(ctx, frameworkprovider.SchemaRequest{}, &schemaResp)
-			if schemaResp.Diagnostics.HasError() {
-				t.Fatalf("schema diagnostics: %v", schemaResp.Diagnostics)
-			}
-
-			configState := tfsdk.State{
-				Schema: schemaResp.Schema,
-				Raw:    tftypes.NewValue(schemaResp.Schema.Type().TerraformType(ctx), nil),
-			}
-			if diags := configState.Set(ctx, &test.config); diags.HasError() {
-				t.Fatalf("encode provider config: %v", diags)
-			}
-
-			var resp frameworkprovider.ConfigureResponse
-			hostProvider.Configure(ctx, frameworkprovider.ConfigureRequest{
-				Config: tfsdk.Config{Schema: schemaResp.Schema, Raw: configState.Raw},
-			}, &resp)
+			resp := configureHostProvider(t, test.config)
 			if !resp.Diagnostics.HasError() {
 				t.Fatalf("expected diagnostic containing %q", test.want)
 			}

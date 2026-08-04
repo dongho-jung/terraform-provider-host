@@ -10,7 +10,7 @@ description: |-
 
 The provider runs commands on the machine executing Terraform. Required tools vary by resource and include package managers, system-management utilities, `git`, `ssh-keygen`, `crontab`, and macOS command-line tools. Protected operations may authenticate through `sudo`.
 
-`git`, `ssh-keygen`, and AUR helpers are resolved when their operations run. When `aur_helper` is configured, AUR package mutations install missing `base-devel` and `git` prerequisites and bootstrap that helper. Planning, refresh, and data-source reads do not install bootstrap tooling. Pacman itself must already exist before Pacman or AUR objects are configured.
+`git`, `ssh-keygen`, and AUR helpers are resolved when their operations run. An already installed, verified helper is always preferred; on a host that has none, an AUR package mutation installs missing `base-devel` and `git` prerequisites and bootstraps `aur_helper`, which defaults to `yay`. Planning, refresh, and data-source reads do not install bootstrap tooling. Pacman itself must already exist before Pacman or AUR objects are configured.
 
 ## Sudo Authentication
 

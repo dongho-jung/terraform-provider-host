@@ -10,20 +10,17 @@ description: |-
 
 Manages a single AUR package through a verified `yay` or `paru` installation and keeps its Pacman install reason marked as explicit.
 
-Pacman must already be installed. For a fresh Arch host, configure `aur_helper`
-on the provider. When an install or upgrade needs the helper, the provider
-installs missing `base-devel` and `git` prerequisites and bootstraps the
-configured helper exactly once. Planning, refresh, and data-source reads never
-bootstrap tools or install packages.
-
-When `aur_helper` is omitted, this resource only uses an already installed,
-verified `yay` or `paru`.
+Pacman must already be installed. An already installed, verified helper is
+always preferred. On a host that has none, an install or upgrade installs
+missing `base-devel` and `git` prerequisites and bootstraps the provider's
+`aur_helper` exactly once; that argument defaults to `yay`. Planning, refresh,
+and data-source reads never bootstrap tools or install packages.
 
 With the default `ignore_version = true`, refresh skips AUR network lookups and manages only package presence and explicit install reason. Set it to false to plan upgrades to the candidate version reported by the helper.
 
-Provider-level `aur_remove_make_dependencies` and `aur_clean_after` settings
-optionally pass the corresponding cleanup flags to the helper after successful
-installs and upgrades.
+Provider-level `aur_remove_make_dependencies` and `aur_clean_after` default to
+true, so build-only dependencies and build trees are cleaned up after a
+successful install or upgrade. Set either to false to keep them.
 
 > **Security:** AUR packages are user-contributed. Their mutable `PKGBUILD`
 > files execute unsandboxed code as the Terraform process user. Review and
