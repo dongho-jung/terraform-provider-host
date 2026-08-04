@@ -1,3 +1,27 @@
+## 0.20.0 (2026-08-04)
+
+BREAKING CHANGES:
+
+- Authenticate `sudo` while the provider is configured, before any resource is read or changed, and renew that timestamp for the rest of the run. Terraform streams progress output while an operation blocks, so a prompt raised partway through is interleaved with it and easily missed. Set the new `sudo_preauth = false` for a configuration that never needs root.
+- Default `target_user` to the user running Terraform, or to `SUDO_USER` under `sudo`. A run that resolves to root still has no default and must name the user. `provider "host" {}` therefore carries that user's context instead of being system-only.
+- Default `aur_helper` to `yay`, and `aur_remove_make_dependencies` and `aur_clean_after` to true. An already installed, verified helper is still preferred, and a host without Pacman is unaffected unless `aur_helper` is configured explicitly.
+
+IMPROVEMENTS:
+
+- Announce a required sudo password on the controlling terminal with a framed, audible prompt naming the operation, rather than a line that Terraform's own output can bury.
+- Serialize sudo authentication so parallel resource operations cannot raise interleaved password prompts.
+
+## 0.19.0 (2026-08-04)
+
+BREAKING CHANGES:
+
+- Write `host_file` content verbatim. Content is no longer trimmed and no trailing newline is added, so a file that a program rewrites with its own trailing blank line stops producing a plan diff that never converges.
+- Keep `rendered_content` null for whole-file `host_file` resources, where `content` already reflects refreshed drift. Block mode still renders the whole file.
+
+FIXES:
+
+- Point a staged `host_link` at a stable `current` path that is swapped atomically, so a plan diff no longer repeats the digest path. Existing state migrates on the first apply.
+
 ## 0.18.0 (2026-07-31)
 
 BREAKING CHANGES:
