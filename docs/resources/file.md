@@ -138,7 +138,7 @@ any `host_file_block` resources separately when retaining block-managed state.
 ### Optional
 
 - `block` (Block List) Named file block. Declaration order controls render order unless `before` or `after` is set. (see [below for nested schema](#nestedblock--block))
-- `content` (String) Full file content to manage without Terraform block markers. Mutually exclusive with `block`.
+- `content` (String) Full file content to manage without Terraform block markers, written byte for byte. Leading and trailing whitespace is preserved, so a file that has to keep a trailing blank line can be expressed as `format("%s\n", file(...))`. Mutually exclusive with `block`.
 
 ### Read-Only
 

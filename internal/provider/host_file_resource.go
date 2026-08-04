@@ -106,7 +106,7 @@ func (r *HostFileResource) Schema(ctx context.Context, req resource.SchemaReques
 			},
 			"content": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "Full file content to manage without Terraform block markers. Mutually exclusive with `block`.",
+				MarkdownDescription: "Full file content to manage without Terraform block markers, written byte for byte. Leading and trailing whitespace is preserved, so a file that has to keep a trailing blank line can be expressed as `format(\"%s\\n\", file(...))`. Mutually exclusive with `block`.",
 			},
 			"rendered_content": schema.StringAttribute{
 				Computed:            true,
@@ -201,7 +201,7 @@ func (r *HostFileResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 
 		plan.ID = types.StringValue(plan.Path.ValueString())
 		plan.Blocks = types.MapNull(hostFileBlockReferenceObjectType())
-		plan.RenderedContent = types.StringValue(canonicalHostFileContent(plan.Content.ValueString()))
+		plan.RenderedContent = plan.Content
 		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 		return
 	}
@@ -252,7 +252,7 @@ func (r *HostFileResource) Create(ctx context.Context, req resource.CreateReques
 			return
 		}
 		plan.Blocks = types.MapNull(hostFileBlockReferenceObjectType())
-		plan.RenderedContent = types.StringValue(canonicalHostFileContent(plan.Content.ValueString()))
+		plan.RenderedContent = plan.Content
 		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		return
 	}
@@ -312,8 +312,8 @@ func (r *HostFileResource) Read(ctx context.Context, req resource.ReadRequest, r
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		if content != canonicalHostFileContent(state.Content.ValueString()) {
-			state.Content = types.StringValue(trimRenderedManagedBlockBody(content))
+		if content != state.Content.ValueString() {
+			state.Content = types.StringValue(content)
 		}
 		state.ID = types.StringValue(state.Path.ValueString())
 		state.PathResolved = hostFilePathResolvedValueForHome(state.Path.ValueString(), r.homeDir, &resp.Diagnostics)
@@ -387,7 +387,7 @@ func (r *HostFileResource) Update(ctx context.Context, req resource.UpdateReques
 			return
 		}
 		plan.Blocks = types.MapNull(hostFileBlockReferenceObjectType())
-		plan.RenderedContent = types.StringValue(canonicalHostFileContent(plan.Content.ValueString()))
+		plan.RenderedContent = plan.Content
 		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		return
 	}
@@ -475,7 +475,7 @@ func (r *HostFileResource) ImportState(ctx context.Context, req resource.ImportS
 	resp.Diagnostics.Append(resp.State.SetAttribute(
 		ctx,
 		tfpath.Root("content"),
-		types.StringValue(trimRenderedManagedBlockBody(content)),
+		types.StringValue(content),
 	)...)
 }
 

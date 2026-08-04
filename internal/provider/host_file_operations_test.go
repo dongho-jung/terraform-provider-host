@@ -11,7 +11,7 @@ func TestSyncHostFileContentWritesWholeFileWithoutMarkers(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), ".zshrc")
-	if err := syncHostFileContent(path, "export EDITOR=nvim"); err != nil {
+	if err := syncHostFileContent(path, "export EDITOR=nvim\n"); err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
 
@@ -25,6 +25,27 @@ func TestSyncHostFileContentWritesWholeFileWithoutMarkers(t *testing.T) {
 	}
 	if strings.Contains(string(got), "Terraform") {
 		t.Fatalf("expected no Terraform markers, got:\n%s", string(got))
+	}
+}
+
+func TestSyncHostFileContentPreservesSurroundingWhitespace(t *testing.T) {
+	t.Parallel()
+
+	// Some hosts rewrite their own config files with a trailing blank line, so
+	// content is written byte for byte instead of being trimmed to a canonical
+	// shape the host would immediately undo.
+	const content = "\n[NextCandidate]\n0=Tab\n\n"
+	path := filepath.Join(t.TempDir(), "hangul.conf")
+	if err := syncHostFileContent(path, content); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read content: %s", err)
+	}
+	if string(got) != content {
+		t.Fatalf("got %q, want %q", string(got), content)
 	}
 }
 

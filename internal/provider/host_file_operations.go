@@ -107,7 +107,7 @@ func syncHostFileContent(path string, content string) error {
 		return err
 	}
 
-	return writeHostFile(path, canonicalHostFileContent(content))
+	return writeHostFile(path, content)
 }
 
 func readHostFileContent(path string) (string, bool, error) {
@@ -708,15 +708,6 @@ func lineBody(line string) string {
 func canonicalManagedBlockBody(content string) string {
 	content = strings.TrimSpace(content)
 	if strings.HasSuffix(content, "\n") {
-		return content
-	}
-
-	return content + "\n"
-}
-
-func canonicalHostFileContent(content string) string {
-	content = strings.TrimSpace(content)
-	if content == "" || strings.HasSuffix(content, "\n") {
 		return content
 	}
 
