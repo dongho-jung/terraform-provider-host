@@ -110,7 +110,7 @@ func (r *HostFileResource) Schema(ctx context.Context, req resource.SchemaReques
 			},
 			"rendered_content": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "Last content observed in the host file. Used to detect drift.",
+				MarkdownDescription: "Last content observed in the host file, including any lines this resource does not own. Used to detect drift in `block` mode. Null when `content` is set, because `content` itself is refreshed from the host file and would otherwise be reported twice in every plan.",
 			},
 			"blocks": schema.MapNestedAttribute{
 				Computed:            true,
@@ -201,7 +201,7 @@ func (r *HostFileResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 
 		plan.ID = types.StringValue(plan.Path.ValueString())
 		plan.Blocks = types.MapNull(hostFileBlockReferenceObjectType())
-		plan.RenderedContent = plan.Content
+		plan.RenderedContent = types.StringNull()
 		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 		return
 	}
@@ -252,7 +252,7 @@ func (r *HostFileResource) Create(ctx context.Context, req resource.CreateReques
 			return
 		}
 		plan.Blocks = types.MapNull(hostFileBlockReferenceObjectType())
-		plan.RenderedContent = plan.Content
+		plan.RenderedContent = types.StringNull()
 		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		return
 	}
@@ -321,7 +321,7 @@ func (r *HostFileResource) Read(ctx context.Context, req resource.ReadRequest, r
 			return
 		}
 		state.Blocks = types.MapNull(hostFileBlockReferenceObjectType())
-		state.RenderedContent = types.StringValue(content)
+		state.RenderedContent = types.StringNull()
 		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 		return
 	}
@@ -387,7 +387,7 @@ func (r *HostFileResource) Update(ctx context.Context, req resource.UpdateReques
 			return
 		}
 		plan.Blocks = types.MapNull(hostFileBlockReferenceObjectType())
-		plan.RenderedContent = plan.Content
+		plan.RenderedContent = types.StringNull()
 		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		return
 	}

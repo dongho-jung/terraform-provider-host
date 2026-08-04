@@ -145,7 +145,7 @@ any `host_file_block` resources separately when retaining block-managed state.
 - `blocks` (Attributes Map) Computed file block references for `host_file_block` resources. (see [below for nested schema](#nestedatt--blocks))
 - `id` (String) Resource identifier, equal to `path`.
 - `path_resolved` (String) Resolved absolute host file path.
-- `rendered_content` (String) Last content observed in the host file. Used to detect drift.
+- `rendered_content` (String) Last content observed in the host file, including any lines this resource does not own. Used to detect drift in `block` mode. Null when `content` is set, because `content` itself is refreshed from the host file and would otherwise be reported twice in every plan.
 
 <a id="nestedblock--block"></a>
 ### Nested Schema for `block`

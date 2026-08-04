@@ -67,8 +67,8 @@ func TestHostFileResourceRefreshPreservesTrailingBlankLine(t *testing.T) {
 	if got.Content.ValueString() != content {
 		t.Fatalf("refreshed content got %q, want %q", got.Content.ValueString(), content)
 	}
-	if got.RenderedContent.ValueString() != content {
-		t.Fatalf("refreshed rendered_content got %q, want %q", got.RenderedContent.ValueString(), content)
+	if !got.RenderedContent.IsNull() {
+		t.Fatalf("refreshed rendered_content got %q, want null", got.RenderedContent.ValueString())
 	}
 }
 
@@ -131,8 +131,13 @@ func TestHostFileResourceImportStateHydratesWholeFileBeforeRead(t *testing.T) {
 	if got.PathResolved.ValueString() != filePath {
 		t.Fatalf("path_resolved got %q, want %q", got.PathResolved.ValueString(), filePath)
 	}
-	if got.RenderedContent.ValueString() != renderedContent {
-		t.Fatalf("rendered_content got %q", got.RenderedContent.ValueString())
+	if got.Content.ValueString() != renderedContent {
+		t.Fatalf("content got %q, want %q", got.Content.ValueString(), renderedContent)
+	}
+	// Whole-file mode tracks drift through `content` alone, so the rendered
+	// mirror stays null instead of repeating the file in every plan.
+	if !got.RenderedContent.IsNull() {
+		t.Fatalf("rendered_content got %q, want null", got.RenderedContent.ValueString())
 	}
 	if !got.Blocks.IsNull() {
 		t.Fatalf("blocks got %#v, want null", got.Blocks)
