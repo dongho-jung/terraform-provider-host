@@ -1,3 +1,15 @@
+## 0.21.0 (2026-08-05)
+
+IMPROVEMENTS:
+
+- Add `source_contents` to `host_link`, a map of readable source text keyed by path relative to `source`. A staged link previously moved only `source_digest`, so a plan reported that content had changed without showing what changed; `terraform plan` now renders a line diff and collapses untouched files.
+- Add `source_content` to `host_system_file`, the readable text a `source` is about to install, so those plans show a line diff instead of only `checksum_sha256`. Resources using `content` are unaffected, since that value already appears in the configuration diff.
+- Keep both digests authoritative for drift. Binary files and files larger than 1 MiB are omitted from the readable attributes rather than guessed at, so an unreadable file is never mistaken for an unchanged one.
+
+NOTES:
+
+- The readable attributes are stored in plaintext Terraform state and grow it by roughly the size of the staged text, so do not point them at secrets.
+
 ## 0.20.0 (2026-08-04)
 
 BREAKING CHANGES:

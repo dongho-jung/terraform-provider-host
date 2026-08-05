@@ -61,4 +61,5 @@ terraform import host_system_file.vpn_up /usr/local/bin/vpn-up
 - `checksum_sha256` (String) Observed destination content SHA256. During planning this is the desired source or content SHA256, so source-file changes and destination drift produce a diff.
 - `deployed_checksum_sha256` (String) SHA256 last installed or adopted by Terraform. Destructive deletion is refused when the destination no longer matches this checksum.
 - `id` (String) Resource identifier, equal to `destination`.
+- `source_content` (String) Readable text of the file `source` is about to install, so `terraform plan` renders a line diff instead of only `checksum_sha256`. Null when `content` is used instead, since that value already appears in the configuration diff, and null for binary or larger than 1 MiB sources, which stay covered by `checksum_sha256`. This is stored in plaintext Terraform state, so do not point `source` at a secret.
 - `source_path` (String) Resolved absolute source path when `source` is configured.

@@ -35,6 +35,7 @@ type HostSystemFileResourceModel struct {
 	Source                 types.String `tfsdk:"source"`
 	Content                types.String `tfsdk:"content"`
 	SourcePath             types.String `tfsdk:"source_path"`
+	SourceContent          types.String `tfsdk:"source_content"`
 	ChecksumSHA256         types.String `tfsdk:"checksum_sha256"`
 	DeployedChecksumSHA256 types.String `tfsdk:"deployed_checksum_sha256"`
 	Mode                   types.String `tfsdk:"mode"`
@@ -81,6 +82,13 @@ func (r *HostSystemFileResource) Schema(ctx context.Context, req resource.Schema
 			"source_path": schema.StringAttribute{
 				Computed:            true,
 				MarkdownDescription: "Resolved absolute source path when `source` is configured.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"source_content": schema.StringAttribute{
+				Computed:            true,
+				MarkdownDescription: "Readable text of the file `source` is about to install, so `terraform plan` renders a line diff instead of only `checksum_sha256`. Null when `content` is used instead, since that value already appears in the configuration diff, and null for binary or larger than 1 MiB sources, which stay covered by `checksum_sha256`. This is stored in plaintext Terraform state, so do not point `source` at a secret.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
@@ -169,8 +177,16 @@ func (r *HostSystemFileResource) ModifyPlan(ctx context.Context, req resource.Mo
 	plan.ChecksumSHA256 = types.StringValue(hostSystemFileChecksum(spec.Content))
 	if sourcePath == "" {
 		plan.SourcePath = types.StringNull()
+		// `content` is configuration, so its diff is already visible without a
+		// second copy of the same bytes in state.
+		plan.SourceContent = types.StringNull()
 	} else {
 		plan.SourcePath = types.StringValue(sourcePath)
+		if text, ok := hostReadableText(spec.Content); ok {
+			plan.SourceContent = types.StringValue(text)
+		} else {
+			plan.SourceContent = types.StringNull()
+		}
 	}
 	if hostSystemFilePlanRequiresMutationWarning(ctx, req.State, plan, &resp.Diagnostics) {
 		r.addPrivilegeWarning(&resp.Diagnostics)

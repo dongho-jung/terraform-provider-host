@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -11,9 +12,114 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 const hostLinkStagesDirName = "links"
+
+// hostMaxReadableContentBytes bounds a single file's contribution to a readable
+// plan attribute. Anything larger stays checksum-only so one big asset cannot
+// bloat Terraform state or drown the plan output.
+const hostMaxReadableContentBytes = 1 << 20
+
+// hostReadableText returns a plain-text view of data when it is safe to surface
+// in a plan diff, reporting false for binary or oversized content so callers can
+// fall back to a checksum.
+func hostReadableText(data []byte) (string, bool) {
+	if len(data) > hostMaxReadableContentBytes {
+		return "", false
+	}
+	if !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {
+		return "", false
+	}
+	return string(data), true
+}
+
+// hostLinkSourceContents collects a readable view of the source keyed by path
+// relative to it, so `terraform plan` can render a line diff instead of only an
+// opaque digest. Binary and oversized files are deliberately omitted; they are
+// still covered by `source_digest`, which stays the authoritative drift signal.
+// singleFileName keys a single-file source. It is passed in rather than derived
+// from sourcePath because a staged copy is stored under its digest, and keying
+// on that would make the plan compare a filename against a hash on every change.
+func hostLinkSourceContents(sourcePath string, singleFileName string) (map[string]string, error) {
+	info, err := os.Lstat(sourcePath)
+	if err != nil {
+		return nil, fmt.Errorf("read source %q: %w", sourcePath, err)
+	}
+
+	// A directory's children are keyed relative to it, while a single-file
+	// source is keyed by its own name so the plan shows a filename either way.
+	relative := ""
+	if !info.IsDir() {
+		relative = singleFileName
+	}
+
+	contents := make(map[string]string)
+	if err := collectHostLinkSourceContents(contents, sourcePath, relative); err != nil {
+		return nil, err
+	}
+	return contents, nil
+}
+
+func collectHostLinkSourceContents(contents map[string]string, path string, relative string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("read source %q: %w", path, err)
+	}
+
+	mode := info.Mode()
+	switch {
+	case mode.IsDir():
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return fmt.Errorf("read source directory %q: %w", path, err)
+		}
+		for _, entry := range entries {
+			childRelative := entry.Name()
+			if relative != "" {
+				childRelative = filepath.Join(relative, entry.Name())
+			}
+			if err := collectHostLinkSourceContents(contents, filepath.Join(path, entry.Name()), childRelative); err != nil {
+				return err
+			}
+		}
+	case mode.IsRegular():
+		if info.Size() > hostMaxReadableContentBytes {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read source file %q: %w", path, err)
+		}
+		text, ok := hostReadableText(data)
+		if !ok {
+			return nil
+		}
+		contents[relative] = text
+	case mode&os.ModeSymlink != 0:
+		target, err := os.Readlink(path)
+		if err != nil {
+			return fmt.Errorf("read source symbolic link %q: %w", path, err)
+		}
+		contents[relative] = "-> " + target
+	default:
+		return fmt.Errorf("source %q has unsupported file type %s", path, mode.Type())
+	}
+
+	return nil
+}
+
+// hostLinkStagedSourceContents reads the readable view from the version that the
+// stable `current` indirection resolves to, mirroring hostLinkStagedSourceDigest.
+func hostLinkStagedSourceContents(currentPath string, singleFileName string) (map[string]string, error) {
+	versionPath, err := filepath.EvalSymlinks(currentPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve staged source %q: %w", currentPath, err)
+	}
+
+	return hostLinkSourceContents(versionPath, singleFileName)
+}
 
 func hostLinkSourceDigest(sourcePath string) (string, error) {
 	digest := sha256.New()

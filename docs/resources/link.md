@@ -65,5 +65,6 @@ terraform import host_link.neovim_config '~/.config/nvim'
 
 - `destination_path` (String) Resolved absolute symbolic link destination path.
 - `id` (String) Resource identifier, equal to `destination`.
+- `source_contents` (Map of String) Readable text of a staged source keyed by path relative to `source`, so `terraform plan` renders a line diff instead of only `source_digest`. A single-file source is keyed by its own name and a symbolic link is rendered as `-> target`. Null when `stage_source` is false; binary files and files larger than 1 MiB are omitted and remain covered by `source_digest`. This is stored in plaintext Terraform state, so do not stage secrets.
 - `source_digest` (String) Content and permission SHA256 for a staged source. Null when `stage_source` is false.
 - `source_path` (String) Resolved absolute source path currently stored in the symbolic link. When `stage_source` is true this is a fixed path under the provider `runtime_dir` that stays the same across source content changes, so only `source_digest` moves in the plan.

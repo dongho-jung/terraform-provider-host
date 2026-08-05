@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -36,6 +37,7 @@ type HostLinkResourceModel struct {
 	Destination     types.String `tfsdk:"destination"`
 	SourcePath      types.String `tfsdk:"source_path"`
 	SourceDigest    types.String `tfsdk:"source_digest"`
+	SourceContents  types.Map    `tfsdk:"source_contents"`
 	DestinationPath types.String `tfsdk:"destination_path"`
 }
 
@@ -98,6 +100,11 @@ func (r *HostLinkResource) Schema(ctx context.Context, req resource.SchemaReques
 				Computed:            true,
 				MarkdownDescription: "Content and permission SHA256 for a staged source. Null when `stage_source` is false.",
 			},
+			"source_contents": schema.MapAttribute{
+				ElementType:         types.StringType,
+				Computed:            true,
+				MarkdownDescription: "Readable text of a staged source keyed by path relative to `source`, so `terraform plan` renders a line diff instead of only `source_digest`. A single-file source is keyed by its own name and a symbolic link is rendered as `-> target`. Null when `stage_source` is false; binary files and files larger than 1 MiB are omitted and remain covered by `source_digest`. This is stored in plaintext Terraform state, so do not stage secrets.",
+			},
 			"destination_path": schema.StringAttribute{
 				Computed:            true,
 				MarkdownDescription: "Resolved absolute symbolic link destination path.",
@@ -134,6 +141,7 @@ func (r *HostLinkResource) ModifyPlan(ctx context.Context, req resource.ModifyPl
 	} else {
 		plan.SourceDigest = types.StringValue(resolved.SourceDigest)
 	}
+	plan.SourceContents = hostLinkSourceContentsValue(resolved.SourceContents)
 	plan.DestinationPath = types.StringValue(resolved.Link.DestinationPath)
 	requireReplaceIfResolvedPathChanged(req, resp, path.Root("destination"), state.DestinationPath, resolved.Link.DestinationPath)
 	if resp.Diagnostics.HasError() {
@@ -194,8 +202,15 @@ func (r *HostLinkResource) Read(ctx context.Context, req resource.ReadRequest, r
 		} else {
 			state.SourceDigest = types.StringValue(digest)
 		}
+		contents, contentsErr := hostLinkStagedSourceContents(actualSource, filepath.Base(state.Source.ValueString()))
+		if contentsErr != nil {
+			state.SourceContents = types.MapNull(types.StringType)
+		} else {
+			state.SourceContents = hostLinkSourceContentsValue(contents)
+		}
 	} else {
 		state.SourceDigest = types.StringNull()
+		state.SourceContents = types.MapNull(types.StringType)
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -321,6 +336,7 @@ func (r *HostLinkResource) syncLink(model HostLinkResourceModel) (HostLinkResour
 	} else {
 		model.SourceDigest = types.StringValue(resolved.SourceDigest)
 	}
+	model.SourceContents = hostLinkSourceContentsValue(resolved.SourceContents)
 	model.DestinationPath = types.StringValue(resolved.Link.DestinationPath)
 	return model, nil
 }
@@ -334,8 +350,24 @@ type resolvedHostLink struct {
 	Link               hostLinkSpec
 	OriginalSourcePath string
 	SourceDigest       string
+	SourceContents     map[string]string
 	StageRoot          string
 	StagedVersionPath  string
+}
+
+// hostLinkSourceContentsValue converts the readable source view into the map
+// attribute. Every element is a string of the declared element type, so the
+// conversion cannot fail.
+func hostLinkSourceContentsValue(contents map[string]string) types.Map {
+	if contents == nil {
+		return types.MapNull(types.StringType)
+	}
+
+	elements := make(map[string]attr.Value, len(contents))
+	for name, content := range contents {
+		elements[name] = types.StringValue(content)
+	}
+	return types.MapValueMust(types.StringType, elements)
 }
 
 func resolveHostLinkModel(model HostLinkResourceModel, homeDir string, runtimeDir string) (resolvedHostLink, error) {
@@ -359,12 +391,19 @@ func resolveHostLinkModel(model HostLinkResourceModel, homeDir string, runtimeDi
 	if err != nil {
 		return resolvedHostLink{}, fmt.Errorf("digest source: %w", err)
 	}
+	// Read the readable view from the original source, before Link.SourcePath is
+	// repointed at the stable staging indirection below.
+	contents, err := hostLinkSourceContents(link.SourcePath, filepath.Base(link.SourcePath))
+	if err != nil {
+		return resolvedHostLink{}, fmt.Errorf("read source contents: %w", err)
+	}
 	stageRoot, err := hostLinkStageRoot(runtimeDir, link.DestinationPath)
 	if err != nil {
 		return resolvedHostLink{}, fmt.Errorf("resolve staged source: %w", err)
 	}
 
 	resolved.SourceDigest = digest
+	resolved.SourceContents = contents
 	resolved.StageRoot = stageRoot
 	resolved.StagedVersionPath = hostLinkStagePath(stageRoot, digest)
 	resolved.Link.SourcePath = hostLinkStageCurrentPath(stageRoot)

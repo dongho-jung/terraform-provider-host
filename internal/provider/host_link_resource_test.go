@@ -374,3 +374,129 @@ func TestHostLinkResourceImportStateRejectsMissingLink(t *testing.T) {
 		t.Fatal("expected missing link import error")
 	}
 }
+
+func TestHostLinkSourceContentsKeysSingleFileByCallerName(t *testing.T) {
+	t.Parallel()
+
+	source := filepath.Join(t.TempDir(), "8ac1e4bd")
+	if err := os.WriteFile(source, []byte("alpha\nbeta\n"), 0o600); err != nil {
+		t.Fatalf("write source: %s", err)
+	}
+
+	// A staged copy is stored under its digest, so the caller supplies the
+	// original name to keep the plan key stable across content changes.
+	contents, err := hostLinkSourceContents(source, "windows11-vm")
+	if err != nil {
+		t.Fatalf("read source contents: %s", err)
+	}
+	if len(contents) != 1 {
+		t.Fatalf("expected a single entry, got %d", len(contents))
+	}
+	if got := contents["windows11-vm"]; got != "alpha\nbeta\n" {
+		t.Fatalf("unexpected content %q", got)
+	}
+}
+
+func TestHostLinkSourceContentsKeysDirectoryEntriesRelatively(t *testing.T) {
+	t.Parallel()
+
+	source := filepath.Join(t.TempDir(), "waybar")
+	if err := os.MkdirAll(filepath.Join(source, "modules"), 0o750); err != nil {
+		t.Fatalf("create source: %s", err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "config"), []byte("top\n"), 0o600); err != nil {
+		t.Fatalf("write source file: %s", err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "modules", "cpu.jsonc"), []byte("nested\n"), 0o600); err != nil {
+		t.Fatalf("write nested source file: %s", err)
+	}
+
+	contents, err := hostLinkSourceContents(source, "ignored")
+	if err != nil {
+		t.Fatalf("read source contents: %s", err)
+	}
+	if got := contents["config"]; got != "top\n" {
+		t.Fatalf("unexpected top-level content %q", got)
+	}
+	if got := contents[filepath.Join("modules", "cpu.jsonc")]; got != "nested\n" {
+		t.Fatalf("unexpected nested content %q", got)
+	}
+	if len(contents) != 2 {
+		t.Fatalf("expected two entries, got %d", len(contents))
+	}
+}
+
+func TestHostLinkSourceContentsOmitsUnreadableFiles(t *testing.T) {
+	t.Parallel()
+
+	source := filepath.Join(t.TempDir(), "mixed")
+	if err := os.Mkdir(source, 0o750); err != nil {
+		t.Fatalf("create source: %s", err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "readable"), []byte("text\n"), 0o600); err != nil {
+		t.Fatalf("write readable file: %s", err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "binary"), []byte{0x00, 0x01, 0x02}, 0o600); err != nil {
+		t.Fatalf("write binary file: %s", err)
+	}
+	oversized := make([]byte, hostMaxReadableContentBytes+1)
+	for i := range oversized {
+		oversized[i] = 'a'
+	}
+	if err := os.WriteFile(filepath.Join(source, "oversized"), oversized, 0o600); err != nil {
+		t.Fatalf("write oversized file: %s", err)
+	}
+
+	contents, err := hostLinkSourceContents(source, "ignored")
+	if err != nil {
+		t.Fatalf("read source contents: %s", err)
+	}
+	// Both omissions stay covered by source_digest, so the plan never claims a
+	// file is unchanged just because it is unreadable.
+	if _, ok := contents["binary"]; ok {
+		t.Fatal("binary file must be omitted")
+	}
+	if _, ok := contents["oversized"]; ok {
+		t.Fatal("oversized file must be omitted")
+	}
+	if got := contents["readable"]; got != "text\n" {
+		t.Fatalf("unexpected readable content %q", got)
+	}
+}
+
+func TestHostLinkSourceContentsRendersSymlinkTarget(t *testing.T) {
+	t.Parallel()
+
+	source := filepath.Join(t.TempDir(), "linked")
+	if err := os.Mkdir(source, 0o750); err != nil {
+		t.Fatalf("create source: %s", err)
+	}
+	if err := os.Symlink("/etc/localtime", filepath.Join(source, "clock")); err != nil {
+		t.Fatalf("create symlink: %s", err)
+	}
+
+	contents, err := hostLinkSourceContents(source, "ignored")
+	if err != nil {
+		t.Fatalf("read source contents: %s", err)
+	}
+	if got := contents["clock"]; got != "-> /etc/localtime" {
+		t.Fatalf("unexpected symlink rendering %q", got)
+	}
+}
+
+func TestHostReadableTextRejectsBinaryAndOversizedContent(t *testing.T) {
+	t.Parallel()
+
+	if _, ok := hostReadableText([]byte("plain text\n")); !ok {
+		t.Fatal("plain text must be readable")
+	}
+	if _, ok := hostReadableText([]byte{'a', 0x00, 'b'}); ok {
+		t.Fatal("NUL bytes must be rejected")
+	}
+	if _, ok := hostReadableText([]byte{0xff, 0xfe, 0xfd}); ok {
+		t.Fatal("invalid UTF-8 must be rejected")
+	}
+	if _, ok := hostReadableText(make([]byte, hostMaxReadableContentBytes+1)); ok {
+		t.Fatal("oversized content must be rejected")
+	}
+}
