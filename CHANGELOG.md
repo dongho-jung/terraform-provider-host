@@ -9,6 +9,7 @@ IMPROVEMENTS:
 NOTES:
 
 - The readable attributes are stored in plaintext Terraform state and grow it by roughly the size of the staged text, so do not point them at secrets.
+- The first plan after upgrading shows a one-time in-place update for each existing source-backed `host_system_file`, which only records the new attribute and rewrites identical bytes. `host_link` settles during its refresh and shows nothing.
 
 ## 0.20.0 (2026-08-04)
 
