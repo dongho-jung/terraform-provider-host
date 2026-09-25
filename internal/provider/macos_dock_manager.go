@@ -2,12 +2,12 @@ package provider
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -191,15 +191,40 @@ func macOSDockEntries(paths []string, tileType string) []string {
 	return entries
 }
 
+// macOSDockEntry renders one tile as an XML property list fragment.
+//
+// `defaults` accepts a value in the old-style plist syntax too, but that syntax
+// has no number type: a bare 15 arrives as the string "15". The Dock reads
+// _CFURLStringType, and the stack size keys, as numbers, and a tile whose type
+// is text is one the Dock cannot resolve, so it draws a question mark instead
+// of the icon and drops the tile the next time it writes the domain. XML keeps
+// every value's type.
 func macOSDockEntry(path string, tileType string) string {
 	label := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	urlString := macOSDockFileURL(path)
 
-	tileData := `"file-data"={"_CFURLString"=` + strconv.Quote(urlString) + `; "_CFURLStringType"=15;}; "file-label"=` + strconv.Quote(label) + `;`
+	var tile strings.Builder
+	tile.WriteString(`<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key>`)
+	tile.WriteString(macOSDockXMLString(urlString))
+	tile.WriteString(`<key>_CFURLStringType</key><integer>15</integer></dict><key>file-label</key>`)
+	tile.WriteString(macOSDockXMLString(label))
 	if tileType == "directory-tile" {
-		tileData += ` arrangement=2; displayas=0; preferreditemsize="-1"; showas=1;`
+		tile.WriteString(`<key>arrangement</key><integer>2</integer>`)
+		tile.WriteString(`<key>displayas</key><integer>0</integer>`)
+		tile.WriteString(`<key>preferreditemsize</key><integer>-1</integer>`)
+		tile.WriteString(`<key>showas</key><integer>1</integer>`)
 	}
-	return `{"tile-data"={` + tileData + `}; "tile-type"=` + strconv.Quote(tileType) + `;}`
+	tile.WriteString(`</dict><key>tile-type</key>`)
+	tile.WriteString(macOSDockXMLString(tileType))
+	tile.WriteString(`</dict>`)
+
+	return tile.String()
+}
+
+func macOSDockXMLString(value string) string {
+	var escaped strings.Builder
+	xml.EscapeText(&escaped, []byte(value))
+	return "<string>" + escaped.String() + "</string>"
 }
 
 func macOSDockFileURL(path string) string {

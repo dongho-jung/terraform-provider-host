@@ -50,14 +50,31 @@ func TestMacOSDockEntry(t *testing.T) {
 	t.Parallel()
 
 	got := macOSDockEntry("/Applications/Google Chrome.app", "file-tile")
-	if !strings.Contains(got, `"tile-type"="file-tile"`) {
+	if !strings.Contains(got, `<key>tile-type</key><string>file-tile</string>`) {
 		t.Fatalf("entry missing tile type: %s", got)
 	}
-	if !strings.Contains(got, `"_CFURLString"="file:///Applications/Google%20Chrome.app/"`) {
+	if !strings.Contains(got, `<key>_CFURLString</key><string>file:///Applications/Google%20Chrome.app/</string>`) {
 		t.Fatalf("entry missing URL: %s", got)
 	}
-	if !strings.Contains(got, `"file-label"="Google Chrome"`) {
+	if !strings.Contains(got, `<key>file-label</key><string>Google Chrome</string>`) {
 		t.Fatalf("entry missing label: %s", got)
+	}
+	// The Dock resolves a tile only when these arrive as numbers. The old-style
+	// plist syntax has no number type, so they used to reach it as text.
+	if !strings.Contains(got, `<key>_CFURLStringType</key><integer>15</integer>`) {
+		t.Fatalf("URL type must be a number: %s", got)
+	}
+
+	folder := macOSDockEntry("/Users/dongho/Downloads", "directory-tile")
+	for _, want := range []string{
+		`<key>arrangement</key><integer>2</integer>`,
+		`<key>displayas</key><integer>0</integer>`,
+		`<key>preferreditemsize</key><integer>-1</integer>`,
+		`<key>showas</key><integer>1</integer>`,
+	} {
+		if !strings.Contains(folder, want) {
+			t.Fatalf("folder entry missing %s: %s", want, folder)
+		}
 	}
 }
 
