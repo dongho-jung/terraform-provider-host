@@ -134,21 +134,31 @@ type MacOSPermissionManager interface {
 	OpenSettings(ctx context.Context, settingsURL string) error
 }
 
+// macOSSystemPermissionDatabase holds the services that apply to the whole
+// machine, such as Accessibility and Screen Recording.
+const macOSSystemPermissionDatabase = "/Library/Application Support/com.apple.TCC/TCC.db"
+
 type CLIMacOSPermissionManager struct {
-	sqlitePath  string
-	tccutilPath string
-	openPath    string
-	homeDir     string
-	run         macOSCommandRunner
+	sqlitePath     string
+	tccutilPath    string
+	openPath       string
+	systemDatabase string
+	userDatabase   string
+	run            macOSCommandRunner
 }
 
 func NewCLIMacOSPermissionManager(sqlitePath string, tccutilPath string, openPath string, homeDir string) MacOSPermissionManager {
+	userDatabase := ""
+	if homeDir != "" {
+		userDatabase = filepath.Join(homeDir, "Library", "Application Support", "com.apple.TCC", "TCC.db")
+	}
 	return &CLIMacOSPermissionManager{
-		sqlitePath:  sqlitePath,
-		tccutilPath: tccutilPath,
-		openPath:    openPath,
-		homeDir:     homeDir,
-		run:         runMacOSCommand,
+		sqlitePath:     sqlitePath,
+		tccutilPath:    tccutilPath,
+		openPath:       openPath,
+		systemDatabase: macOSSystemPermissionDatabase,
+		userDatabase:   userDatabase,
+		run:            runMacOSCommand,
 	}
 }
 
@@ -568,12 +578,9 @@ func (m *CLIMacOSPermissionManager) OpenSettings(ctx context.Context, settingsUR
 
 func (m *CLIMacOSPermissionManager) databasePath(service macOSPermissionService) string {
 	if service.System {
-		return "/Library/Application Support/com.apple.TCC/TCC.db"
+		return m.systemDatabase
 	}
-	if m.homeDir == "" {
-		return ""
-	}
-	return filepath.Join(m.homeDir, "Library", "Application Support", "com.apple.TCC", "TCC.db")
+	return m.userDatabase
 }
 
 // macOSPermissionDatabaseURI opens the privacy database immutably, so a

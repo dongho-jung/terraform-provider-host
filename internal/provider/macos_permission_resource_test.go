@@ -3,6 +3,8 @@ package provider
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -224,9 +226,18 @@ func TestCLIMacOSPermissionManagerReadsAuthValue(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			// Point at a real file so the test exercises the query rather than
+			// the missing-database shortcut, which would otherwise depend on
+			// whether the host has a privacy database at all.
+			database := filepath.Join(t.TempDir(), "TCC.db")
+			if err := os.WriteFile(database, nil, 0o600); err != nil {
+				t.Fatalf("write database: %s", err)
+			}
+
 			var calledArgs []string
 			manager := &CLIMacOSPermissionManager{
-				sqlitePath: "sqlite3",
+				sqlitePath:     "sqlite3",
+				systemDatabase: database,
 				run: func(ctx context.Context, command string, args ...string) ([]byte, error) {
 					calledArgs = args
 					if tt.err != nil {
@@ -268,5 +279,49 @@ func TestMacOSPermissionVerifyReportsManagerFailure(t *testing.T) {
 	}
 	if !strings.Contains(diagnosticsError(diags).Error(), "boom") {
 		t.Fatalf("got %q", diagnosticsError(diags))
+	}
+}
+
+func TestCLIMacOSPermissionManagerReportsMissingDatabase(t *testing.T) {
+	t.Parallel()
+
+	service, err := lookupMacOSPermissionService("accessibility")
+	if err != nil {
+		t.Fatalf("lookupMacOSPermissionService: %s", err)
+	}
+
+	manager := &CLIMacOSPermissionManager{
+		sqlitePath:     "sqlite3",
+		systemDatabase: filepath.Join(t.TempDir(), "absent", "TCC.db"),
+		run: func(ctx context.Context, command string, args ...string) ([]byte, error) {
+			t.Fatal("expected no query against a database that does not exist")
+			return nil, nil
+		},
+	}
+
+	state, err := manager.PermissionState(t.Context(), macOSPermissionSpec{Service: service, Client: "org.example.app"})
+	if err != nil {
+		t.Fatalf("PermissionState: %s", err)
+	}
+	if state != macOSPermissionStateMissing {
+		t.Fatalf("got %q, want %q", state, macOSPermissionStateMissing)
+	}
+}
+
+func TestCLIMacOSPermissionManagerWithoutHomeDirCannotReadUserDatabase(t *testing.T) {
+	t.Parallel()
+
+	service, err := lookupMacOSPermissionService("automation")
+	if err != nil {
+		t.Fatalf("lookupMacOSPermissionService: %s", err)
+	}
+
+	manager := &CLIMacOSPermissionManager{sqlitePath: "sqlite3"}
+	state, err := manager.PermissionState(t.Context(), macOSPermissionSpec{Service: service, Client: "org.example.app"})
+	if err != nil {
+		t.Fatalf("PermissionState: %s", err)
+	}
+	if state != macOSPermissionStateUnknown {
+		t.Fatalf("got %q, want %q", state, macOSPermissionStateUnknown)
 	}
 }
