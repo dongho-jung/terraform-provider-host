@@ -323,6 +323,11 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		osascriptPath := executablePath("osascript")
 		if osascriptPath != "" {
 			data.MacOSLoginItemManager = NewCLIMacOSLoginItemManager(osascriptPath, data.HomeDir)
+			data.MacOSFontManager = NewCLIMacOSFontManager(
+				osascriptPath,
+				executablePath("xattr"),
+				executablePath("killall"),
+			)
 		}
 		if tccutilPath := executablePath("tccutil"); tccutilPath != "" {
 			data.MacOSPermissionManager = NewCLIMacOSPermissionManager(
@@ -415,6 +420,7 @@ func (p *HostProvider) Resources(ctx context.Context) []func() resource.Resource
 		NewMacOSDockFolderResource,
 		NewMacOSLoginItemResource,
 		NewMacOSPermissionResource,
+		NewMacOSFontResource,
 		NewMacOSAudioMultiOutputResource,
 		NewHostScheduleResource,
 	}
