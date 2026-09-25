@@ -1,3 +1,20 @@
+## 0.22.0 (2026-09-25)
+
+FEATURES:
+
+- Add `host_mac_permission`, which declares a macOS privacy permission an application depends on and reports whether it is granted. macOS accepts a Privacy & Security grant only from an explicit user action or a user-approved MDM profile, so the resource never performs the grant: it reads the current state, names the exact pane and URL that grants it, and can revoke with `tccutil reset` on destroy.
+
+IMPROVEMENTS:
+
+- Write nested property list values from `host_mac_setting` and `host_mac_settings`. An object becomes a dictionary and a list of mixed or nested elements becomes an array, so dictionary preferences such as `com.apple.symbolichotkeys` and `com.apple.keyboard.modifiermapping.*` are now expressible. A list of strings keeps its existing string-array representation.
+- Read dictionary and array values through `defaults export` rather than `defaults read`. The old-style syntax that `defaults read` prints cannot distinguish a nested integer from a nested string, so an array of numbers previously round-tripped as strings and produced a plan that never converged.
+- Add `merge` to `host_mac_setting` and to a top-level `host_mac_settings` entry. It manages only the dictionary entries named in `value` and leaves every other entry of the same defaults key in place, for reads, writes, and `delete_on_destroy`, so one keyboard shortcut can be changed without replacing the whole shortcut table.
+
+NOTES:
+
+- A dictionary value must be declared through `host_mac_setting` or a top-level `host_mac_settings` entry. A bare object inside a `groups` domain stays rejected, because it is indistinguishable from a misplaced `settings` wrapper or `domain`/`key`/`value` form.
+- Reading a permission state requires Full Disk Access for the application running Terraform. Without it every check reports `unknown`, which is always a warning and never fails an apply.
+
 ## 0.21.0 (2026-08-05)
 
 IMPROVEMENTS:
