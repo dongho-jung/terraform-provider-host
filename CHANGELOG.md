@@ -1,3 +1,14 @@
+## 0.23.0 (Unreleased)
+
+FEATURES:
+
+- Add `host_mac_font`, which activates font files that are already installed in a macOS font directory. macOS skips a font that still carries the `com.apple.quarantine` attribute its downloader set, and does not see a font added since the last scan until `fontd` rescans, so a font cask leaves files that `fc-list` finds and CoreText does not. The resource clears the attribute, restarts the font daemon while a font is still unregistered, verifies through AppKit that macOS resolves every face, and fails the apply when it still does not.
+- Report the names a font declares. `postscript_names` reads the font's own naming table, so a preference that stores a PostScript name, such as iTerm's `Normal Font`, can reference the resource instead of repeating a spelling like `InconsolataNFM-Regular`. `families` and `files` report the rest of what a path covers.
+
+NOTES:
+
+- `host_mac_font` never writes, moves, or removes a font file, and destroying it leaves the font in place. It manages the activation of files that another resource installs.
+
 ## 0.22.0 (2026-09-25)
 
 FEATURES:
