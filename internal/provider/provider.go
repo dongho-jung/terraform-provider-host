@@ -324,6 +324,14 @@ func (p *HostProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		if osascriptPath != "" {
 			data.MacOSLoginItemManager = NewCLIMacOSLoginItemManager(osascriptPath, data.HomeDir)
 		}
+		if tccutilPath := executablePath("tccutil"); tccutilPath != "" {
+			data.MacOSPermissionManager = NewCLIMacOSPermissionManager(
+				executablePath("sqlite3"),
+				tccutilPath,
+				executablePath("open"),
+				data.HomeDir,
+			)
+		}
 	}
 
 	resp.ResourceData = data
@@ -406,6 +414,7 @@ func (p *HostProvider) Resources(ctx context.Context) []func() resource.Resource
 		NewMacOSDockAppResource,
 		NewMacOSDockFolderResource,
 		NewMacOSLoginItemResource,
+		NewMacOSPermissionResource,
 		NewMacOSAudioMultiOutputResource,
 		NewHostScheduleResource,
 	}

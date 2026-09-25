@@ -25,5 +25,6 @@ type HostProviderData struct {
 	MacOSDockManager        MacOSDockManager
 	MacOSLoginItemManager   MacOSLoginItemManager
 	MacOSAudioManager       MacOSAudioManager
+	MacOSPermissionManager  MacOSPermissionManager
 	DesktopSessionValidator HostDesktopSessionValidator
 }

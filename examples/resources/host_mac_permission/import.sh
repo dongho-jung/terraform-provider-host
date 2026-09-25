@@ -1,0 +1,1 @@
+terraform import host_mac_permission.hammerspoon_accessibility 'accessibility:org.hammerspoon.Hammerspoon'
