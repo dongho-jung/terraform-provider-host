@@ -39,6 +39,7 @@ type MacOSDefaultsDefaultModel struct {
 	Key             types.String  `tfsdk:"key"`
 	CurrentHost     types.Bool    `tfsdk:"current_host"`
 	Value           types.Dynamic `tfsdk:"value"`
+	Merge           types.Bool    `tfsdk:"merge"`
 	DeleteOnDestroy types.Bool    `tfsdk:"delete_on_destroy"`
 	Restart         types.List    `tfsdk:"restart"`
 }
@@ -71,7 +72,7 @@ func (r *MacOSDefaultsResource) Schema(ctx context.Context, req resource.SchemaR
 			},
 			"settings": schema.DynamicAttribute{
 				Optional:            true,
-				MarkdownDescription: "Named macOS settings to manage. Each map value is an object with string `domain`, `key`, and `value`, plus optional `current_host`, `delete_on_destroy`, and `restart`.",
+				MarkdownDescription: "Named macOS settings to manage. Each map value is an object with string `domain`, `key`, and `value`, plus optional `current_host`, `merge`, `delete_on_destroy`, and `restart`.",
 			},
 			"groups": schema.DynamicAttribute{
 				Optional:            true,
@@ -444,6 +445,7 @@ func macOSDefaultsFlatSpecsFromModel(ctx context.Context, model MacOSDefaultsRes
 			Key:             item.Key,
 			CurrentHost:     item.CurrentHost,
 			Value:           item.Value,
+			Merge:           item.Merge,
 			DeleteOnDestroy: item.DeleteOnDestroy,
 			Restart:         item.Restart,
 		})
@@ -505,6 +507,7 @@ func macOSDefaultsGroupedSpecsFromModel(ctx context.Context, model MacOSDefaults
 				Key:             types.StringValue(name),
 				CurrentHost:     types.BoolNull(),
 				Value:           value,
+				Merge:           types.BoolNull(),
 				DeleteOnDestroy: types.BoolNull(),
 				Restart:         types.ListNull(types.StringType),
 			}
@@ -591,6 +594,7 @@ func macOSDefaultsDefaultModelFromValue(ctx context.Context, value attr.Value, n
 		Key:             macOSSettingsStringAttr(attrs, "key", name, true, diags),
 		CurrentHost:     macOSSettingsBoolAttr(attrs, "current_host", name, false, diags),
 		Value:           macOSSettingsValueAttr(attrs, "value", name, diags),
+		Merge:           macOSSettingsBoolAttr(attrs, "merge", name, false, diags),
 		DeleteOnDestroy: macOSSettingsBoolAttr(attrs, "delete_on_destroy", name, false, diags),
 		Restart:         macOSSettingsStringListAttr(ctx, attrs, "restart", name, false, diags),
 	}
@@ -612,6 +616,18 @@ func macOSSettingsGroupSettingValueFromValue(value attr.Value, name string, diag
 	value = macOSSettingsUnwrapDynamic(value)
 	if value.IsNull() || value.IsUnknown() {
 		diags.AddError("Invalid macOS setting", name+" must be known and non-null.")
+		return types.DynamicNull()
+	}
+
+	// A bare object inside a group is almost always a misplaced `settings`
+	// wrapper or the top-level `domain`/`key`/`value` form. Dictionary values
+	// go through a top-level `settings` entry, which also carries `merge`.
+	switch value.(type) {
+	case types.Object, types.Map:
+		diags.AddError(
+			"Invalid macOS setting",
+			name+" must be a bool, number, string, or list. Declare a dictionary value as a top-level settings entry with domain, key, and value.",
+		)
 		return types.DynamicNull()
 	}
 
@@ -876,6 +892,7 @@ func macOSDefaultsDefaultObjectValue(ctx context.Context, model MacOSDefaultsDef
 		"value":  macOSSettingsDynamicUnderlying(model.Value),
 	}
 	macOSSettingsSetOptionalAttr(attrs, "current_host", model.CurrentHost)
+	macOSSettingsSetOptionalAttr(attrs, "merge", model.Merge)
 	macOSSettingsSetOptionalAttr(attrs, "delete_on_destroy", model.DeleteOnDestroy)
 	macOSSettingsSetOptionalAttr(attrs, "restart", model.Restart)
 	return macOSSettingsObjectValue(ctx, attrs)
@@ -950,6 +967,7 @@ func macOSDefaultsDefaultModelWithValue(model MacOSDefaultsDefaultModel, value m
 		Key:             model.Key,
 		CurrentHost:     model.CurrentHost,
 		Value:           model.Value,
+		Merge:           model.Merge,
 		DeleteOnDestroy: model.DeleteOnDestroy,
 		Restart:         model.Restart,
 	}

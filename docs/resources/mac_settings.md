@@ -70,7 +70,9 @@ resource "host_mac_settings" "settings" {
 
 In `groups`, the outer map key is the exact macOS defaults domain and the inner map is defaults key to value. Use domains such as `com.apple.dock`, `NSGlobalDomain`, `com.apple.menuextra.clock`, or an application bundle identifier. Quote keys that contain punctuation, such as `"show-recents" = false`.
 
-Values can be bools, numbers, strings, or lists of strings. Top-level `settings` entries include string `domain`, `key`, and `value`; use them when a setting needs explicit `restart`, `current_host`, or `delete_on_destroy` behavior.
+Group values can be bools, numbers, strings, or lists. A dictionary value has to go through a top-level `settings` entry, because a bare object inside a group is indistinguishable from a misplaced `domain`/`key`/`value` form.
+
+Top-level `settings` entries include string `domain`, `key`, and `value`; use them when a setting needs explicit `restart`, `current_host`, `merge`, or `delete_on_destroy` behavior. `merge` manages only the top-level entries named in a dictionary `value` and leaves every other entry of the same defaults key in place.
 
 ## Restart Behavior
 
@@ -102,7 +104,7 @@ terraform import 'host_mac_settings.settings' 'com.apple.menuextra.clock/IsAnalo
 ### Optional
 
 - `groups` (Dynamic) macOS settings grouped by exact defaults domain. Each `groups` map key is the exact defaults domain, such as `com.apple.dock`, `NSGlobalDomain`, or an application bundle identifier. Each group value is a map from defaults key to setting value.
-- `settings` (Dynamic) Named macOS settings to manage. Each map value is an object with string `domain`, `key`, and `value`, plus optional `current_host`, `delete_on_destroy`, and `restart`.
+- `settings` (Dynamic) Named macOS settings to manage. Each map value is an object with string `domain`, `key`, and `value`, plus optional `current_host`, `merge`, `delete_on_destroy`, and `restart`.
 
 ### Read-Only
 

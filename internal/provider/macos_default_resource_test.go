@@ -63,16 +63,65 @@ func TestMacOSDefaultWriteArgs(t *testing.T) {
 			value: macOSDefaultValue{Type: macOSDefaultValueStringList, StringList: []string{"ko-KR", "en-US"}},
 			want:  []string{"-array", "ko-KR", "en-US"},
 		},
+		{
+			name: "array",
+			value: macOSDefaultValue{Type: macOSDefaultValueArray, Array: []macOSDefaultValue{
+				{Type: macOSDefaultValueInt, Int: 65535},
+				{Type: macOSDefaultValueString, String: "a&b"},
+			}},
+			want: []string{"<array><integer>65535</integer><string>a&amp;b</string></array>"},
+		},
+		{
+			name: "dict",
+			value: macOSDefaultDictValue([]macOSDefaultDictEntry{
+				{Key: "value", Value: macOSDefaultValue{Type: macOSDefaultValueString, String: "standard"}},
+				{Key: "enabled", Value: macOSDefaultValue{Type: macOSDefaultValueBool, Bool: false}},
+			}),
+			want: []string{"<dict><key>enabled</key><false/><key>value</key><string>standard</string></dict>"},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if got := macOSDefaultWriteArgs(tt.value); !reflect.DeepEqual(got, tt.want) {
+			got, err := macOSDefaultWriteArgs(tt.value)
+			if err != nil {
+				t.Fatalf("macOSDefaultWriteArgs: %s", err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("got %#v, want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestMacOSDefaultMergeWriteArgs(t *testing.T) {
+	t.Parallel()
+
+	args, err := macOSDefaultMergeWriteArgs(macOSDefaultDictValue([]macOSDefaultDictEntry{
+		{Key: "64", Value: macOSDefaultDictValue([]macOSDefaultDictEntry{
+			{Key: "enabled", Value: macOSDefaultValue{Type: macOSDefaultValueBool, Bool: false}},
+		})},
+		{Key: "32", Value: macOSDefaultDictValue([]macOSDefaultDictEntry{
+			{Key: "enabled", Value: macOSDefaultValue{Type: macOSDefaultValueBool, Bool: true}},
+		})},
+	}))
+	if err != nil {
+		t.Fatalf("macOSDefaultMergeWriteArgs: %s", err)
+	}
+
+	want := []string{
+		"-dict-add",
+		"32", "<dict><key>enabled</key><true/></dict>",
+		"64", "<dict><key>enabled</key><false/></dict>",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("got %#v, want %#v", args, want)
+	}
+
+	if _, err := macOSDefaultMergeWriteArgs(macOSDefaultValue{Type: macOSDefaultValueBool, Bool: true}); err == nil {
+		t.Fatal("expected merge to reject a non-dictionary value")
 	}
 }
 
@@ -308,8 +357,8 @@ func TestCLIMacOSDefaultsManagerRead(t *testing.T) {
 			switch {
 			case strings.Contains(joined, "read-type"):
 				return []byte("Type is array\n"), nil
-			case strings.Contains(joined, "read"):
-				return []byte("(\n    \"en-US\",\n    \"ko-KR\"\n)\n"), nil
+			case strings.Contains(joined, "export"):
+				return []byte(macOSPlistDocument(`<key>AppleLanguages</key><array><string>en-US</string><string>ko-KR</string></array>`)), nil
 			default:
 				t.Fatalf("unexpected command %s %s", command, joined)
 				return nil, nil

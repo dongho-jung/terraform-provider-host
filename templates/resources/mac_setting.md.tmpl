@@ -18,7 +18,11 @@ Use this resource when you want a separate Terraform resource address for one ma
 
 ## Value Attributes
 
-Set `value` to a bool, number, string, or list of strings.
+Set `value` to a bool, number, string, or list. A list of strings is written as a string array; any other list and every object is written as a nested property list, which is how dictionary preferences such as `com.apple.symbolichotkeys` are managed.
+
+`merge` manages only the top-level entries named in a dictionary `value` and leaves every other entry of the same defaults key in place. Without it, writing a dictionary replaces the whole key. Reads are narrowed the same way, so unmanaged entries never appear as drift, and `delete_on_destroy` removes only the managed entries.
+
+Keyboard shortcuts in `com.apple.symbolichotkeys` are read at login. Log out and back in, or run `/System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings -u`, to apply a shortcut change to the running session.
 
 ## Restart Behavior
 

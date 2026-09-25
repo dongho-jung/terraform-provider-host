@@ -35,6 +35,11 @@ const (
 	macOSDefaultValueFloat      = "float"
 	macOSDefaultValueString     = "string"
 	macOSDefaultValueStringList = "string_list"
+	macOSDefaultValueArray      = "array"
+	macOSDefaultValueDict       = "dict"
+	// macOSDefaultValueUnsupported marks a decoded property list element such
+	// as <data> or <date> that has no Terraform representation.
+	macOSDefaultValueUnsupported = "unsupported"
 )
 
 type MacOSDefaultResource struct {
@@ -47,6 +52,7 @@ type MacOSDefaultResourceModel struct {
 	Key             types.String  `tfsdk:"key"`
 	CurrentHost     types.Bool    `tfsdk:"current_host"`
 	Value           types.Dynamic `tfsdk:"value"`
+	Merge           types.Bool    `tfsdk:"merge"`
 	DeleteOnDestroy types.Bool    `tfsdk:"delete_on_destroy"`
 	Restart         types.List    `tfsdk:"restart"`
 }
@@ -56,6 +62,7 @@ type macOSDefaultSpec struct {
 	Domain          string
 	Key             string
 	CurrentHost     bool
+	Merge           bool
 	DeleteOnDestroy bool
 	Restart         []string
 	Value           macOSDefaultValue
@@ -68,6 +75,16 @@ type macOSDefaultValue struct {
 	Float      float64
 	String     string
 	StringList []string
+	Array      []macOSDefaultValue
+	Dict       []macOSDefaultDictEntry
+}
+
+// macOSDefaultDictEntry is one entry of a property list dictionary. Entries are
+// kept in a sorted slice so two dictionaries with the same content always
+// compare and serialize identically.
+type macOSDefaultDictEntry struct {
+	Key   string
+	Value macOSDefaultValue
 }
 
 type MacOSDefaultsManager interface {
@@ -138,6 +155,12 @@ func (r *MacOSDefaultResource) Schema(ctx context.Context, req resource.SchemaRe
 			"value": schema.DynamicAttribute{
 				Required:            true,
 				MarkdownDescription: "Setting value. Supported values are bool, number, string, and a list or tuple of strings. Whole numbers are written as integer defaults values; fractional numbers are written as float defaults values.",
+			},
+			"merge": schema.BoolAttribute{
+				Optional:            true,
+				Computed:            true,
+				Default:             booldefault.StaticBool(false),
+				MarkdownDescription: "Manage only the top-level entries listed in a dictionary `value` and leave every other entry of the same defaults key in place. Requires a dictionary `value`.",
 			},
 			"delete_on_destroy": schema.BoolAttribute{
 				Optional:            true,
@@ -410,6 +433,13 @@ func (m *CLIMacOSDefaultsManager) ReadDefault(ctx context.Context, spec macOSDef
 		return macOSDefaultValue{}, false, err
 	}
 
+	// `defaults read` prints the old-style property list syntax, which cannot
+	// distinguish a nested integer from a nested string. Export the domain as
+	// XML instead whenever the value is a container.
+	if valueType == macOSDefaultValueArray || valueType == macOSDefaultValueDict {
+		return m.readStructuredDefault(ctx, spec)
+	}
+
 	readArgs := m.defaultsArgs(spec.CurrentHost, "read", spec.Domain, spec.Key)
 	valueOut, err := m.run(ctx, m.defaultsPath, readArgs...)
 	if err != nil {
@@ -423,6 +453,56 @@ func (m *CLIMacOSDefaultsManager) ReadDefault(ctx context.Context, spec macOSDef
 		return macOSDefaultValue{}, false, err
 	}
 	return value, true, nil
+}
+
+func (m *CLIMacOSDefaultsManager) readStructuredDefault(ctx context.Context, spec macOSDefaultSpec) (macOSDefaultValue, bool, error) {
+	exportArgs := m.defaultsArgs(spec.CurrentHost, "export", spec.Domain, "-")
+	exportOut, err := m.run(ctx, m.defaultsPath, exportArgs...)
+	if err != nil {
+		if isMacOSDefaultsMissingError(err) {
+			return macOSDefaultValue{}, false, nil
+		}
+		return macOSDefaultValue{}, false, err
+	}
+
+	document, err := parseMacOSPlistXML(exportOut)
+	if err != nil {
+		return macOSDefaultValue{}, false, fmt.Errorf("cannot read %s %s: %w", spec.Domain, spec.Key, err)
+	}
+
+	value, ok := macOSPlistLookup(document, spec.Key)
+	if !ok {
+		return macOSDefaultValue{}, false, nil
+	}
+	if spec.Merge {
+		value = macOSDefaultProjectDict(value, spec.Value)
+	}
+	if element := macOSPlistUnsupportedElement(value); element != "" {
+		return macOSDefaultValue{}, false, fmt.Errorf("%s %s contains a property list <%s> element, which this provider cannot manage", spec.Domain, spec.Key, element)
+	}
+	return value, true, nil
+}
+
+// macOSDefaultProjectDict narrows actual to the top-level entries that
+// configured names, so unmanaged entries of a merged defaults key never show
+// up as drift.
+func macOSDefaultProjectDict(actual macOSDefaultValue, configured macOSDefaultValue) macOSDefaultValue {
+	if actual.Type != macOSDefaultValueDict || configured.Type != macOSDefaultValueDict {
+		return actual
+	}
+
+	managed := make(map[string]struct{}, len(configured.Dict))
+	for _, entry := range configured.Dict {
+		managed[entry.Key] = struct{}{}
+	}
+
+	entries := make([]macOSDefaultDictEntry, 0, len(configured.Dict))
+	for _, entry := range actual.Dict {
+		if _, ok := managed[entry.Key]; ok {
+			entries = append(entries, entry)
+		}
+	}
+	return macOSDefaultDictValue(entries)
 }
 
 func isMacOSDefaultsMissingError(err error) bool {
@@ -439,9 +519,17 @@ func (m *CLIMacOSDefaultsManager) WriteDefault(ctx context.Context, spec macOSDe
 		return fmt.Errorf("defaults command not found")
 	}
 
+	valueArgs, err := macOSDefaultWriteArgs(spec.Value)
+	if spec.Merge {
+		valueArgs, err = macOSDefaultMergeWriteArgs(spec.Value)
+	}
+	if err != nil {
+		return err
+	}
+
 	args := m.defaultsArgs(spec.CurrentHost, "write", spec.Domain, spec.Key)
-	args = append(args, macOSDefaultWriteArgs(spec.Value)...)
-	_, err := m.run(ctx, m.defaultsPath, args...)
+	args = append(args, valueArgs...)
+	_, err = m.run(ctx, m.defaultsPath, args...)
 	return err
 }
 
@@ -450,12 +538,57 @@ func (m *CLIMacOSDefaultsManager) DeleteDefault(ctx context.Context, spec macOSD
 		return fmt.Errorf("defaults command not found")
 	}
 
+	if spec.Merge {
+		return m.deleteMergedDefault(ctx, spec)
+	}
+
 	args := m.defaultsArgs(spec.CurrentHost, "delete", spec.Domain, spec.Key)
 	_, err := m.run(ctx, m.defaultsPath, args...)
 	if isMacOSDefaultsMissingError(err) {
 		return nil
 	}
 	return err
+}
+
+// deleteMergedDefault removes only the managed dictionary entries and writes
+// the remaining ones back, because `defaults delete` cannot address an entry
+// inside a dictionary.
+func (m *CLIMacOSDefaultsManager) deleteMergedDefault(ctx context.Context, spec macOSDefaultSpec) error {
+	readSpec := spec
+	readSpec.Merge = false
+	actual, exists, err := m.ReadDefault(ctx, readSpec)
+	if err != nil || !exists || actual.Type != macOSDefaultValueDict {
+		return err
+	}
+
+	managed := make(map[string]struct{}, len(spec.Value.Dict))
+	for _, entry := range spec.Value.Dict {
+		managed[entry.Key] = struct{}{}
+	}
+
+	remaining := make([]macOSDefaultDictEntry, 0, len(actual.Dict))
+	for _, entry := range actual.Dict {
+		if _, ok := managed[entry.Key]; !ok {
+			remaining = append(remaining, entry)
+		}
+	}
+	if len(remaining) == len(actual.Dict) {
+		return nil
+	}
+
+	if len(remaining) == 0 {
+		args := m.defaultsArgs(spec.CurrentHost, "delete", spec.Domain, spec.Key)
+		_, err := m.run(ctx, m.defaultsPath, args...)
+		if isMacOSDefaultsMissingError(err) {
+			return nil
+		}
+		return err
+	}
+
+	writeSpec := spec
+	writeSpec.Merge = false
+	writeSpec.Value = macOSDefaultDictValue(remaining)
+	return m.WriteDefault(ctx, writeSpec)
 }
 
 func (m *CLIMacOSDefaultsManager) RestartProcesses(ctx context.Context, processNames []string) error {
@@ -508,6 +641,7 @@ func macOSDefaultPlanReady(model MacOSDefaultResourceModel) bool {
 	return !model.Domain.IsNull() && !model.Domain.IsUnknown() &&
 		!model.Key.IsNull() && !model.Key.IsUnknown() &&
 		!model.CurrentHost.IsNull() && !model.CurrentHost.IsUnknown() &&
+		!model.Merge.IsNull() && !model.Merge.IsUnknown() &&
 		!model.DeleteOnDestroy.IsNull() && !model.DeleteOnDestroy.IsUnknown() &&
 		!model.Value.IsUnknown() &&
 		!model.Value.IsUnderlyingValueUnknown() &&
@@ -536,6 +670,11 @@ func macOSDefaultSpecFromModel(ctx context.Context, model MacOSDefaultResourceMo
 	}
 
 	currentHost := model.CurrentHost.ValueBool()
+	merge := model.Merge.ValueBool()
+	if merge && value.Type != macOSDefaultValueDict {
+		diags.AddError("Invalid macOS setting", "merge requires a dictionary value; only dictionary entries can be merged into an existing defaults key.")
+		return macOSDefaultSpec{}, diags
+	}
 	if model.Restart.IsNull() {
 		restart = defaultMacOSDefaultRestartProcesses(domain)
 	}
@@ -544,6 +683,7 @@ func macOSDefaultSpecFromModel(ctx context.Context, model MacOSDefaultResourceMo
 		Domain:          domain,
 		Key:             key,
 		CurrentHost:     currentHost,
+		Merge:           merge,
 		DeleteOnDestroy: model.DeleteOnDestroy.ValueBool(),
 		Restart:         restart,
 		Value:           value,
@@ -562,7 +702,21 @@ func macOSDefaultValueFromDynamic(value types.Dynamic) (macOSDefaultValue, diag.
 		return macOSDefaultValue{}, diags
 	}
 
-	switch underlying := value.UnderlyingValue().(type) {
+	return macOSDefaultValueFromAttr(value.UnderlyingValue())
+}
+
+func macOSDefaultValueFromAttr(attrValue attr.Value) (macOSDefaultValue, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	if dynamic, ok := attrValue.(types.Dynamic); ok {
+		return macOSDefaultValueFromDynamic(dynamic)
+	}
+	if attrValue == nil || attrValue.IsNull() || attrValue.IsUnknown() {
+		diags.AddError("Invalid macOS setting value", "value must be a known non-null bool, number, string, list, or object.")
+		return macOSDefaultValue{}, diags
+	}
+
+	switch underlying := attrValue.(type) {
 	case types.Bool:
 		if underlying.IsNull() || underlying.IsUnknown() {
 			diags.AddError("Invalid macOS setting value", "value must be a known non-null bool.")
@@ -595,26 +749,58 @@ func macOSDefaultValueFromDynamic(value types.Dynamic) (macOSDefaultValue, diag.
 		}
 		return macOSDefaultValue{Type: macOSDefaultValueString, String: underlying.ValueString()}, diags
 	case types.List:
-		elements, err := macOSDefaultStringSliceFromElements(underlying.Elements())
-		if err != nil {
-			diags.AddError("Invalid macOS setting value", err.Error())
-			return macOSDefaultValue{}, diags
-		}
-		return macOSDefaultValue{Type: macOSDefaultValueStringList, StringList: elements}, diags
+		return macOSDefaultValueFromElements(underlying.Elements())
+	case types.Set:
+		return macOSDefaultValueFromElements(underlying.Elements())
 	case types.Tuple:
-		elements, err := macOSDefaultStringSliceFromElements(underlying.Elements())
-		if err != nil {
-			diags.AddError("Invalid macOS setting value", err.Error())
-			return macOSDefaultValue{}, diags
-		}
-		return macOSDefaultValue{Type: macOSDefaultValueStringList, StringList: elements}, diags
+		return macOSDefaultValueFromElements(underlying.Elements())
+	case types.Object:
+		return macOSDefaultValueFromEntries(underlying.Attributes())
+	case types.Map:
+		return macOSDefaultValueFromEntries(underlying.Elements())
 	default:
 		diags.AddError(
 			"Invalid macOS setting value",
-			fmt.Sprintf("value has unsupported type %T; supported values are bool, number, string, and a list or tuple of strings.", underlying),
+			fmt.Sprintf("value has unsupported type %T; supported values are bool, number, string, a list or tuple, and an object or map.", underlying),
 		)
 		return macOSDefaultValue{}, diags
 	}
+}
+
+// macOSDefaultValueFromElements keeps an all-string list in the string_list
+// representation and falls back to a general property list array otherwise.
+func macOSDefaultValueFromElements(elements []attr.Value) (macOSDefaultValue, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	if texts, err := macOSDefaultStringSliceFromElements(elements); err == nil {
+		return macOSDefaultValue{Type: macOSDefaultValueStringList, StringList: texts}, diags
+	}
+
+	values := make([]macOSDefaultValue, 0, len(elements))
+	for i, element := range elements {
+		converted, elementDiags := macOSDefaultValueFromAttr(element)
+		if elementDiags.HasError() {
+			diags.AddError("Invalid macOS setting value", fmt.Sprintf("list element %d is invalid: %s", i, diagnosticsError(elementDiags)))
+			return macOSDefaultValue{}, diags
+		}
+		values = append(values, converted)
+	}
+	return macOSDefaultValue{Type: macOSDefaultValueArray, Array: values}, diags
+}
+
+func macOSDefaultValueFromEntries(entries map[string]attr.Value) (macOSDefaultValue, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	converted := make([]macOSDefaultDictEntry, 0, len(entries))
+	for key, element := range entries {
+		value, entryDiags := macOSDefaultValueFromAttr(element)
+		if entryDiags.HasError() {
+			diags.AddError("Invalid macOS setting value", fmt.Sprintf("dictionary entry %q is invalid: %s", key, diagnosticsError(entryDiags)))
+			return macOSDefaultValue{}, diags
+		}
+		converted = append(converted, macOSDefaultDictEntry{Key: key, Value: value})
+	}
+	return macOSDefaultDictValue(converted), diags
 }
 
 func macOSDefaultModelWithValue(model MacOSDefaultResourceModel, value macOSDefaultValue) (MacOSDefaultResourceModel, error) {
@@ -692,18 +878,92 @@ func macOSDefaultDynamicValue(value macOSDefaultValue) (types.Dynamic, error) {
 			return types.Dynamic{}, diagnosticsError(diags)
 		}
 		return types.DynamicValue(tuple), nil
+	case macOSDefaultValueArray, macOSDefaultValueDict:
+		attrValue, err := macOSDefaultAttrValue(value)
+		if err != nil {
+			return types.Dynamic{}, err
+		}
+		return types.DynamicValue(attrValue), nil
 	default:
 		return types.Dynamic{}, fmt.Errorf("unsupported macOS default value type %q", value.Type)
 	}
 }
 
+// macOSDefaultAttrValue renders a value as the concrete Terraform value that a
+// dynamic attribute stores: a tuple for arrays and an object for dictionaries.
+func macOSDefaultAttrValue(value macOSDefaultValue) (attr.Value, error) {
+	switch value.Type {
+	case macOSDefaultValueArray:
+		elementTypes := make([]attr.Type, 0, len(value.Array))
+		elements := make([]attr.Value, 0, len(value.Array))
+		for _, element := range value.Array {
+			converted, err := macOSDefaultAttrValue(element)
+			if err != nil {
+				return nil, err
+			}
+			elementTypes = append(elementTypes, converted.Type(context.Background()))
+			elements = append(elements, converted)
+		}
+		tuple, diags := types.TupleValue(elementTypes, elements)
+		if diags.HasError() {
+			return nil, diagnosticsError(diags)
+		}
+		return tuple, nil
+	case macOSDefaultValueDict:
+		attrTypes := make(map[string]attr.Type, len(value.Dict))
+		attrs := make(map[string]attr.Value, len(value.Dict))
+		for _, entry := range value.Dict {
+			converted, err := macOSDefaultAttrValue(entry.Value)
+			if err != nil {
+				return nil, err
+			}
+			attrTypes[entry.Key] = converted.Type(context.Background())
+			attrs[entry.Key] = converted
+		}
+		object, diags := types.ObjectValue(attrTypes, attrs)
+		if diags.HasError() {
+			return nil, diagnosticsError(diags)
+		}
+		return object, nil
+	case macOSDefaultValueUnsupported:
+		return nil, fmt.Errorf("property list element <%s> has no Terraform representation", value.String)
+	default:
+		dynamic, err := macOSDefaultDynamicValue(value)
+		if err != nil {
+			return nil, err
+		}
+		return dynamic.UnderlyingValue(), nil
+	}
+}
+
 func macOSDefaultValuesEqual(a macOSDefaultValue, b macOSDefaultValue) bool {
-	return a.Type == b.Type &&
-		a.Bool == b.Bool &&
-		a.Int == b.Int &&
-		a.Float == b.Float &&
-		a.String == b.String &&
-		reflect.DeepEqual(a.StringList, b.StringList)
+	if a.Type != b.Type ||
+		a.Bool != b.Bool ||
+		a.Int != b.Int ||
+		a.Float != b.Float ||
+		a.String != b.String ||
+		!reflect.DeepEqual(a.StringList, b.StringList) {
+		return false
+	}
+
+	if len(a.Array) != len(b.Array) {
+		return false
+	}
+	for i := range a.Array {
+		if !macOSDefaultValuesEqual(a.Array[i], b.Array[i]) {
+			return false
+		}
+	}
+
+	if len(a.Dict) != len(b.Dict) {
+		return false
+	}
+	for i := range a.Dict {
+		if a.Dict[i].Key != b.Dict[i].Key || !macOSDefaultValuesEqual(a.Dict[i].Value, b.Dict[i].Value) {
+			return false
+		}
+	}
+	return true
 }
 
 func macOSDefaultImportSpec(importID string) (macOSDefaultSpec, error) {
@@ -766,24 +1026,50 @@ func defaultMacOSDefaultRestartProcesses(domain string) []string {
 	}
 }
 
-func macOSDefaultWriteArgs(value macOSDefaultValue) []string {
+func macOSDefaultWriteArgs(value macOSDefaultValue) ([]string, error) {
 	switch value.Type {
 	case macOSDefaultValueBool:
 		if value.Bool {
-			return []string{"-bool", "true"}
+			return []string{"-bool", "true"}, nil
 		}
-		return []string{"-bool", "false"}
+		return []string{"-bool", "false"}, nil
 	case macOSDefaultValueInt:
-		return []string{"-int", strconv.FormatInt(value.Int, 10)}
+		return []string{"-int", strconv.FormatInt(value.Int, 10)}, nil
 	case macOSDefaultValueFloat:
-		return []string{"-float", strconv.FormatFloat(value.Float, 'f', -1, 64)}
+		return []string{"-float", strconv.FormatFloat(value.Float, 'f', -1, 64)}, nil
 	case macOSDefaultValueString:
-		return []string{"-string", value.String}
+		return []string{"-string", value.String}, nil
 	case macOSDefaultValueStringList:
-		return append([]string{"-array"}, value.StringList...)
+		return append([]string{"-array"}, value.StringList...), nil
+	case macOSDefaultValueArray, macOSDefaultValueDict:
+		// `defaults` has no flag for nested containers; it parses a bare
+		// argument as a property list instead.
+		document, err := macOSPlistXML(value)
+		if err != nil {
+			return nil, err
+		}
+		return []string{document}, nil
 	default:
-		return nil
+		return nil, fmt.Errorf("unsupported macOS default value type %q", value.Type)
 	}
+}
+
+// macOSDefaultMergeWriteArgs writes only the listed dictionary entries and
+// leaves every other entry of the same defaults key untouched.
+func macOSDefaultMergeWriteArgs(value macOSDefaultValue) ([]string, error) {
+	if value.Type != macOSDefaultValueDict {
+		return nil, fmt.Errorf("merge requires a dictionary value, got %q", value.Type)
+	}
+
+	args := []string{"-dict-add"}
+	for _, entry := range value.Dict {
+		document, err := macOSPlistXML(entry.Value)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, entry.Key, document)
+	}
+	return args, nil
 }
 
 func parseMacOSDefaultsReadType(output string) (string, error) {
@@ -798,7 +1084,9 @@ func parseMacOSDefaultsReadType(output string) (string, error) {
 	case "Type is string":
 		return macOSDefaultValueString, nil
 	case "Type is array":
-		return macOSDefaultValueStringList, nil
+		return macOSDefaultValueArray, nil
+	case "Type is dictionary":
+		return macOSDefaultValueDict, nil
 	default:
 		return "", fmt.Errorf("unsupported defaults value type %q", value)
 	}

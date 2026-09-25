@@ -26,11 +26,34 @@ resource "host_mac_setting" "screenshot_delay" {
   key    = "captureDelay"
   value  = 5
 }
+
+# A dictionary value is written as a property list. `merge` manages only the
+# listed entries, so this disables one keyboard shortcut without replacing the
+# rest of the shortcut table.
+resource "host_mac_setting" "spotlight_shortcut" {
+  domain = "com.apple.symbolichotkeys"
+  key    = "AppleSymbolicHotKeys"
+  merge  = true
+
+  value = {
+    "64" = {
+      enabled = false
+      value = {
+        parameters = [65535, 49, 1048576]
+        type       = "standard"
+      }
+    }
+  }
+}
 ```
 
 ## Value Attributes
 
-Set `value` to a bool, number, string, or list of strings.
+Set `value` to a bool, number, string, or list. A list of strings is written as a string array; any other list and every object is written as a nested property list, which is how dictionary preferences such as `com.apple.symbolichotkeys` are managed.
+
+`merge` manages only the top-level entries named in a dictionary `value` and leaves every other entry of the same defaults key in place. Without it, writing a dictionary replaces the whole key. Reads are narrowed the same way, so unmanaged entries never appear as drift, and `delete_on_destroy` removes only the managed entries.
+
+Keyboard shortcuts in `com.apple.symbolichotkeys` are read at login. Log out and back in, or run `/System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings -u`, to apply a shortcut change to the running session.
 
 ## Restart Behavior
 
@@ -64,6 +87,7 @@ terraform import host_mac_setting.trackpad currentHost:NSGlobalDomain:com.apple.
 
 - `current_host` (Boolean) Use `defaults -currentHost` for host-specific preferences.
 - `delete_on_destroy` (Boolean) Delete the managed defaults key on destroy. Defaults to false, leaving the current macOS setting in place.
+- `merge` (Boolean) Manage only the top-level entries listed in a dictionary `value` and leave every other entry of the same defaults key in place. Requires a dictionary `value`.
 - `restart` (List of String) Process names to restart with `killall` after writes or deletes, such as `Dock`, `Finder`, or `SystemUIServer`. Omit to use provider defaults for known domains; set `[]` to disable restarts.
 
 ### Read-Only
